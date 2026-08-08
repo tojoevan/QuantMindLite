@@ -518,12 +518,16 @@ async function loadConsensusForHover() {
 }
 
 // 图表时间范围选择（全部 / 30 / 60 / 90 / 180 / 365 天）
+// 注意：每次进入项目/重绘面板时 HTML 里写死的 class="on" 只是默认值，
+// 必须按全局 viewDays（跨股票保留的选择）同步实际高亮，否则切股票后高亮错位。
 function setupRangePick() {
   const rp = document.getElementById("range-pick");
   if (!rp) return;
   rp.querySelectorAll("button").forEach(b => {
+    const d = parseInt(b.getAttribute("data-d"), 10) || 0;
+    b.classList.toggle("on", d === viewDays);   // 按上次选择恢复高亮
     b.onclick = () => {
-      viewDays = parseInt(b.getAttribute("data-d"), 10) || 0;
+      viewDays = d;
       rp.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
       if (lastChartData) renderCharts(lastChartData);
     };
