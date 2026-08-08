@@ -752,6 +752,8 @@ function renderSidebarForRole() {
 // 退出游客模式、回到登录门禁
 function exitGuestToLogin() {
   isGuest = false;
+  // 清空游客横幅 / 拉取状态等残留，避免登录页遮罩下透出旧内容
+  document.getElementById("main").innerHTML = "";
   document.querySelector(".sidebar")?.classList.remove("hidden");
   renderSidebarForRole();
   showAuth("login");
@@ -829,6 +831,7 @@ async function renderGuestProject(p) {
 }
 
 async function refreshGuestView() {
+  if (!isGuest) return;   // 期间已退出游客模式（如点了登录），不再渲染
   const data = await guestApi("GET", `/api/guest/projects/${currentId}/chart`);
   fillSuggestion(data);
   fillPriceTable(data, 30);
