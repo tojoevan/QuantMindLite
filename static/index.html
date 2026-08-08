@@ -8,14 +8,14 @@
   <script>
     (function(){ try { if (localStorage.getItem('qw_theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch(e){} })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=14" />
+  <link rel="stylesheet" href="/style.css?v=15" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 </head>
 <body>
   <header>
     <button id="menu-btn" class="menu-btn" aria-label="菜单">☰</button>
     <div class="brand">
-      <h1>慢量化操作台</h1>
+      <a id="brand-link" class="brand-link" href="javascript:void(0)" title="返回首页" aria-label="返回首页"><h1>慢量化操作台</h1></a>
       <span class="sub">建议 → 反馈 → 再预测</span>
     </div>
     <div class="top-actions">
@@ -96,6 +96,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=14"></script>
+  <script src="/app.js?v=15"></script>
 </body>
 </html>

@@ -887,6 +887,19 @@ function closeMenu() { sidebar.classList.remove("open"); backdrop.classList.remo
 menuBtn.addEventListener("click", openMenu);
 backdrop.addEventListener("click", closeMenu);
 
+// 左上角标题：返回首页（游客→游客项目视图；登录→首个项目默认视图）
+function goHome() {
+  if (isGuest) {
+    if (projects && projects.length) renderGuestProject(projects[0]);
+    else exitGuestToLogin();
+  } else if (projects && projects.length) {
+    selectProject(projects[0].id);
+  } else {
+    loadProjects();
+  }
+}
+document.getElementById("brand-link").addEventListener("click", goHome);
+
 // 从「关于」页返回先前视图（游客模式无侧栏，需提供返回入口）
 function backFromAbout() {
   if (isGuest) {
