@@ -77,7 +77,7 @@ let me = JSON.parse(localStorage.getItem("qw_user") || "null");
 
 let STRATEGIES = {};
 let isGuest = false;    // 游客模式：只读、无需登录
-let viewDays = 30;      // 图表时间范围：默认 30 天，否则取最近 N 个交易日（全部=0 / 30/60/90/180/365）
+let viewDays = 60;      // 图表时间范围：默认 60 天，否则取最近 N 个交易日（全部=0 / 30/60/90/180/365）
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -168,8 +168,8 @@ async function selectProject(id) {
     <div class="panel"><h3>预测线 vs 实际线
       <span class="range-pick" id="range-pick">
         <button data-d="0">全部</button>
-        <button data-d="30" class="on">30天</button>
-        <button data-d="60">60天</button>
+        <button data-d="30">30天</button>
+        <button data-d="60" class="on">60天</button>
         <button data-d="90">90天</button>
         <button data-d="180">180天</button>
         <button data-d="365">365天</button>
@@ -188,7 +188,7 @@ async function selectProject(id) {
     <div class="panel">
       <h3>实际行情（实际线）</h3>
       <div class="row">
-        <button id="btn-fetch" class="btn-mini">🔄 自动拉取行情</button>
+        <button id="btn-fetch" class="btn-mini">🔄 强制刷新行情</button>
         <select id="fetch-days" class="mini-select">
           <option value="60">近60日</option>
           <option value="120">近120日</option>
@@ -235,6 +235,7 @@ async function selectProject(id) {
   renderNoteView();
   await renderStrategyPanel(p);
   await loadConsensusForHover();   // 预取各策略逐日信号，供悬浮提示显示（无需一致性卡片）
+  await autoFetch(id);             // 进入项目时自动拉取最新行情（限频：今日已拉取则跳过）
   await refreshProjectView();
   setupRangePick();                // 绑定图表时间范围选择（全部/30/60/90/180/365天）
 }
@@ -553,6 +554,20 @@ async function addPrice(e) {
   await refreshProjectView();
 }
 
+// 进入项目时自动拉取最新行情（限频：每天最多实际调用一次数据源；已是最新则跳过）
+async function autoFetch(id) {
+  try {
+    const r = await API("POST", `/api/projects/${id}/fetch`, { days: 250, force: false });
+    // 同步后项目名可能更新为股票名称，刷新侧栏标题
+    if (r.name) {
+      const proj = projects.find(x => x.id === id);
+      if (proj && proj.name !== r.name) { proj.name = r.name; renderProjectList(); }
+    }
+  } catch (e) {
+    // 自动拉取失败静默处理，不阻断用户查看已有数据
+  }
+}
+
 async function fetchMarket() {
   const btn = document.getElementById("btn-fetch");
   const hint = document.getElementById("fetch-hint");
@@ -560,7 +575,7 @@ async function fetchMarket() {
   hint.textContent = "正在从行情源同步…";
   try {
     const days = parseInt(document.getElementById("fetch-days").value, 10);
-    const r = await API("POST", `/api/projects/${currentId}/fetch`, { days });
+    const r = await API("POST", `/api/projects/${currentId}/fetch`, { days, force: true });
     hint.textContent = `已同步 ${r.count} 个交易日（${r.start} ~ ${r.end}）`;
     alert(`已拉取 ${r.count} 个交易日（${r.start} ~ ${r.end}），最新收盘 ${r.latest_close}，来源 ${r.source}`);
     // 拉取后自动生成一条操作建议
@@ -573,7 +588,7 @@ async function fetchMarket() {
     hint.textContent = "拉取失败：" + e.message;
     alert("拉取失败：" + e.message);
   } finally {
-    btn.disabled = false; btn.textContent = "🔄 自动拉取行情";
+    btn.disabled = false; btn.textContent = "🔄 强制刷新行情";
   }
 }
 
@@ -759,8 +774,8 @@ async function renderGuestProject(p) {
     <div class="panel"><h3>预测线 vs 实际线
       <span class="range-pick" id="range-pick">
         <button data-d="0">全部</button>
-        <button data-d="30" class="on">30天</button>
-        <button data-d="60">60天</button>
+        <button data-d="30">30天</button>
+        <button data-d="60" class="on">60天</button>
         <button data-d="90">90天</button>
         <button data-d="180">180天</button>
         <button data-d="365">365天</button>
