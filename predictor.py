@@ -98,13 +98,20 @@ def run_strategy(strategy_type, config, recent_prices):
     elif strategy_type == "breakout":
         window = int(cfg.get("window", 20))
         k = float(cfg.get("k", 2.0)) / 100.0
-        w = closes[-min(window, n):]
-        hh, ll = max(w), min(w)
-        if last > hh * (1 + k):
-            signal, pred = "BUY", hh * (1 + k)
-        elif last < ll * (1 - k):
-            signal, pred = "SELL", ll * (1 - k)
+        # 通道由“昨日及之前”最近 window 根收盘构成，必须排除今日，
+        # 否则 hh>=last、ll<=last 恒成立，突破条件永远无法触发（只会 HOLD）。
+        prev = closes[: n - 1]
+        w = prev[-window:] if prev else []
+        if w:
+            hh, ll = max(w), min(w)
+            if last > hh * (1 + k):
+                signal, pred = "BUY", hh * (1 + k)
+            elif last < ll * (1 - k):
+                signal, pred = "SELL", ll * (1 - k)
+            else:
+                signal, pred = "HOLD", last
         else:
+            hh = ll = last
             signal, pred = "HOLD", last
         low, high = min(ll, last * 0.97), max(hh, last * 1.03)
         dev = (last - hh) / hh if last > hh else (ll - last) / ll if last < ll else 0.0
