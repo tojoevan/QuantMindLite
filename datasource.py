@@ -12,6 +12,7 @@ import logging
 import urllib.request
 import ssl
 from datetime import datetime, timedelta
+from typing import Optional
 
 logger = logging.getLogger("datasource")
 
@@ -166,6 +167,70 @@ def _fetch_eastmoney(digits, secid_prefix, start_s, end_s):
     if not out:
         raise ValueError("东方财富返回为空")
     return out
+
+
+def _decode_bytes(raw: bytes) -> str:
+    """把行情/名称接口的响应字节按编码解码：优先 utf-8，失败回退 gbk/gb18030（中文接口多为 GBK）。"""
+    try:
+        return raw.decode("utf-8")
+    except Exception:
+        try:
+            return raw.decode("gb18030")
+        except Exception:
+            return raw.decode("latin-1", "ignore")
+
+
+def fetch_stock_name(code: str) -> Optional[str]:
+    """根据股票代码查询股票名称（证券缩写）。多源回退：腾讯 → 新浪 → akshare。
+    查询失败返回 None（调用方应忽略，保留原有项目名）。"""
+    parsed = parse_symbol(code)
+    if not parsed:
+        return None
+    digits, secid_prefix = parsed
+    symbol = f"{_market_tag(secid_prefix)}{digits}"
+
+    # 1) 腾讯 qt.gtimg.cn（返回形如 v_sh600519="1~贵州茅台~600519~..."，~ 分隔，第2段为名称）
+    #    注意：该接口为 GBK 编码，需按字节读取后再以 gbk 解码，否则中文会乱码。
+    try:
+        req = urllib.request.Request(f"https://qt.gtimg.cn/q={symbol}", headers=_HEADERS)
+        with urllib.request.urlopen(req, timeout=20, context=_SSL_CTX) as resp:
+            raw = resp.read()
+        text = raw.decode("gbk", "ignore")
+        m = re.search(r'"([^"]*)"', text)
+        if m:
+            fields = m.group(1).split("~")
+            if len(fields) > 1 and fields[1]:
+                return fields[1].strip()
+    except Exception as e:
+        logger.warning("腾讯名称查询失败：%s", e)
+
+    # 2) 新浪（返回形如 var hq_str_sz000002="万科A,..."，首字段为名称，GBK 编码）
+    try:
+        req = urllib.request.Request(
+            f"https://hq.sinajs.cn/list={symbol}",
+            headers={**_HEADERS, "Referer": "https://finance.sina.com.cn"},
+        )
+        with urllib.request.urlopen(req, timeout=20, context=_SSL_CTX) as resp:
+            raw = resp.read().decode("gbk", "ignore")
+        m = re.search(r'"([^"]*)"', raw)
+        if m:
+            parts = m.group(1).split(",")
+            if parts and parts[0]:
+                return parts[0].strip()
+    except Exception as e:
+        logger.warning("新浪名称查询失败：%s", e)
+
+    # 3) akshare
+    if HAS_AKSHARE:
+        try:
+            info = ak.stock_individual_info_em(symbol=digits)
+            nm = info[info["item"] == "股票简称"]["value"].iloc[0]
+            if nm:
+                return str(nm).strip()
+        except Exception as e:
+            logger.warning("akshare 名称查询失败：%s", e)
+
+    return None
 
 
 def fetch_a_hist(code: str, days: int = 250):

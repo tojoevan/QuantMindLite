@@ -565,7 +565,10 @@ async function fetchMarket() {
     alert(`已拉取 ${r.count} 个交易日（${r.start} ~ ${r.end}），最新收盘 ${r.latest_close}，来源 ${r.source}`);
     // 拉取后自动生成一条操作建议
     await API("POST", `/api/projects/${currentId}/predict`, {});
-    await refreshProjectView();
+    // 同步后项目名已更新为股票名称，刷新列表与当前项目视图以显示新名称
+    const proj = projects.find(x => x.id === currentId);
+    if (proj && r.name) proj.name = r.name;
+    await selectProject(currentId);
   } catch (e) {
     hint.textContent = "拉取失败：" + e.message;
     alert("拉取失败：" + e.message);
@@ -801,6 +804,14 @@ async function guestRefresh() {
     if (r.updated) {
       await refreshGuestView();   // 重新拉取图表（含最新行情）
       showToast("行情已更新，图表已刷新");
+    }
+    // 同步后项目名已更新为股票名称，刷新侧栏与当前游客面板标题
+    if (r.name) {
+      const gp = projects.find(x => x.id === currentId);
+      if (gp) gp.name = r.name;
+      renderProjectList();
+      const title = document.querySelector("#main .panel h3");
+      if (title) title.innerHTML = `${r.name} <span class="muted">${gp ? (gp.code || "") : ""} · ${gp ? (gp.market || "A") : "A"}</span>`;
     }
   } catch (e) {
     if (status) { status.textContent = "行情检查失败：" + e.message; status.className = "guest-refresh-status err"; }

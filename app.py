@@ -4,6 +4,7 @@ FastAPI + SQLite，独立运行，对接 QuantMind 预测（可插拔）。
 import os
 import re
 import json
+import logging
 import secrets
 import hashlib
 import hmac
@@ -17,6 +18,8 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
+logger = logging.getLogger("quant-web")
+
 from db import (
     engine, SessionLocal, Project, MarketPrice, Prediction, Feedback,
     User, Session as SessionModel, PasswordResetRequest,
@@ -26,7 +29,7 @@ from models import (
     FeedbackCreate, FeedbackOut, ChartData, FetchReq, PriceOut,
 )
 from predictor import run_strategy, STRATEGY_CATALOG, rolling_predict, forecast_future
-from datasource import fetch_a_hist
+from datasource import fetch_a_hist, fetch_stock_name
 
 app = FastAPI(title="慢量化操作台", version="0.1.0")
 
@@ -424,6 +427,14 @@ def fetch_prices(pid: int, body: Optional[FetchReq] = None,
     db.query(MarketPrice).filter(MarketPrice.project_id == pid).delete()
     for d, c in rows:
         db.add(MarketPrice(project_id=pid, date=d, close=c))
+    # 同步成功后，自动把项目名更新为股票名称（查询失败则保留原名）
+    stock_name = None
+    try:
+        stock_name = fetch_stock_name(code)
+        if stock_name:
+            p.name = stock_name
+    except Exception as e:
+        logger.warning("股票名称查询失败（保留原项目名）：%s", e)
     db.commit()
     return {
         "ok": True,
@@ -431,6 +442,7 @@ def fetch_prices(pid: int, body: Optional[FetchReq] = None,
         "start": rows[0][0],
         "end": rows[-1][0],
         "latest_close": rows[-1][1],
+        "name": stock_name or p.name,
         "source": {"tencent": "腾讯", "sina": "新浪",
                    "akshare": "akshare", "eastmoney": "东方财富"}.get(source, source),
     }
@@ -635,14 +647,23 @@ def guest_refresh(pid: int, db: Session = Depends(get_db)):
             db.add(MarketPrice(project_id=p.id, date=d, close=c))
             added += 1
     p.last_fetch_date = today_s
+    # 同步成功后，自动把项目名更新为股票名称（查询失败则保留原名）
+    stock_name = None
+    try:
+        stock_name = fetch_stock_name(p.code)
+        if stock_name:
+            p.name = stock_name
+    except Exception as e:
+        logger.warning("游客股票名称查询失败（保留原项目名）：%s", e)
     db.commit()
     new_latest = max(r[0] for r in rows)
     src_name = {"tencent": "腾讯", "sina": "新浪", "akshare": "akshare", "eastmoney": "东方财富"}.get(source, source)
+    name = stock_name or p.name
     if added == 0:
-        return {"updated": False, "already_today": True, "latest_date": new_latest,
+        return {"updated": False, "already_today": True, "latest_date": new_latest, "name": name,
                 "message": f"行情已是最新（{new_latest}），无需更新，来源：{src_name}"}
     return {"updated": True, "already_today": new_latest >= today_s, "latest_date": new_latest,
-            "count": added, "source": src_name,
+            "count": added, "source": src_name, "name": name,
             "message": f"行情已更新至最新（{new_latest}），新增 {added} 个交易日，来源：{src_name}"}
 
 
