@@ -31,6 +31,7 @@ class Project(Base):
     position_cost = Column(Float, default=0.0)          # 当前持仓成本价（用户输入）
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # 项目归属用户（多用户隔离）
     last_fetch_date = Column(String(10), default="")           # 游客自动拉取行情的“当天已拉取”标记（每天限一次）
+    pinned = Column(Integer, default=0)                        # 置顶：1 置顶（列表排序优先）
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -118,6 +119,7 @@ _for_add = {
     "position_cost": "ALTER TABLE projects ADD COLUMN position_cost FLOAT DEFAULT 0.0",
     "owner_id": "ALTER TABLE projects ADD COLUMN owner_id INTEGER",
     "last_fetch_date": "ALTER TABLE projects ADD COLUMN last_fetch_date VARCHAR(10) DEFAULT ''",
+    "pinned": "ALTER TABLE projects ADD COLUMN pinned INTEGER DEFAULT 0",
 }
 for _cname, _ddl in _for_add.items():
     if _cname not in _cols:

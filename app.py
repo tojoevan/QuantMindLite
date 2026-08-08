@@ -155,6 +155,7 @@ def _proj_out(p):
         strategy=p.strategy, strategy_type=p.strategy_type,
         strategy_config=p.strategy_config, bias=p.bias,
         position_shares=p.position_shares, position_cost=p.position_cost,
+        pinned=p.pinned or 0,
         created_at=p.created_at.isoformat() if p.created_at else None,
     )
 
@@ -335,7 +336,7 @@ def update_project(pid: int, body: ProjectUpdate, u: User = Depends(get_current_
     p = _project_or_404(pid, u, db)
     for field in ("name", "code", "market", "strategy",
                   "strategy_type", "strategy_config", "bias",
-                  "position_shares", "position_cost"):
+                  "position_shares", "position_cost", "pinned"):
         v = getattr(body, field)
         if v is not None:
             if field == "strategy_config" and isinstance(v, dict):
@@ -348,6 +349,7 @@ def update_project(pid: int, body: ProjectUpdate, u: User = Depends(get_current_
         strategy=p.strategy, strategy_type=p.strategy_type,
         strategy_config=p.strategy_config, bias=p.bias,
         position_shares=p.position_shares, position_cost=p.position_cost,
+        pinned=p.pinned or 0,
         created_at=p.created_at.isoformat() if p.created_at else None,
     )
 
@@ -358,13 +360,14 @@ def list_projects(u: User = Depends(get_current_user), db: Session = Depends(get
     q = db.query(Project)
     if not u.is_admin:
         q = q.filter(Project.owner_id == u.id)
-    rows = q.order_by(Project.created_at.desc()).all()
+    rows = q.order_by(Project.pinned.desc(), Project.created_at.desc()).all()
     return [
         ProjectOut(
             id=p.id, name=p.name, code=p.code, market=p.market,
             strategy=p.strategy, strategy_type=p.strategy_type,
             strategy_config=p.strategy_config, bias=p.bias,
             position_shares=p.position_shares, position_cost=p.position_cost,
+            pinned=p.pinned or 0,
             created_at=p.created_at.isoformat() if p.created_at else None,
         )
         for p in rows
@@ -379,6 +382,7 @@ def get_project(pid: int, u: User = Depends(get_current_user), db: Session = Dep
         strategy=p.strategy, strategy_type=p.strategy_type,
         strategy_config=p.strategy_config, bias=p.bias,
         position_shares=p.position_shares, position_cost=p.position_cost,
+        pinned=p.pinned or 0,
         created_at=p.created_at.isoformat() if p.created_at else None,
     )
 
@@ -401,6 +405,7 @@ def create_project(body: ProjectCreate, u: User = Depends(get_current_user), db:
         strategy=p.strategy, strategy_type=p.strategy_type,
         strategy_config=p.strategy_config, bias=p.bias,
         position_shares=p.position_shares, position_cost=p.position_cost,
+        pinned=p.pinned or 0,
         created_at=p.created_at.isoformat() if p.created_at else None,
     )
 

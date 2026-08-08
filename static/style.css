@@ -120,7 +120,18 @@ header .sub { color: var(--muted); font-size: 12px; }
 }
 .proj-list li:hover { border-color: var(--border-strong); }
 .proj-list li.active { border-color: var(--accent); background: var(--active-bg); }
-.proj-list .code { color: var(--muted); font-size: 12px; }
+.proj-list .code { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+.proj-line { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.proj-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pin-btn {
+  background: transparent; border: none; cursor: pointer; font-size: 13px;
+  padding: 2px 4px; border-radius: 6px; opacity: .4; flex-shrink: 0;
+  transition: opacity .15s, background .15s, transform .15s;
+}
+.pin-btn:hover { opacity: 1; background: var(--panel-2); }
+.pin-btn:active { transform: scale(.9); }
+.pin-btn.on { opacity: 1; color: #e3b341; }
+.proj-list li:hover .pin-btn { opacity: .9; }
 
 .placeholder { color: var(--muted); text-align: center; margin-top: 80px; }
 

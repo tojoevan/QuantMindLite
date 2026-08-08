@@ -138,13 +138,40 @@ async function loadProjects() {
 function renderProjectList() {
   const ul = document.getElementById("project-list");
   ul.innerHTML = "";
-  projects.forEach(p => {
+  // 置顶项目排前（后端已按 pinned 排序，这里再排一次保证渲染顺序一致）
+  const sorted = [...projects].sort((a, b) => (b.pinned || 0) - (a.pinned || 0));
+  sorted.forEach(p => {
     const li = document.createElement("li");
     li.className = p.id === currentId ? "active" : "";
-    li.innerHTML = `<div><div>${p.name}</div><div class="code">${p.code || p.market}</div></div>`;
-    li.onclick = () => { selectProject(p.id); if (isMobile()) closeMenu(); };
+    li.innerHTML = `
+      <div class="proj-line" title="${escapeHtml(p.name)}${p.code ? " " + escapeHtml(p.code) : ""}">
+        <span class="proj-name">${escapeHtml(p.name)}</span>
+        <span class="code">${escapeHtml(p.code || p.market)}</span>
+      </div>
+      <button class="pin-btn ${p.pinned ? "on" : ""}" type="button"
+        title="${p.pinned ? "取消置顶" : "置顶"}" data-pin="${p.id}">📌</button>`;
+    li.onclick = (e) => {
+      if (e.target.closest(".pin-btn")) return;   // 点置顶按钮不触发切换项目
+      selectProject(p.id);
+      if (isMobile()) closeMenu();
+    };
     ul.appendChild(li);
   });
+  ul.querySelectorAll(".pin-btn").forEach(btn => {
+    btn.onclick = (e) => { e.stopPropagation(); togglePin(parseInt(btn.getAttribute("data-pin"), 10)); };
+  });
+}
+
+// 置顶 / 取消置顶（持久化到后端，列表置顶项排前）
+async function togglePin(id) {
+  const p = projects.find(x => x.id === id);
+  if (!p) return;
+  try {
+    const r = await API("PATCH", `/api/projects/${id}`, { pinned: p.pinned ? 0 : 1 });
+    p.pinned = r.pinned || 0;
+    renderProjectList();
+    showToast(p.pinned ? "已置顶" : "已取消置顶");
+  } catch (err) { showToast("操作失败：" + err.message); }
 }
 
 async function selectProject(id) {
