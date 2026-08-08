@@ -410,12 +410,32 @@ def list_prices(pid: int, u: User = Depends(get_current_user), db: Session = Dep
 @app.post("/api/projects/{pid}/fetch")
 def fetch_prices(pid: int, body: Optional[FetchReq] = None,
                  u: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """从行情数据源自动拉取 A股日线并写入实际线（覆盖式）。"""
+    """从行情数据源自动拉取 A股日线并写入实际线（覆盖式）。
+
+    - force=False（进入项目时自动拉取）：若今日已拉取过或行情已是最新，则跳过外部
+      调用，避免频繁请求数据源；
+    - force=True（手动强制刷新）：始终重新拉取。
+    """
     p = _project_or_404(pid, u, db)
     code = (body.code if body and body.code else p.code) or ""
     if not code:
         raise HTTPException(
             400, "项目未设置股票代码：新建/编辑项目时填写 code，例如 600519.SH")
+    force = bool(body and body.force)
+    today_s = _cn_today()
+    # 自动拉取（非强制）：今日已拉取或行情已是最新 → 跳过外部调用
+    if not force:
+        latest = db.query(MarketPrice.date).filter(
+            MarketPrice.project_id == pid).order_by(MarketPrice.date.desc()).first()
+        latest_date = latest[0] if latest else None
+        if latest_date and latest_date >= today_s:
+            return {"ok": False, "skipped": True, "already_today": True,
+                    "latest_date": latest_date, "name": p.name,
+                    "message": f"今日行情已是最新（{latest_date}），无需重复获取"}
+        if (p.last_fetch_date or "") == today_s:
+            return {"ok": False, "skipped": True, "already_today": True,
+                    "latest_date": latest_date, "name": p.name,
+                    "message": f"今日已拉取行情（最新 {latest_date}），无需重复获取"}
     days = (body.days if body and body.days else 250)
     try:
         rows, source = fetch_a_hist(code, days)
@@ -435,6 +455,8 @@ def fetch_prices(pid: int, body: Optional[FetchReq] = None,
             p.name = stock_name
     except Exception as e:
         logger.warning("股票名称查询失败（保留原项目名）：%s", e)
+    # 记录今日已拉取，供自动拉取限频（每天最多实际调用一次数据源）
+    p.last_fetch_date = today_s
     db.commit()
     return {
         "ok": True,
