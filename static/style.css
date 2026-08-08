@@ -161,6 +161,9 @@ header .sub { color: var(--muted); font-size: 12px; }
 .btn-mini:hover { background: var(--accent-hover); }
 .btn-mini.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
 .btn-mini.ghost:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+.btn-mini.danger { background: var(--danger, #dc2626); }
+.btn-mini.danger:hover { background: var(--danger-hover, #b91c1c); }
+.row-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
 .chk { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--text); cursor: pointer; }
 .chk input { accent-color: var(--accent); width: 15px; height: 15px; }

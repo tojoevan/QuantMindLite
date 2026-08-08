@@ -295,6 +295,34 @@ def admin_reset_password(body: dict, u: User = Depends(get_current_user), db: Se
     return {"ok": True, "email": target.email, "new_password": new_pw}
 
 
+@app.delete("/api/auth/admin/users/{uid}")
+def admin_delete_user(uid: int, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """管理员删除用户：连带清理会话、密码重置申请，以及其名下项目与行情/预测/反馈。"""
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    if uid == u.id:
+        raise HTTPException(400, "不能删除当前登录的账户")
+    target = db.get(User, uid)
+    if not target:
+        raise HTTPException(404, "用户不存在")
+    # 防止删掉唯一的管理员，否则站点将无法再被管理
+    if target.is_admin and db.query(User).filter(User.is_admin == 1).count() <= 1:
+        raise HTTPException(400, "不能删除唯一的管理员账户")
+    # 清理会话与密码重置申请
+    db.query(SessionModel).filter(SessionModel.user_id == uid).delete()
+    db.query(PasswordResetRequest).filter(PasswordResetRequest.user_id == uid).delete()
+    # 清理名下项目及其子表（无级联约束，需手动删）
+    proj_ids = [p.id for p in db.query(Project).filter(Project.owner_id == uid).all()]
+    for pid in proj_ids:
+        db.query(Feedback).filter(Feedback.project_id == pid).delete()
+        db.query(Prediction).filter(Prediction.project_id == pid).delete()
+        db.query(MarketPrice).filter(MarketPrice.project_id == pid).delete()
+    db.query(Project).filter(Project.owner_id == uid).delete()
+    db.delete(target)
+    db.commit()
+    return {"ok": True, "deleted": target.email}
+
+
 # ---------------- 策略目录（前端配置 UI 用）----------------
 @app.get("/api/strategies")
 def strategies():
