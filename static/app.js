@@ -979,8 +979,8 @@ function renderAbout() {
       <h2>QuantMind 框架</h2>
       <ul>
         <li>设计理念源自开源框架 <b>QuantMind</b>（<a href="https://gitee.com/qusong0627/quantmind" target="_blank" rel="noopener">gitee.com/qusong0627/quantmind</a>，基于微软 Qlib 的 A 股量化预测框架）。</li>
-        <li>借鉴其「预测 → 执行 → 反馈」的闭环思想，本项目自建轻量 Web 操作台，将<b>预测引擎做成可插拔</b>：<code>predictor.py</code> 内置 Baseline / QuantMind 预测器桩位，默认使用可解释的技术指标策略。</li>
-        <li>如需接入 QuantMind 的 Qlib ML 预测，可在 <code>predictor.py</code> 中实现 <code>QuantmindPredictor</code> 替换默认引擎；系统保持<b>不自动下单</b>，一切决策由人完成。</li>
+        <li>借鉴其「预测 → 执行 → 反馈」的闭环思想，本项目自建轻量 Web 操作台；当前运行<b>不依赖 QuantMind / Qlib 代码</b>，预测引擎 <code>run_strategy()</code> 为纯函数，默认使用四套可解释的技术指标策略。</li>
+        <li>引擎设计上可替换：如需接入 Qlib ML 预测，可新增实现并替换 <code>predictor.run_strategy()</code>；系统保持<b>不自动下单</b>，一切决策由人完成。</li>
       </ul>
 
       <h2>项目架构设计</h2>

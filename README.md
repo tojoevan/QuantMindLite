@@ -45,7 +45,7 @@
 - **后端**：[FastAPI](https://fastapi.tiangolo.com/) + [SQLite](https://www.sqlite.org/)，独立本地库，不依赖其它服务数据库。
 - **部署**：IPv6 VPS，`uvicorn` 仅监听 `127.0.0.1:8090`（本地回环），`systemd` 托管，对外由 **nginx 反向代理**（80/443）暴露；静态资源经中间件禁用缓存。
 - **数据源**：行情接入**多源回退** —— 腾讯 gtimg → 新浪 → akshare → 东方财富，单源限流自动切换；**仅支持 A 股（含前复权处理）**。
-- **预测框架（QuantMind）**：设计理念源自开源框架 [**QuantMind**](https://gitee.com/qusong0627/quantmind)（基于微软 [Qlib](https://github.com/microsoft/qlib) 的 A 股量化预测框架）。本项目借鉴其「预测 → 执行 → 反馈」闭环思想自建轻量 Web 层，将预测引擎做成**可插拔**（`predictor.py` 内置 Baseline / QuantMind 桩位）；默认使用可解释的技术指标策略，如需接入 Qlib ML 预测可在 `predictor.py` 实现 `QuantmindPredictor` 替换。
+- **预测框架（QuantMind）**：设计理念源自开源框架 [**QuantMind**](https://gitee.com/qusong0627/quantmind)（基于微软 [Qlib](https://github.com/microsoft/qlib) 的 A 股量化预测框架）。本项目借鉴其「预测 → 执行 → 反馈」闭环思想自建轻量 Web 层，**运行不依赖 QuantMind / Qlib 代码**；预测引擎 `predictor.run_strategy()` 为纯函数，默认使用四套可解释的技术指标策略（动量 / 均值回归 / 通道突破 / 基线），引擎设计上可替换——如需接入 Qlib ML 预测可新增实现替换 `run_strategy()`。
 
 ---
 
@@ -89,7 +89,7 @@ quant-web/
 ├── app.py            # FastAPI 后端：鉴权、项目、行情、预测、反馈、图表、游客接口
 ├── db.py             # SQLite 数据层（自动建表 + 兼容列迁移）
 ├── models.py         # Pydantic 请求 / 响应模型
-├── predictor.py      # 策略引擎：rolling_predict / forecast_future / 四策略（可插拔 QuantMind 桩位）
+├── predictor.py      # 策略引擎：rolling_predict / forecast_future / 四策略（纯函数、可替换）
 ├── datasource.py     # 行情多源回退抓取（前复权）
 ├── requirements.txt  # 依赖：fastapi / uvicorn / sqlalchemy / pydantic / akshare
 ├── deploy.sh         # 一键同步到 VPS 并重启服务
