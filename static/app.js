@@ -132,7 +132,17 @@ async function loadProjects() {
   STRATEGIES = await API("GET", "/api/strategies").catch(() => ({}));
   projects = await API("GET", "/api/projects");
   renderProjectList();
-  if (!currentId && projects.length) selectProject(projects[0].id);
+  if (!projects.length) {
+    // 当前用户无项目：清掉失效 currentId，主区给出引导
+    currentId = null;
+    document.getElementById("main").innerHTML = `
+      <div class="panel"><h3>欢迎</h3>
+      <p class="muted">暂无项目，请在左侧「新建项目」中创建第一个项目（如 600519.SH）。</p></div>`;
+    return;
+  }
+  // currentId 已不在新列表中（如游客模式遗留/项目被删）则回退到第一个
+  if (!projects.some(p => p.id === currentId)) currentId = null;
+  if (!currentId) selectProject(projects[0].id);
 }
 
 function renderProjectList() {
@@ -752,8 +762,10 @@ function renderSidebarForRole() {
 // 退出游客模式、回到登录门禁
 function exitGuestToLogin() {
   isGuest = false;
-  // 清空游客横幅 / 拉取状态等残留，避免登录页遮罩下透出旧内容
+  currentId = null;   // 游客项目 id 对登录态无效，强制登录后重新选择
+  // 清空游客横幅 / 拉取状态 / 侧栏游客项目等残留，避免登录页遮罩下透出旧内容
   document.getElementById("main").innerHTML = "";
+  document.getElementById("project-list").innerHTML = "";
   document.querySelector(".sidebar")?.classList.remove("hidden");
   renderSidebarForRole();
   showAuth("login");
