@@ -983,7 +983,10 @@ async function renderUsers(flash) {
           ${u.is_admin ? '<span class="uc-badge">管理员</span>' : ''}
           ${u.disabled ? '<span class="muted">已禁用</span>' : ''}
         </div>
-        <button class="btn-mini" data-reset="${u.id}">重置密码</button>
+        <div class="row-actions">
+          <button class="btn-mini" data-reset="${u.id}">重置密码</button>
+          ${u.id === me.id ? '' : `<button class="btn-mini danger" data-del="${u.id}">删除</button>`}
+        </div>
       </div>`).join("");
     document.getElementById("users-content").innerHTML = `
       <h4>待重置申请</h4>
@@ -991,6 +994,7 @@ async function renderUsers(flash) {
       <h4>全部用户</h4>
       <div class="user-list">${userHtml}</div>
       <div class="muted" style="margin-top:10px">点击「重置并生成密码」后，系统将该用户密码重置为随机密码并显示在下方，请通过邮件把新密码发送给对应用户。</div>
+      <div class="muted" style="margin-top:6px">「删除」会<b>不可恢复</b>地移除该用户及其全部项目、行情、预测与反馈数据，并注销其会话；当前登录账户与唯一管理员不可删除。</div>
       <div id="reset-result" class="reset-result hidden"></div>`;
 
     if (flash) {
@@ -1010,6 +1014,20 @@ async function renderUsers(flash) {
           const r = await API("POST", "/api/auth/admin/reset-password", { user_id: uid });
           renderUsers(r);  // 刷新：该申请已标记为已处理
         } catch (err) { showToast("重置失败：" + err.message); }
+      };
+    });
+
+    document.querySelectorAll("[data-del]").forEach(btn => {
+      btn.onclick = async () => {
+        const uid = parseInt(btn.getAttribute("data-del"), 10);
+        const row = btn.closest(".user-row");
+        const email = row ? row.querySelector("b")?.textContent : "该用户";
+        if (!confirm(`确定删除用户「${email}」吗？\n该操作不可恢复：将一并删除其所有项目、行情、预测与反馈数据，并注销其登录会话。`)) return;
+        try {
+          const r = await API("DELETE", `/api/auth/admin/users/${uid}`);
+          showToast(`已删除用户 ${r.deleted}`);
+          renderUsers();  // 刷新列表
+        } catch (err) { showToast("删除失败：" + err.message); }
       };
     });
   } catch (err) {
