@@ -958,7 +958,23 @@ function renderAbout() {
       <ul>
         <li><b>前端</b>：原生 HTML/JS + ECharts（CDN），无构建步骤。</li>
         <li><b>后端</b>：FastAPI + SQLite（独立库，不依赖其它服务数据库）。</li>
-        <li><b>部署</b>：IPv6 VPS，uvicorn 绑定 ::，systemd 托管；静态文件直出，改完即生效。</li>
+        <li><b>部署</b>：IPv6 VPS，uvicorn 仅监听 127.0.0.1:8090，systemd 托管，nginx 反向代理对外；静态文件直出，改完即生效。</li>
+      </ul>
+
+      <h2>QuantMind 框架</h2>
+      <ul>
+        <li>设计理念源自开源框架 <b>QuantMind</b>（<a href="https://gitee.com/qusong0627/quantmind" target="_blank" rel="noopener">gitee.com/qusong0627/quantmind</a>，基于微软 Qlib 的 A 股量化预测框架）。</li>
+        <li>借鉴其「预测 → 执行 → 反馈」的闭环思想，本项目自建轻量 Web 操作台，将<b>预测引擎做成可插拔</b>：<code>predictor.py</code> 内置 Baseline / QuantMind 预测器桩位，默认使用可解释的技术指标策略。</li>
+        <li>如需接入 QuantMind 的 Qlib ML 预测，可在 <code>predictor.py</code> 中实现 <code>QuantmindPredictor</code> 替换默认引擎；系统保持<b>不自动下单</b>，一切决策由人完成。</li>
+      </ul>
+
+      <h2>项目架构设计</h2>
+      <ul>
+        <li><b>前端（SPA）</b>：登录/游客双入口，项目面板、图表、策略设置、用户管理；主题持久化。</li>
+        <li><b>API 层（FastAPI）</b>：鉴权（pbkdf2 + Bearer 会话）→ 项目/行情/预测/反馈/图表/游客接口。</li>
+        <li><b>服务层</b>：<code>datasource.py</code> 行情多源回退（腾讯 → 新浪 → akshare → 东方财富）；<code>predictor.py</code> 四策略滚动预测。</li>
+        <li><b>数据层</b>：独立 SQLite，项目 / 行情 / 预测 / 反馈 / 用户 / 会话，多用户按 owner 隔离。</li>
+        <li><b>核心闭环</b>：建议 → 反馈 → 再预测；多项目并行、限频拉取、游客只读。</li>
       </ul>
 
       <h2>数据层</h2>
@@ -991,7 +1007,7 @@ function renderAbout() {
         <li>普通用户仅能访问自己的项目；管理员额外拥有「用户管理」页面，可处理用户的“忘记密码”申请并重置为随机密码。</li>
       </ul>
 
-      <p class="about-foot">版本 v8 · 仅本地/自部署用途</p>
+      <p class="about-foot">版本 v9 · 仅本地/自部署用途 · <a href="https://github.com/tojoevan/QuantMindLite" target="_blank" rel="noopener">GitHub 仓库</a></p>
     </div>`;
   const back = document.getElementById("about-back");
   if (back) back.onclick = backFromAbout;
