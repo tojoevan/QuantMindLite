@@ -42,7 +42,7 @@
 
 - **前端**：原生 HTML / JS + [ECharts](https://echarts.apache.org/)（CDN 引入），**无构建步骤**，静态文件直出，改完即生效。
 - **后端**：[FastAPI](https://fastapi.tiangolo.com/) + [SQLite](https://www.sqlite.org/)，独立本地库，不依赖其它服务数据库。
-- **部署**：IPv6 VPS，`uvicorn` 绑定 `::`，`systemd` 托管；静态资源经中间件禁用缓存。
+- **部署**：IPv6 VPS，`uvicorn` 仅监听 `127.0.0.1:8090`（本地回环），`systemd` 托管，对外由 **nginx 反向代理**（80/443）暴露；静态资源经中间件禁用缓存。
 - **数据源**：行情接入**多源回退** —— 腾讯 gtimg → 新浪 → akshare → 东方财富，单源限流自动切换；**仅支持 A 股（含前复权处理）**。
 
 ---
@@ -186,6 +186,27 @@ bash deploy.sh
 
 > 静态文件（HTML / JS / CSS）免重启，改完即生效；后端改动需 `systemctl restart quant-web`。
 > 资源版本号以 `index.html` 中 `?v=N` 控制，部署后建议浏览器**硬刷新**（Cmd/Ctrl + Shift + R）。
+
+### nginx 反向代理（服务默认仅监听 127.0.0.1:8090）
+
+```nginx
+server {
+    listen 80;                      # 或 443 ssl（配证书）
+    server_name 你的域名或IP;       # 如 2404:8c80:82:1057::47 或域名
+
+    location / {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        client_max_body_size 10m;
+    }
+}
+```
+
+`nginx -t` 通过后 `systemctl reload nginx` 生效。服务健康检查请用 `curl -s http://127.0.0.1:8090/api/health`（`::1` 未监听，勿再用 `localhost` 的 IPv6 形式）。
 
 ---
 
