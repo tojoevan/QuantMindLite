@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>慢量化操作台</title>
+  <script>
+    (function(){ try { if (localStorage.getItem('qw_theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch(e){} })();
+  </script>
+  <link rel="stylesheet" href="/style.css?v=12" />
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+</head>
+<body>
+  <header>
+    <button id="menu-btn" class="menu-btn" aria-label="菜单">☰</button>
+    <div class="brand">
+      <h1>慢量化操作台</h1>
+      <span class="sub">建议 → 反馈 → 再预测</span>
+    </div>
+    <div class="top-actions">
+      <a id="btn-about" class="top-link">关于</a>
+      <a id="nav-users" class="top-link hidden">用户管理</a>
+      <button id="btn-theme" class="theme-btn" type="button" title="切换浅色 / 深色" aria-label="切换主题">🌙</button>
+      <div id="user-chip" class="user-chip hidden"></div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- 左侧：项目列表 -->
+    <aside class="sidebar">
+      <h3>已建立项目</h3>
+      <ul id="project-list" class="proj-list"></ul>
+      <h3>新建项目</h3>
+      <form id="project-form" class="card">
+        <input id="p-name" placeholder="项目名称" required />
+        <input id="p-code" placeholder="标的代码(如 600519.SH)" />
+        <select id="p-market">
+          <option value="A">A股</option>
+          <option value="HK">港股</option>
+          <option value="US">美股</option>
+        </select>
+        <select id="p-bias">
+          <option value="neutral">中性</option>
+          <option value="long">偏多</option>
+          <option value="short">偏空</option>
+        </select>
+        <select id="p-strategy-type">
+          <option value="momentum">策略：动量</option>
+          <option value="meanreversion">策略：均值回归</option>
+          <option value="breakout">策略：通道突破</option>
+          <option value="baseline">策略：基线演示</option>
+        </select>
+        <textarea id="p-strategy" placeholder="策略说明(可选)"></textarea>
+        <button type="submit">＋ 新建项目</button>
+      </form>
+    </aside>
+
+    <!-- 右侧：主区 -->
+    <main class="main" id="main">
+      <div class="placeholder">← 请选择或新建一个项目</div>
+    </main>
+  </div>
+
+  <div class="backdrop" id="backdrop"></div>
+
+  <!-- 登录 / 注册 / 忘记密码 门禁 -->
+  <div id="auth-screen" class="auth-screen hidden">
+    <div class="auth-card">
+      <h1>慢量化操作台</h1>
+      <p class="muted">登录后使用 · 用户名为邮箱地址</p>
+      <div class="auth-tabs">
+        <button id="tab-login" class="auth-tab active" type="button">登录</button>
+        <button id="tab-register" class="auth-tab" type="button">注册</button>
+      </div>
+      <form id="form-login" class="auth-form">
+        <input id="login-email" type="email" placeholder="邮箱地址" autocomplete="username" required />
+        <input id="login-pw" type="password" placeholder="密码" autocomplete="current-password" required />
+        <button type="submit">登录</button>
+        <a id="link-forgot" class="auth-link" href="javascript:void(0)">忘记密码？</a>
+      </form>
+      <form id="form-register" class="auth-form hidden">
+        <input id="reg-email" type="email" placeholder="邮箱地址" autocomplete="username" required />
+        <input id="reg-pw" type="password" placeholder="密码（至少 6 位）" autocomplete="new-password" required />
+        <input id="reg-pw2" type="password" placeholder="确认密码" autocomplete="new-password" required />
+        <button type="submit">注册</button>
+        <div class="muted">首个注册的用户将自动成为管理员。</div>
+      </form>
+      <form id="form-forgot" class="auth-form hidden">
+        <input id="forgot-email" type="email" placeholder="邮箱地址" required />
+        <button type="submit">提交重置申请</button>
+        <a id="link-back" class="auth-link" href="javascript:void(0)">返回登录</a>
+      </form>
+      <button id="btn-guest" class="auth-guest" type="button">游客访问（只读 · 仅展示 000002.SZ）</button>
+      <div id="auth-msg" class="auth-msg"></div>
+    </div>
+  </div>
+
+  <script src="/app.js?v=12"></script>
+</body>
+</html>
