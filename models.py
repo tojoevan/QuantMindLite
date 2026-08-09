@@ -55,7 +55,7 @@ class PriceOut(BaseModel):
 
 class FetchReq(BaseModel):
     code: Optional[str] = None      # 可选，缺省用项目的 code
-    days: Optional[int] = 250       # 回看交易日数（约）
+    days: Optional[int] = 60        # 回看交易日数（约），默认 60
     force: Optional[bool] = False    # True=强制重新拉取；False=今日已拉取则跳过（自动拉取用）
 
 
