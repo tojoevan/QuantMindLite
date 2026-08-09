@@ -933,7 +933,10 @@ boot();
 const menuBtn = document.getElementById("menu-btn");
 const sidebar = document.querySelector(".sidebar");
 const backdrop = document.getElementById("backdrop");
-function openMenu() { sidebar.classList.add("open"); backdrop.classList.add("show"); }
+function openMenu() {
+  if (sidebar.classList.contains("hidden")) return;   // 侧栏不可见时忽略（如游客模式），避免只弹灰色遮罩
+  sidebar.classList.add("open"); backdrop.classList.add("show");
+}
 function closeMenu() { sidebar.classList.remove("open"); backdrop.classList.remove("show"); }
 menuBtn.addEventListener("click", openMenu);
 backdrop.addEventListener("click", closeMenu);
