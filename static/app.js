@@ -3,7 +3,7 @@ const API = (method, path, body) => {
   if (token) opt.headers["Authorization"] = "Bearer " + token;
   if (body) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
   return fetch(path, opt).then(r => {
-    if (r.status === 401) { doLogout(); throw new Error("登录已失效，请重新登录"); }
+    if (r.status === 401) { doLogout(); enterGuest(); throw new Error("登录已失效，请重新登录"); }
     if (r.status === 403) { throw new Error("无权限（需要管理员）"); }
     if (r.status === 204) return null;
     if (!r.ok) {
@@ -695,11 +695,11 @@ document.getElementById("project-form").onsubmit = async (e) => {
 
 // ===== 登录门禁 / 多用户 =====
 function boot() {
-  if (!token) { showAuth("login"); return; }
+  if (!token) { enterGuest(); return; }   // 未登录默认进入游客模式，不弹登录窗
   API("GET", "/api/auth/me").then(u => {
     me = u; localStorage.setItem("qw_user", JSON.stringify(u));
     enterApp();
-  }).catch(() => { doLogout(); showAuth("login"); });
+  }).catch(() => { doLogout(); enterGuest(); });
 }
 
 function enterApp() {
@@ -751,7 +751,7 @@ function renderUserChip() {
   chip.innerHTML = `<span class="uc-email">${escapeHtml(me.email)}</span>`
     + (me.is_admin ? `<span class="uc-badge">管理员</span>` : ``)
     + `<button id="btn-logout" class="btn-mini ghost">退出</button>`;
-  document.getElementById("btn-logout").onclick = () => { doLogout(); showAuth("login"); };
+  document.getElementById("btn-logout").onclick = () => { doLogout(); enterGuest(); };
 }
 
 function renderSidebarForRole() {
