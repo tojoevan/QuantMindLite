@@ -596,7 +596,8 @@ def _build_chart(p, db):
                     shares, avg = 0.0, 0.0
             fi += 1
         equity = realized + shares * (mp.close - avg)
-        pnl_curve.append({"date": mp.date, "pnl": round(equity, 2)})
+        pct = round(((mp.close - avg) / avg) * 100, 2) if shares > 1e-9 and avg > 1e-9 else None
+        pnl_curve.append({"date": mp.date, "pnl": round(equity, 2), "pct": pct})
 
     # 持仓面板补充：最新价、市值、浮动盈亏、种子仓位
     latest_close = mps[-1].close if mps else None

@@ -473,12 +473,22 @@ function renderCharts(data) {
   }
   pnlChart.setOption({
     backgroundColor: "transparent",
-    tooltip: { trigger: "axis" },
+    tooltip: { trigger: "axis", valueFormatter: (v) => (v == null ? "-" : v) },
+    legend: { textStyle: { color: ct.axis }, data: ["盈亏", "持仓收益率"] },
     xAxis: { type: "category", data: d.pnl_curve.map(p => p.date), axisLabel: { color: ct.axis } },
-    yAxis: { axisLabel: { color: ct.axis } },
-    series: [{ name: "盈亏", type: "line", areaStyle: {}, data: d.pnl_curve.map(p => p.pnl),
-      itemStyle: { color: ct.pnl },
-      markLine: { silent: true, data: [{ yAxis: 0 }], lineStyle: { color: ct.axis } } }]
+    yAxis: [
+      { type: "value", name: "盈亏(元)", axisLabel: { color: ct.axis } },
+      { type: "value", name: "持仓收益率%", axisLabel: { color: ct.axis, formatter: "{value}%" }, splitLine: { show: false } }
+    ],
+    series: [
+      { name: "盈亏", type: "line", areaStyle: {}, data: d.pnl_curve.map(p => p.pnl),
+        itemStyle: { color: ct.pnl },
+        markLine: { silent: true, data: [{ yAxis: 0 }], lineStyle: { color: ct.axis } } },
+      { name: "持仓收益率", type: "line", yAxisIndex: 1, connectNulls: false,
+        data: d.pnl_curve.map(p => (p.pct == null ? null : p.pct)),
+        itemStyle: { color: ct.gold }, lineStyle: { width: 1.5, color: ct.gold, type: "dashed" },
+        emphasis: { focus: "series" } }
+    ]
   });
   window.addEventListener("resize", () => { priceChart && priceChart.resize(); pnlChart && pnlChart.resize(); });
 }
