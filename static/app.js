@@ -711,6 +711,7 @@ function enterApp() {
 }
 
 function showAuth(view) {
+  document.body.classList.remove("guest-mode");   // 离开游客模式（移动端恢复顶部文字链接）
   document.getElementById("user-chip").classList.add("hidden");
   document.getElementById("nav-users").classList.add("hidden");
   document.getElementById("auth-screen").classList.remove("hidden");
@@ -754,8 +755,11 @@ function renderUserChip() {
 }
 
 function renderSidebarForRole() {
+  const admin = !!(me && me.is_admin);
   const nav = document.getElementById("nav-users");
-  if (nav) nav.classList.toggle("hidden", !(me && me.is_admin));
+  if (nav) nav.classList.toggle("hidden", !admin);
+  const snav = document.getElementById("side-users");
+  if (snav) snav.classList.toggle("hidden", !admin);
 }
 
 // ===== 游客模式（只读 · 无需登录 · 仅展示 000002.SZ）=====
@@ -775,6 +779,7 @@ function exitGuestToLogin() {
 async function enterGuest() {
   isGuest = true;
   token = "";
+  document.body.classList.add("guest-mode");   // 移动端游客无抽屉，保留顶部文字链接
   hideAuth();
   document.getElementById("user-chip").classList.add("hidden");
   document.getElementById("nav-users")?.classList.add("hidden");
@@ -1029,6 +1034,9 @@ function renderAbout() {
 }
 document.getElementById("btn-about").onclick = () => { renderAbout(); if (isMobile()) closeMenu(); };
 document.getElementById("nav-users").onclick = () => { if (me && me.is_admin) { renderUsers(); if (isMobile()) closeMenu(); } };
+// 移动端抽屉内的顶部链接（桌面隐藏）
+document.getElementById("side-about").onclick = () => { renderAbout(); if (isMobile()) closeMenu(); };
+document.getElementById("side-users").onclick = () => { if (me && me.is_admin) { renderUsers(); if (isMobile()) closeMenu(); } };
 document.getElementById("btn-theme").onclick = toggleTheme;
 
 // ===== 管理员：用户管理（密码重置） =====
