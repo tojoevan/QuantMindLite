@@ -8,7 +8,7 @@
   <script>
     (function(){ try { if (localStorage.getItem('qw_theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch(e){} })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=18" />
+  <link rel="stylesheet" href="/style.css?v=22" />
   <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 </head>
 <body>
@@ -55,6 +55,12 @@
         <textarea id="p-strategy" placeholder="策略说明(可选)"></textarea>
         <button type="submit">＋ 新建项目</button>
       </form>
+      <!-- 移动端专用：顶部文字链接收进抽屉（桌面隐藏） -->
+      <div id="side-links" class="side-links">
+        <a id="side-about" class="side-link">关于</a>
+        <a id="side-users" class="side-link hidden">用户管理</a>
+        <a id="side-github" class="side-link" href="https://github.com/tojoevan/QuantMindLite" target="_blank" rel="noopener">GitHub</a>
+      </div>
     </aside>
 
     <!-- 右侧：主区 -->
@@ -97,6 +103,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=21"></script>
+  <script src="/app.js?v=22"></script>
 </body>
 </html>
