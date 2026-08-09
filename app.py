@@ -469,7 +469,7 @@ def fetch_prices(pid: int, body: Optional[FetchReq] = None,
             return {"ok": False, "skipped": True, "already_today": True,
                     "latest_date": latest_date, "name": p.name,
                     "message": f"今日已拉取行情（最新 {latest_date}），无需重复获取"}
-    days = (body.days if body and body.days else 250)
+    days = (body.days if body and body.days else 60)
     try:
         rows, source = fetch_a_hist(code, days)
     except Exception as e:

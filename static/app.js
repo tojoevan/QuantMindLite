@@ -227,9 +227,9 @@ async function selectProject(id) {
       <div class="row">
         <button id="btn-fetch" class="btn-mini">🔄 强制刷新行情</button>
         <select id="fetch-days" class="mini-select">
-          <option value="60">近60日</option>
+          <option value="60" selected>近60日</option>
           <option value="120">近120日</option>
-          <option value="250" selected>近250日</option>
+          <option value="250">近250日</option>
         </select>
         <span class="muted" id="fetch-hint">按项目代码自动同步</span>
       </div>
@@ -598,7 +598,7 @@ async function addPrice(e) {
 // 进入项目时自动拉取最新行情（限频：每天最多实际调用一次数据源；已是最新则跳过）
 async function autoFetch(id) {
   try {
-    const r = await API("POST", `/api/projects/${id}/fetch`, { days: 250, force: false });
+    const r = await API("POST", `/api/projects/${id}/fetch`, { days: 60, force: false });
     // 同步后项目名可能更新为股票名称，刷新侧栏标题
     if (r.name) {
       const proj = projects.find(x => x.id === id);
