@@ -399,6 +399,7 @@ th { color: var(--muted); font-weight: 600; }
   /* 登录态：文字链接移入抽屉；游客无抽屉则保留顶部链接 */
   .side-links { display: block; }
   body:not(.guest-mode) .top-actions .top-link { display: none; }
+  body.guest-mode .menu-btn { display: none; }   /* 游客模式无侧栏，隐藏菜单按钮避免误触灰色遮罩 */
   .user-chip { max-width: 130px; font-size: 12px; gap: 6px; }
   .uc-email { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .uc-badge { display: none; }
