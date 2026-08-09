@@ -402,4 +402,5 @@ th { color: var(--muted); font-weight: 600; }
   .user-chip { max-width: 130px; font-size: 12px; gap: 6px; }
   .uc-email { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .uc-badge { display: none; }
+  .user-chip .btn-mini { flex-shrink: 0; white-space: nowrap; padding: 6px 8px; }
 }
