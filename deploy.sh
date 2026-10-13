@@ -9,6 +9,8 @@
 #   bash deploy.sh deploy --skip-verify  # 跳过本地验证（紧急修复用）
 #   bash deploy.sh backup                # 仅在远端打一份代码快照
 #   bash deploy.sh backups               # 列出远端备份
+#   bash deploy.sh db-backup             # 备份线上 quantweb.db（在线热备 + 完整性校验）
+#   bash deploy.sh db-backups            # 列出线上数据库备份
 #   bash deploy.sh rollback [TS]         # 回退到指定备份（默认最近一份）
 #
 # 说明：
@@ -23,6 +25,8 @@ LOCAL_DIR="$SCRIPT_DIR"                    # 本地源码目录（取脚本所�
 VPS_USER="root"
 VPS_HOST="<生产服务器 IPv6（已脱敏）>"          # IPv6 VPS
 VPS="$VPS_USER@$VPS_HOST"
+# rsync 的 remote 目标必须用方括号包住 IPv6，否则冒号会被当成 host/path 分隔符
+RSYNC_TARGET="$VPS_USER@[$VPS_HOST]"
 SSH_OPTS="-6 -o StrictHostKeyChecking=no -o ConnectTimeout=10"
 REMOTE_DIR="/opt/quant-web"                # 远端运行目录
 RELEASE_ROOT="/opt/quant-web-releases"     # 远端备份根目录
@@ -44,6 +48,42 @@ step() { echo "${C_DIM}-->${C_OFF} $*"; }
 die()  { err "$*"; exit 1; }
 
 ssh_run() { ssh $SSH_OPTS "$VPS" "$@"; }
+
+pick_python() {
+  if [ -x "$LOCAL_DIR/.venv/bin/python" ]; then
+    LOCAL_PY="$LOCAL_DIR/.venv/bin/python"
+  else
+    LOCAL_PY="python3"
+  fi
+}
+
+# 同步统一走 tar over ssh：macOS 自带 openrsync(2.6.9) 不支持 IPv6 remote 目标语法，
+# 写 user@[2404:...]:/path 会被按冒号错误切分，导致同步静默失败。
+tar_sync() {
+  local src_dir="$1" remote_sub="$2"; shift 2
+  local args=""
+  local p
+  for p in "$@"; do args="$args --exclude $p"; done
+  # COPYFILE_DISABLE=1：避免 macOS bsdtar 写出 ._ AppleDouble / xattr 扩展头
+  COPYFILE_DISABLE=1 tar -C "$src_dir" $args -cf - . \
+    | ssh $SSH_OPTS "$VPS" "mkdir -p ${REMOTE_DIR}/${remote_sub} && tar -xf - -C ${REMOTE_DIR}/${remote_sub}"
+}
+
+# 列出本地与远端的文件差异（基于 md5 清单，替代 rsync --dry-run）
+show_diff() {
+  local local_mf remote_mf out
+  local_mf="$(cd "$LOCAL_DIR" && "$LOCAL_PY" scripts/file_manifest.py .)"
+  remote_mf="$(ssh_run "cd ${REMOTE_DIR} && python3 scripts/file_manifest.py ." 2>/dev/null || echo '')"
+  out="$(diff <(printf '%s\n' "$local_mf") <(printf '%s\n' "$remote_mf") || true)"
+  if [ -z "$out" ]; then
+    info "无文件差异（远端已是最新）"
+    DIFF_COUNT=0
+  else
+    echo "       (- 本地新增/有改动   + 远端独有/已删除)"
+    printf '%s\n' "$out" | grep -E '^[<>]' | sed 's/^/       /' || true
+    DIFF_COUNT="$(printf '%s\n' "$out" | grep -cE '^[<>]' || true)"
+  fi
+}
 
 # ---------------- 本地验证 ----------------
 cmd_verify() {
@@ -220,6 +260,19 @@ cmd_rollback() {
   fi
 }
 
+# ---------------- 数据库备份 ----------------
+cmd_db_backup() {
+  step "同步 scripts/ 到远端"
+  tar_sync "$LOCAL_DIR/scripts" "scripts" || die "脚本同步失败"
+  step "执行 quantweb.db 在线备份（sqlite3 .backup + integrity_check）"
+  ssh_run "bash ${REMOTE_DIR}/scripts/db_backup.sh" || die "数据库备份失败"
+}
+
+cmd_db_backups() {
+  OUT="$(ssh_run "ls -lh ${REMOTE_DIR}-dbbackup/db-*.db 2>/dev/null | awk '{print \$5\"  \"\$9}'" 2>/dev/null || true)"
+  [ -n "$OUT" ] && echo "$OUT" || warn "远端暂无数据库备份"
+}
+
 # ---------------- 部署 ----------------
 cmd_deploy() {
   local dry_run=0 skip_verify=0
@@ -230,6 +283,8 @@ cmd_deploy() {
       *) die "未知参数：$a" ;;
     esac
   done
+
+  pick_python   # show_diff 需要 LOCAL_PY（--skip-verify 时也要有）
 
   if [ "$skip_verify" = "1" ]; then
     warn "已跳过本地验证（--skip-verify）"
@@ -249,16 +304,8 @@ cmd_deploy() {
   fi
 
   echo
-  step "比对本地与远端差异（rsync dry-run）"
-  DIFF="$(rsync -az --dry-run --itemize-changes -e "ssh $SSH_OPTS" \
-    --exclude '.venv' --exclude 'quantweb.db' --exclude '__pycache__' --exclude '*.pyc' \
-    --exclude '.DS_Store' --exclude '._*' --exclude '.git' \
-    "$LOCAL_DIR/" "$VPS:$REMOTE_DIR/" 2>/dev/null || true)"
-  if [ -z "$DIFF" ]; then
-    info "无文件差异（远端已是最新）"
-  else
-    echo "$DIFF" | sed 's/^/       /'
-  fi
+  step "比对本地与远端差异（md5 清单）"
+  show_diff
 
   if [ "$dry_run" = "1" ]; then
     info "--dry-run 模式：未做任何远端改动，退出"
@@ -274,11 +321,9 @@ cmd_deploy() {
 
   echo
   step "同步源码到 $REMOTE_DIR"
-  rsync -az -e "ssh $SSH_OPTS" \
-    --exclude '.venv' --exclude 'quantweb.db' --exclude '__pycache__' --exclude '*.pyc' \
-    --exclude '.DS_Store' --exclude '._*' --exclude '.git' \
-    "$LOCAL_DIR/" "$VPS:$REMOTE_DIR/" || die "rsync 同步失败"
-  info "同步完成"
+  tar_sync "$LOCAL_DIR" "." '.venv' 'quantweb.db' '__pycache__' '*.pyc' '.DS_Store' '._*' '.git' \
+    || die "同步失败"
+  info "同步完成（共 ${DIFF_COUNT:-0} 处差异文件）"
 
   echo
   step "远端安装/更新依赖（阿里云镜像优先，失败回退官方源）"
@@ -324,6 +369,8 @@ case "$CMD" in
   deploy)   cmd_deploy "$@" ;;
   backup)   cmd_backup "$@" ;;
   backups)  cmd_backups "$@" ;;
+  db-backup)   cmd_db_backup "$@" ;;
+  db-backups)  cmd_db_backups "$@" ;;
   rollback) cmd_rollback "$@" ;;
   -h|--help|help)
     sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
