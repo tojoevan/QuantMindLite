@@ -64,8 +64,8 @@ tar_sync() {
   local args=""
   local p
   for p in "$@"; do args="$args --exclude $p"; done
-  # COPYFILE_DISABLE=1：避免 macOS bsdtar 写出 ._ AppleDouble / xattr 扩展头
-  COPYFILE_DISABLE=1 tar -C "$src_dir" $args -cf - . \
+  # COPYFILE_DISABLE=1 + --no-xattrs：避免 macOS 写入 ._ AppleDouble 与 xattr 扩展头
+  COPYFILE_DISABLE=1 tar -C "$src_dir" --no-xattrs $args -cf - . \
     | ssh $SSH_OPTS "$VPS" "mkdir -p ${REMOTE_DIR}/${remote_sub} && tar -xf - -C ${REMOTE_DIR}/${remote_sub}"
 }
 
