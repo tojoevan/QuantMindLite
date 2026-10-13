@@ -345,8 +345,33 @@ function sliceChartData(data) {
   return { ...data, market_prices: mp, strategy_curve: sc, pnl_curve: pnl };
 }
 
+let echartsRescueTried = false;
+
+// 图表库不可用时的可见提示（避免静默空白，用户以为页面坏了）
+function showChartFallback() {
+  ["priceChart", "pnlChart"].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = '<div class="chart-fallback">图表库（ECharts）加载失败，曲线暂无法显示。请刷新页面重试；若持续失败请检查网络是否能访问本站静态资源。</div>';
+  });
+}
+
 function renderCharts(data) {
   lastChartData = data;
+  // 本地 vendor/echarts.min.js 若未加载成功，先尝试回退 CDN 再渲染一次，仍失败则给出提示
+  if (typeof window.echarts === "undefined") {
+    if (!echartsRescueTried) {
+      echartsRescueTried = true;
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js";
+      s.onload = () => renderCharts(data);
+      s.onerror = () => showChartFallback();
+      document.head.appendChild(s);
+      return;
+    }
+    showChartFallback();
+    return;
+  }
   const ct = chartTheme();
   const d = sliceChartData(data);
   const mpDates = d.market_prices.map(p => p.date);
