@@ -92,7 +92,7 @@ quant-web/
 ├── predictor.py      # 策略引擎：rolling_predict / forecast_future / 四策略（纯函数、可替换）
 ├── datasource.py     # 行情多源回退抓取（前复权）
 ├── requirements.txt  # 依赖：fastapi / uvicorn / sqlalchemy / pydantic / akshare
-├── deploy.sh         # 一键同步到 VPS 并重启服务
+├── deploy.sh         # 部署 / 运维工具：本地验证 → 线上备份 → 同步 → 重启 → 健康检查（失败自动回退）
 └── static/
     ├── index.html    # 单页应用骨架（顶栏：关于 / 用户管理 / GitHub / 主题切换）
     ├── app.js        # 前端逻辑：登录、项目、图表、游客、主题
@@ -205,19 +205,29 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 
 ## 九、部署（IPv6 VPS + systemd）
 
-项目已具备一键部署脚本 `deploy.sh`（本地终端运行，通过 `ssh -6` 直连 VPS）：
+运维脚本 `deploy.sh`（本地终端运行，`ssh -6` 直连 VPS）覆盖「本地验证 → 线上部署 → 故障回退」全流程：
 
 ```bash
-# 1. 编辑 deploy.sh，确认 LOCAL_DIR / VPS / REMOTE_DIR 正确
-# 2. 执行部署（保留远端 .venv 与 quantweb.db，仅同步源码）
-bash deploy.sh
+bash deploy.sh verify                # 本地验证：语法 + 导入 + 冒烟启动（临时副本，不污染本地 db）
+bash deploy.sh status                # 生产体检：SSH / systemd / health / 磁盘 / db / 备份列表
+bash deploy.sh deploy --dry-run      # 只看将要同步的文件，不动线上
+bash deploy.sh deploy                # 完整部署（默认）
+bash deploy.sh deploy --skip-verify  # 跳过本地验证（紧急修复）
+bash deploy.sh backup                # 只打一份线上代码快照
+bash deploy.sh backups               # 列出线上备份
+bash deploy.sh rollback [TS]         # 回退到指定备份（默认最近一份）
 ```
 
-脚本流程：
+`deploy` 流程：
 
-1. `rsync` 同步源码到 VPS（排除 `.venv` / `quantweb.db` / `__pycache__`）；
-2. 远端安装 / 更新 `akshare`；
-3. `systemctl restart quant-web` 重启服务并校验 `health`。
+1. **本地验证**：`py_compile` 语法检查 → `import app` → 随机端口拉起 uvicorn 冒烟（校验 `/api/health` 与首页 200），任一失败即终止，不碰线上；
+2. **生产预检**：SSH 连通性 + 部署前 `systemctl is-active` 状态；
+3. **差异比对**：`rsync --dry-run` 打印将要变更的文件；
+4. **备份**：远端把当前版本快照到 `/opt/quant-web-releases/pre-<时间戳>`（排除 `.venv` / `quantweb.db` / `__pycache__` / `._*`，保留最近 5 份）；
+5. **同步 + 装依赖 + 重启**：`rsync` 覆盖源码，`pip install -r requirements.txt`（阿里云镜像优先），`systemctl restart quant-web`；
+6. **健康检查 + 自动回退**：轮询 `/api/health` 最多 30 秒，失败则自动解压本次 `pre-` 快照覆盖回运行目录、重启并复检，同时打印 `journalctl` 尾部。
+
+> 备份与回退**只覆盖源码与静态资源，不动数据库**。涉及建表 / 迁移的改动，请先自行备份 `quantweb.db`。
 
 > 静态文件（HTML / JS / CSS）免重启，改完即生效；后端改动需 `systemctl restart quant-web`。
 > 资源版本号以 `index.html` 中 `?v=N` 控制，部署后建议浏览器**硬刷新**（Cmd/Ctrl + Shift + R）。
