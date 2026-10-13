@@ -152,8 +152,8 @@ def _guest_project_guard(pid, db):
 def _proj_out(p):
     return ProjectOut(
         id=p.id, name=p.name, code=p.code, market=p.market,
-        strategy=p.strategy, strategy_type=p.strategy_type,
-        strategy_config=p.strategy_config, bias=p.bias,
+        strategy=p.strategy or "", strategy_type=p.strategy_type,
+        strategy_config=p.strategy_config, bias=p.bias or "neutral",
         position_shares=p.position_shares, position_cost=p.position_cost,
         pinned=p.pinned or 0,
         created_at=p.created_at.isoformat() if p.created_at else None,
@@ -346,8 +346,8 @@ def update_project(pid: int, body: ProjectUpdate, u: User = Depends(get_current_
     db.refresh(p)
     return ProjectOut(
         id=p.id, name=p.name, code=p.code, market=p.market,
-        strategy=p.strategy, strategy_type=p.strategy_type,
-        strategy_config=p.strategy_config, bias=p.bias,
+        strategy=p.strategy or "", strategy_type=p.strategy_type,
+        strategy_config=p.strategy_config, bias=p.bias or "neutral",
         position_shares=p.position_shares, position_cost=p.position_cost,
         pinned=p.pinned or 0,
         created_at=p.created_at.isoformat() if p.created_at else None,
@@ -364,8 +364,8 @@ def list_projects(u: User = Depends(get_current_user), db: Session = Depends(get
     return [
         ProjectOut(
             id=p.id, name=p.name, code=p.code, market=p.market,
-            strategy=p.strategy, strategy_type=p.strategy_type,
-            strategy_config=p.strategy_config, bias=p.bias,
+            strategy=p.strategy or "", strategy_type=p.strategy_type,
+            strategy_config=p.strategy_config, bias=p.bias or "neutral",
             position_shares=p.position_shares, position_cost=p.position_cost,
             pinned=p.pinned or 0,
             created_at=p.created_at.isoformat() if p.created_at else None,
@@ -379,8 +379,8 @@ def get_project(pid: int, u: User = Depends(get_current_user), db: Session = Dep
     p = _project_or_404(pid, u, db)
     return ProjectOut(
         id=p.id, name=p.name, code=p.code, market=p.market,
-        strategy=p.strategy, strategy_type=p.strategy_type,
-        strategy_config=p.strategy_config, bias=p.bias,
+        strategy=p.strategy or "", strategy_type=p.strategy_type,
+        strategy_config=p.strategy_config, bias=p.bias or "neutral",
         position_shares=p.position_shares, position_cost=p.position_cost,
         pinned=p.pinned or 0,
         created_at=p.created_at.isoformat() if p.created_at else None,
@@ -402,8 +402,8 @@ def create_project(body: ProjectCreate, u: User = Depends(get_current_user), db:
     db.refresh(p)
     return ProjectOut(
         id=p.id, name=p.name, code=p.code, market=p.market,
-        strategy=p.strategy, strategy_type=p.strategy_type,
-        strategy_config=p.strategy_config, bias=p.bias,
+        strategy=p.strategy or "", strategy_type=p.strategy_type,
+        strategy_config=p.strategy_config, bias=p.bias or "neutral",
         position_shares=p.position_shares, position_cost=p.position_cost,
         pinned=p.pinned or 0,
         created_at=p.created_at.isoformat() if p.created_at else None,
