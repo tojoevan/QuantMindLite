@@ -795,6 +795,11 @@ function renderSidebarForRole() {
   if (nav) nav.classList.toggle("hidden", !admin);
   const snav = document.getElementById("side-users");
   if (snav) snav.classList.toggle("hidden", !admin);
+  // 圆桌入口：所有登录用户可见（生成/管理仅管理员可操作）
+  const rt1 = document.getElementById("btn-roundtable");
+  if (rt1) rt1.classList.remove("hidden");
+  const rt2 = document.getElementById("side-roundtable");
+  if (rt2) rt2.classList.remove("hidden");
 }
 
 // ===== 游客模式（只读 · 无需登录 · 仅展示 000002.SZ）=====
@@ -818,6 +823,8 @@ async function enterGuest() {
   hideAuth();
   document.getElementById("user-chip").classList.add("hidden");
   document.getElementById("nav-users")?.classList.add("hidden");
+  document.getElementById("btn-roundtable")?.classList.add("hidden");
+  document.getElementById("side-roundtable")?.classList.add("hidden");
   document.querySelector(".sidebar").classList.add("hidden");
   try {
     const list = await guestApi("GET", "/api/guest/projects");
@@ -1155,4 +1162,449 @@ async function renderUsers(flash) {
     document.getElementById("users-content").innerHTML = `<div class="muted">加载失败：${escapeHtml(err.message)}</div>`;
   }
 }
+
+// ===== 圆桌讨论（多 AI 席位 · 双通道：自动席位配 Key 直调 LLM / 手动席位复制提示词外部咨询后回填） =====
+const RT_PROVIDERS = {
+  deepseek: { base_url: "https://api.deepseek.com", model: "deepseek-chat" },
+  zhipu: { base_url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-air" },
+  moonshot: { base_url: "https://api.moonshot.cn/v1", model: "moonshot-v1-8k" },
+  openai: { base_url: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+};
+let rtState = { date: null, snap: null, seats: [], posts: {}, settings: null, admin: false };
+const rtAdmin = () => !!(me && me.is_admin);
+
+function backFromRoundtable() {
+  if (isGuest) { exitGuestToLogin(); return; }
+  if (currentId) selectProject(currentId);
+  else loadProjects();
+}
+
+async function renderRoundtable() {
+  if (isGuest || !token) { showAuth("login"); return; }
+  rtState.admin = rtAdmin();
+  document.getElementById("main").innerHTML = `
+    <div class="rt-page">
+      <div class="rt-head">
+        <button class="btn-mini ghost" id="rt-back">← 返回</button>
+        <div>
+          <h1>圆桌讨论</h1>
+          <p class="rt-sub">多个 AI 席位基于今日大盘与你的持仓独立给出建议 · <span id="rt-date">加载中…</span></p>
+        </div>
+        <div class="rt-head-actions">
+          <button class="btn-mini" id="rt-generate-all">生成今日讨论</button>
+          <button class="btn-mini ghost" id="rt-manage-toggle">席位管理</button>
+          <button class="btn-mini ghost" id="rt-settings-toggle">AI 设置</button>
+        </div>
+      </div>
+      <div class="panel hidden" id="rt-manage-panel"><h3>席位管理 <span class="muted">增删席位、编辑人格与通道</span></h3><div id="rt-manage-body"><span class="muted">加载中…</span></div></div>
+      <div class="panel hidden" id="rt-settings-panel"><h3>AI 设置 <span class="muted">API Key 仅存服务器本地数据库，页面不回显</span></h3><div id="rt-settings-body"><span class="muted">加载中…</span></div></div>
+      <div class="panel"><h3>今日大盘</h3><div class="rt-indices" id="rt-indices"><span class="muted">加载中…</span></div></div>
+      <div class="panel"><h3>持仓总览 <span class="muted" id="rt-holdings-count"></span></h3>
+        <div class="table-wrap"><table id="rt-holdings"><thead><tr><th>标的</th><th>最新价</th><th>市值(元)</th><th>收益率</th><th>今日</th><th>系统建议</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="panel">
+        <h3>AI 席位 <span class="muted">自动席位：后端直调 LLM · 手动席位：复制提示词去外部咨询后回填</span></h3>
+        <div class="rt-seats" id="rt-seats"><span class="muted">加载中…</span></div>
+      </div>
+    </div>`;
+  document.getElementById("rt-back").onclick = backFromRoundtable;
+  document.getElementById("rt-generate-all").onclick = () => rtGenerate(null);
+  document.getElementById("rt-manage-toggle").onclick = () => {
+    if (!rtState.admin) { showToast("仅管理员可管理席位"); return; }
+    document.getElementById("rt-manage-panel").classList.toggle("hidden");
+  };
+  document.getElementById("rt-settings-toggle").onclick = () => {
+    if (!rtState.admin) { showToast("仅管理员可修改 AI 设置"); return; }
+    document.getElementById("rt-settings-panel").classList.toggle("hidden");
+  };
+  await rtLoadAll();
+}
+
+async function rtLoadAll() {
+  try {
+    const [seats, posts, snap] = await Promise.all([
+      API("GET", "/api/roundtable/seats"),
+      API("GET", "/api/roundtable/posts"),
+      API("GET", "/api/roundtable/snapshot"),
+    ]);
+    rtState.seats = seats || [];
+    rtState.snap = snap;
+    rtState.date = snap ? snap.date : null;
+    rtState.posts = {};
+    (posts || []).forEach(p => { rtState.posts[p.seat_id] = p; });
+    if (rtState.admin) {
+      rtState.settings = await API("GET", "/api/roundtable/settings").catch(() => null);
+    }
+  } catch (e) {
+    showToast("圆桌数据加载失败：" + e.message);
+    return;
+  }
+  rtRenderAll();
+}
+
+function rtRenderAll() {
+  const d = document.getElementById("rt-date");
+  if (d) d.textContent = rtState.date || "";
+  rtRenderIndices();
+  rtRenderHoldings();
+  rtRenderSeats();
+  if (rtState.admin) { rtRenderManage(); rtRenderSettings(); }
+}
+
+function rtChgCls(v) { return v == null ? "flat" : (v > 0 ? "pos" : (v < 0 ? "neg" : "flat")); }
+function rtFmtChg(v) { return v == null ? "—" : `${v > 0 ? "+" : ""}${v}%`; }
+
+function rtRenderIndices() {
+  const wrap = document.getElementById("rt-indices");
+  if (!wrap) return;
+  const idx = (rtState.snap && rtState.snap.indices) || [];
+  if (!idx.length) { wrap.innerHTML = `<span class="muted">大盘数据获取失败（不影响持仓点评）</span>`; return; }
+  wrap.innerHTML = idx.map(i => `
+    <div class="rt-index">
+      <div class="name">${escapeHtml(i.name)}</div>
+      <div class="val">${i.close == null ? "—" : i.close}</div>
+      <div class="chg ${rtChgCls(i.chg_pct)}">${rtFmtChg(i.chg_pct)}${i.date ? ` <span class="muted">${escapeHtml(i.date)}</span>` : ""}</div>
+    </div>`).join("");
+}
+
+function rtRenderHoldings() {
+  const tb = document.querySelector("#rt-holdings tbody");
+  if (!tb) return;
+  const hs = (rtState.snap && rtState.snap.holdings) || [];
+  const cnt = document.getElementById("rt-holdings-count");
+  if (cnt) cnt.textContent = hs.length ? `共 ${hs.length} 个标的` : "";
+  if (!hs.length) {
+    tb.innerHTML = `<tr><td colspan="6" class="muted">暂无持仓项目，圆桌将只点评大盘。</td></tr>`;
+    return;
+  }
+  tb.innerHTML = hs.map(h => `
+    <tr>
+      <td>${escapeHtml(h.name)}${h.code ? ` <span class="muted">${escapeHtml(h.code)}</span>` : ""}${h.is_fund ? `<span class="rt-badge">基金</span>` : ""}</td>
+      <td>${h.latest_close == null ? "—" : h.latest_close}<div class="muted">${escapeHtml(h.latest_date || "")}</div></td>
+      <td>${h.market_value == null ? "—" : h.market_value}</td>
+      <td class="${rtChgCls(h.return_pct)}">${h.return_pct == null ? "—" : rtFmtChg(h.return_pct)}</td>
+      <td class="${rtChgCls(h.day_chg_pct)}">${rtFmtChg(h.day_chg_pct)}</td>
+      <td>${h.latest_signal ? escapeHtml(h.latest_signal) : "—"}</td>
+    </tr>`).join("");
+}
+
+function rtRenderSeats() {
+  const wrap = document.getElementById("rt-seats");
+  if (!wrap) return;
+  const seats = (rtState.seats || []).filter(s => s.enabled);
+  if (!seats.length) { wrap.innerHTML = `<span class="muted">暂无可用席位，请在「席位管理」中添加。</span>`; return; }
+  wrap.innerHTML = "";
+  seats.forEach(s => {
+    const post = rtState.posts[s.id];
+    const isAuto = s.mode === "auto";
+    const card = document.createElement("div");
+    card.className = "rt-seat";
+    const stateBadge = post
+      ? `<span class="rt-badge state-done">${post.source === "auto" ? "已生成" : "已录入"}</span>`
+      : `<span class="rt-badge state-pending">待生成</span>`;
+    let actions = "";
+    if (isAuto) {
+      actions = `<button class="btn-mini" data-gen="${s.id}">${post ? "重新生成" : "生成"}</button>`;
+      if (!s.has_key) actions += `<span class="rt-inline-note">未配置 Key</span>`;
+    } else {
+      actions = `<button class="btn-mini" data-copy="${s.id}">复制提示词</button>`
+        + `<button class="btn-mini ghost" data-paste="${s.id}">粘贴反馈</button>`;
+    }
+    const meta = post
+      ? `${post.source === "auto" ? `模型 ${escapeHtml(post.model || "—")} · ` : ""}更新于 ${escapeHtml((post.updated_at || "").replace("T", " ").slice(0, 19))}`
+      : "";
+    card.innerHTML = `
+      <div class="rt-seat-head">
+        <div class="rt-seat-title">
+          <span class="rt-seat-name">${escapeHtml(s.name)}</span>
+          <span class="rt-badge ${isAuto ? "mode-auto" : ""}">${isAuto ? "自动" : "手动"}</span>
+          ${stateBadge}
+        </div>
+        <div class="rt-seat-actions">${actions}</div>
+      </div>
+      <div class="rt-seat-body ${post ? "" : "empty"}">${post ? escapeHtml(post.content) : "尚未生成：点击右上角按钮开始"}</div>
+      ${meta ? `<div class="rt-seat-meta">${meta}</div>` : ""}`;
+    wrap.appendChild(card);
+  });
+  wrap.querySelectorAll("[data-copy]").forEach(b => b.onclick = () => rtCopyPrompt(parseInt(b.getAttribute("data-copy"), 10)));
+  wrap.querySelectorAll("[data-paste]").forEach(b => b.onclick = () => rtOpenPaste(parseInt(b.getAttribute("data-paste"), 10)));
+  wrap.querySelectorAll("[data-gen]").forEach(b => b.onclick = () => rtGenerate([parseInt(b.getAttribute("data-gen"), 10)]));
+}
+
+async function rtRefreshPosts() {
+  const posts = await API("GET", "/api/roundtable/posts");
+  rtState.posts = {};
+  (posts || []).forEach(p => { rtState.posts[p.seat_id] = p; });
+  rtRenderSeats();
+}
+
+async function rtReloadSeats() {
+  rtState.seats = await API("GET", "/api/roundtable/seats");
+  await rtRefreshPosts();
+  rtRenderManage();
+}
+
+async function rtReloadSettings() {
+  rtState.settings = await API("GET", "/api/roundtable/settings").catch(() => null);
+  rtState.seats = await API("GET", "/api/roundtable/seats");
+  rtRenderSettings();
+  rtRenderSeats();
+}
+
+// ---- 手动通道：复制提示词（剪贴板不可用时退化为弹窗展示） ----
+async function rtCopyPrompt(seatId) {
+  const btn = document.querySelector(`[data-copy="${seatId}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
+  try {
+    const r = await API("GET", `/api/roundtable/prompt?seat_id=${seatId}`);
+    try {
+      await navigator.clipboard.writeText(r.prompt);
+      showToast("提示词已复制，去外部 AI 网页粘贴咨询吧");
+    } catch (clipErr) {
+      rtShowTextModal(`提示词 · ${r.seat_name}（${r.date}）`, r.prompt,
+        "剪贴板不可用，请手动全选复制以下内容", false);
+    }
+  } catch (e) {
+    showToast("提示词生成失败：" + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "复制提示词"; }
+  }
+}
+
+// ---- 手动通道：粘贴外部 AI 的反馈回填 ----
+function rtOpenPaste(seatId) {
+  const s = rtState.seats.find(x => x.id === seatId);
+  rtShowTextModal(`粘贴反馈 · ${s ? s.name : ""}`, "",
+    "将外部 AI（如 ChatGPT / Claude 网页版）对该席位提示词的回复完整粘贴到下方，保存后展示在席位卡片中（再次粘贴可覆盖）。",
+    true, async () => {
+      const ta = document.getElementById("rt-modal-text");
+      const content = (ta && ta.value || "").trim();
+      if (!content) { showToast("内容不能为空"); return false; }
+      await API("POST", "/api/roundtable/posts", { seat_id: seatId, content });
+      return true;
+    });
+}
+
+// ---- 通用文本弹窗（提示词展示 / 反馈粘贴） ----
+function rtShowTextModal(title, text, hint, editable, onSave) {
+  const old = document.getElementById("rt-modal-root");
+  if (old) old.remove();
+  const root = document.createElement("div");
+  root.className = "rt-modal";
+  root.id = "rt-modal-root";
+  root.innerHTML = `
+    <div class="rt-modal-card">
+      <h3>${escapeHtml(title)}</h3>
+      ${hint ? `<p class="rt-inline-note">${escapeHtml(hint)}</p>` : ""}
+      <textarea id="rt-modal-text" rows="16" ${editable ? "" : "readonly"}>${escapeHtml(text)}</textarea>
+      <div class="rt-modal-actions">
+        ${onSave ? `<button class="btn-mini" id="rt-modal-ok">保存反馈</button>` : ""}
+        ${!editable ? `<button class="btn-mini ghost" id="rt-modal-select">全选</button>` : ""}
+        <button class="btn-mini ghost" id="rt-modal-close">${onSave ? "取消" : "关闭"}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(root);
+  document.getElementById("rt-modal-close").onclick = () => root.remove();
+  root.onclick = (e) => { if (e.target === root) root.remove(); };
+  const ta = document.getElementById("rt-modal-text");
+  const selBtn = document.getElementById("rt-modal-select");
+  if (selBtn) selBtn.onclick = () => { ta.focus(); ta.select(); };
+  if (ta && editable) ta.focus();
+  if (onSave) {
+    document.getElementById("rt-modal-ok").onclick = async () => {
+      const btn = document.getElementById("rt-modal-ok");
+      btn.disabled = true; btn.textContent = "保存中…";
+      try {
+        const ok = await onSave();
+        if (ok !== false) {
+          root.remove();
+          showToast("已保存到席位");
+          await rtRefreshPosts();
+        } else {
+          btn.disabled = false; btn.textContent = "保存反馈";
+        }
+      } catch (e) {
+        showToast("保存失败：" + e.message);
+        btn.disabled = false; btn.textContent = "保存反馈";
+      }
+    };
+  }
+}
+
+// ---- 自动通道：调用 LLM 生成 ----
+async function rtGenerate(seatIds) {
+  const btnAll = document.getElementById("rt-generate-all");
+  const targetBtn = seatIds && seatIds.length === 1
+    ? document.querySelector(`[data-gen="${seatIds[0]}"]`) : null;
+  const btn = targetBtn || btnAll;
+  const btnLabel = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
+  try {
+    const r = await API("POST", "/api/roundtable/generate", seatIds ? { seat_ids: seatIds } : {});
+    const results = r.results || [];
+    if (!results.length) {
+      showToast(r.message || "没有可自动生成的席位（需将席位设为「自动」并配置 Key）");
+    } else {
+      const okCount = results.filter(x => x.ok).length;
+      const fails = results.filter(x => !x.ok);
+      if (okCount && !fails.length) showToast(`已生成 ${okCount} 条观点`);
+      else if (okCount) showToast(`生成 ${okCount} 条，失败 ${fails.length} 条：${fails[0].error || ""}`);
+      else showToast("生成失败：" + (fails[0] ? fails[0].error : "未知错误"));
+    }
+    await rtRefreshPosts();
+  } catch (e) {
+    showToast("生成失败：" + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = btnLabel; }
+  }
+}
+
+// ---- 席位管理 ----
+function rtRenderManage() {
+  const body = document.getElementById("rt-manage-body");
+  if (!body) return;
+  const seats = rtState.seats || [];
+  const rows = seats.map(s => `
+    <div class="rt-manage-row">
+      <div class="row">
+        <label class="rt-field" style="width:130px">席位名<input type="text" data-f="name" value="${escapeHtml(s.name)}"></label>
+        <label class="rt-field" style="width:110px">通道
+          <select data-f="mode">
+            <option value="manual" ${s.mode === "manual" ? "selected" : ""}>手动</option>
+            <option value="auto" ${s.mode === "auto" ? "selected" : ""}>自动</option>
+          </select>
+        </label>
+        <label class="rt-field grow">人格 / 风格提示词<textarea rows="2" data-f="persona">${escapeHtml(s.persona)}</textarea></label>
+      </div>
+      <div class="row">
+        <label class="rt-field" style="width:150px">提供方
+          <select data-f="provider">
+            ${Object.keys(RT_PROVIDERS).map(p => `<option value="${p}" ${s.provider === p ? "selected" : ""}>${p}</option>`).join("")}
+          </select>
+        </label>
+        <label class="rt-field grow">模型（留空用默认）<input type="text" data-f="model" value="${escapeHtml(s.model)}" placeholder="${escapeHtml((RT_PROVIDERS[s.provider] || {}).model || "")}"></label>
+        <label class="chk"><input type="checkbox" data-f="enabled" ${s.enabled ? "checked" : ""}>启用</label>
+        <button class="btn-mini" data-save="${s.id}">保存</button>
+        <button class="btn-mini danger" data-del-seat="${s.id}">删除</button>
+        ${s.mode === "auto" && !s.has_key ? `<span class="rt-inline-note">未配置 Key</span>` : ""}
+      </div>
+    </div>`).join("");
+  body.innerHTML = `
+    <h4>席位列表</h4>${rows || '<div class="muted">暂无席位</div>'}
+    <h4>新增席位</h4>
+    <form id="rt-seat-add" class="rt-manage-row">
+      <div class="row">
+        <label class="rt-field" style="width:130px">席位名<input type="text" name="name" required placeholder="如：价值派"></label>
+        <label class="rt-field" style="width:110px">通道
+          <select name="mode"><option value="manual">手动</option><option value="auto">自动</option></select>
+        </label>
+        <label class="rt-field grow">人格 / 风格提示词<textarea name="persona" rows="2" placeholder="该席位的分析风格与偏好…"></textarea></label>
+      </div>
+      <div class="row">
+        <label class="rt-field" style="width:150px">提供方
+          <select name="provider">${Object.keys(RT_PROVIDERS).map(p => `<option value="${p}">${p}</option>`).join("")}</select>
+        </label>
+        <label class="rt-field grow">模型（留空用默认）<input type="text" name="model"></label>
+        <button class="btn-mini" type="submit">添加席位</button>
+      </div>
+    </form>`;
+  body.querySelectorAll("[data-save]").forEach(b => b.onclick = async () => {
+    const row = b.closest(".rt-manage-row");
+    const id = parseInt(b.getAttribute("data-save"), 10);
+    const q = (f) => row.querySelector(`[data-f="${f}"]`);
+    const payload = {
+      name: q("name").value.trim() || "未命名席位",
+      persona: q("persona").value,
+      mode: q("mode").value,
+      provider: q("provider").value,
+      model: q("model").value.trim(),
+      enabled: q("enabled").checked ? 1 : 0,
+    };
+    try {
+      await API("PATCH", `/api/roundtable/seats/${id}`, payload);
+      showToast("席位已保存");
+      await rtReloadSeats();
+    } catch (e) { showToast("保存失败：" + e.message); }
+  });
+  body.querySelectorAll("[data-del-seat]").forEach(b => b.onclick = async () => {
+    const id = parseInt(b.getAttribute("data-del-seat"), 10);
+    if (!confirm("确认删除该席位及其全部历史观点？")) return;
+    try {
+      await API("DELETE", `/api/roundtable/seats/${id}`);
+      showToast("席位已删除");
+      await rtReloadSeats();
+    } catch (e) { showToast("删除失败：" + e.message); }
+  });
+  document.getElementById("rt-seat-add").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const q = (n) => f.querySelector(`[name="${n}"]`);
+    try {
+      await API("POST", "/api/roundtable/seats", {
+        name: q("name").value.trim() || "新席位",
+        persona: q("persona").value,
+        mode: q("mode").value,
+        provider: q("provider").value,
+        model: q("model").value.trim(),
+      });
+      f.reset();
+      showToast("席位已添加");
+      await rtReloadSeats();
+    } catch (err) { showToast("添加失败：" + err.message); }
+  };
+}
+
+// ---- AI 设置（API Key，脱敏保存） ----
+function rtRenderSettings() {
+  const body = document.getElementById("rt-settings-body");
+  if (!body) return;
+  const cur = (rtState.settings && rtState.settings.providers) || {};
+  body.innerHTML = Object.keys(RT_PROVIDERS).map(p => {
+    const c = cur[p] || {};
+    return `
+    <div class="rt-settings-row">
+      <div class="row">
+        <span class="rt-seat-name" style="width:110px">${p}</span>
+        <label class="rt-field grow">base_url<input type="text" data-f="base_url" value="${escapeHtml(c.base_url || RT_PROVIDERS[p].base_url)}"></label>
+        <label class="rt-field grow">model<input type="text" data-f="model" value="${escapeHtml(c.model || RT_PROVIDERS[p].model)}"></label>
+      </div>
+      <div class="row">
+        <label class="rt-field grow">API Key ${c.configured ? "（已配置 · 留空保存=不修改）" : "（未配置）"}
+          <input type="password" data-f="api_key" autocomplete="new-password" placeholder="${c.configured ? "已配置，输入新值可覆盖" : "sk-..."}">
+        </label>
+        <button class="btn-mini" data-save-settings="${p}">保存</button>
+        ${c.configured ? `<button class="btn-mini danger" data-clear-settings="${p}">清除 Key</button>` : ""}
+      </div>
+    </div>`;
+  }).join("") + `<p class="rt-inline-note">OpenAI 兼容协议：任意支持 /chat/completions 的服务均可填入使用。Key 仅存储于服务器本地数据库，页面任何情况不回显；清除后自动席位将无法生成。</p>`;
+  body.querySelectorAll("[data-save-settings]").forEach(b => b.onclick = async () => {
+    const row = b.closest(".rt-settings-row");
+    const provider = b.getAttribute("data-save-settings");
+    const q = (f) => row.querySelector(`[data-f="${f}"]`);
+    const payload = { provider };
+    const bu = q("base_url").value.trim();
+    const md = q("model").value.trim();
+    const ak = q("api_key").value.trim();
+    if (bu) payload.base_url = bu;
+    if (md) payload.model = md;
+    if (ak) payload.api_key = ak;   // 空 = 不修改已配置 Key
+    try {
+      await API("PUT", "/api/roundtable/settings", payload);
+      showToast(`${provider} 设置已保存`);
+      await rtReloadSettings();
+    } catch (e) { showToast("保存失败：" + e.message); }
+  });
+  body.querySelectorAll("[data-clear-settings]").forEach(b => b.onclick = async () => {
+    const provider = b.getAttribute("data-clear-settings");
+    if (!confirm(`确认清除 ${provider} 的 API Key？清除后自动席位将无法生成。`)) return;
+    try {
+      await API("PUT", "/api/roundtable/settings", { provider, api_key: "" });
+      showToast("Key 已清除");
+      await rtReloadSettings();
+    } catch (e) { showToast("清除失败：" + e.message); }
+  });
+}
+
+document.getElementById("btn-roundtable").onclick = () => { renderRoundtable(); if (isMobile()) closeMenu(); };
+document.getElementById("side-roundtable").onclick = () => { renderRoundtable(); if (isMobile()) closeMenu(); };
 

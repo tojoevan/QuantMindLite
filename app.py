@@ -10,6 +10,7 @@ import hashlib
 import hmac
 from datetime import datetime, timedelta
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Request
@@ -23,13 +24,17 @@ logger = logging.getLogger("quant-web")
 from db import (
     engine, SessionLocal, Project, MarketPrice, Prediction, Feedback,
     User, Session as SessionModel, PasswordResetRequest,
+    RoundtableSeat, RoundtablePost, Setting,
 )
 from models import (
     ProjectCreate, ProjectOut, ProjectUpdate, PricePoint, PredictionCreate, PredictionOut,
     FeedbackCreate, FeedbackOut, ChartData, FetchReq, PriceOut,
+    RoundtableSeatCreate, RoundtableSeatUpdate, RoundtableSeatOut,
+    RoundtablePostIn, RoundtablePostOut, RoundtableSettingsIn, RoundtableGenerateReq,
 )
 from predictor import run_strategy, STRATEGY_CATALOG, rolling_predict, forecast_future
-from datasource import fetch_a_hist, fetch_stock_name
+from datasource import fetch_a_hist, fetch_stock_name, fetch_index_quotes
+from llm import chat_complete
 
 app = FastAPI(title="慢量化操作台", version="0.1.0")
 
@@ -778,6 +783,378 @@ def guest_consensus(pid: int, strategies: str = "momentum,meanreversion,breakout
                     threshold: int = 2, db: Session = Depends(get_db)):
     p = _guest_project_guard(pid, db)
     return _build_consensus(p, strategies, threshold, db)
+
+
+# ================= 圆桌讨论（多 AI 席位 · 双通道） =================
+# 默认席位：首次访问圆桌接口时自动播种（后续可在页面「席位管理」增删改）
+DEFAULT_SEATS = [
+    {"name": "稳健配置", "persona": "风格稳健保守：重视仓位控制与安全边际，偏好低频操作，"
+     "对高估值与高波动标的保持谨慎，建议以持有观察为主、设定明确止损线。"},
+    {"name": "趋势跟踪", "persona": "风格趋势跟踪：尊重价格与量能的方向，顺势而为，"
+     "对突破关键位/均线的标的给予跟进建议，弱化主观判断、强调纪律执行。"},
+    {"name": "风险控制", "persona": "风格风险优先：首先评估回撤与集中度风险，"
+     "对单一标的占比过高或涨幅过大的持仓提示止盈/分散，宁可错过不可做错。"},
+]
+
+# LLM 提供方默认配置（OpenAI 兼容协议；用户可在「AI 设置」覆盖）
+PROVIDER_DEFAULTS = {
+    "deepseek": {"base_url": "https://api.deepseek.com", "model": "deepseek-chat"},
+    "zhipu": {"base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-4-air"},
+    "moonshot": {"base_url": "https://api.moonshot.cn/v1", "model": "moonshot-v1-8k"},
+    "openai": {"base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+}
+
+# 提示词输出格式约定（行式结构，前端 prewrap 渲染即整齐，避免表格）
+PROMPT_OUTPUT_SPEC = """# 输出格式（严格遵守，不要使用表格）
+## 总体判断
+（一段话，120字以内，点评今日大盘对整体持仓的影响）
+## 逐持仓点评
+- 标的名：建议（持有/加仓/减仓）｜一句理由
+## 风险提示
+（一条当前最需警惕的风险）"""
+
+_LLM_SYSTEM = "你是严谨的A股投研助手。严格基于用户给出的持仓与行情快照作答，不臆测快照之外的数据，并严格遵守用户指定的输出格式。"
+
+
+def _ensure_default_seats(db):
+    """圆桌表为空时播种 3 个默认席位（幂等）。"""
+    if db.query(RoundtableSeat).count() == 0:
+        for i, s in enumerate(DEFAULT_SEATS):
+            db.add(RoundtableSeat(name=s["name"], persona=s["persona"],
+                                  mode="manual", provider="deepseek", sort=i))
+        db.commit()
+
+
+def _get_llm_conf(db, provider: str) -> dict:
+    """读取某提供方的 LLM 配置（含 api_key，仅服务端使用，绝不回传前端）。"""
+    rows = dict(db.query(Setting.key, Setting.value)
+                .filter(Setting.key.like(f"llm.{provider}.%")).all())
+    dflt = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["deepseek"])
+    return {
+        "api_key": rows.get(f"llm.{provider}.api_key") or "",
+        "base_url": rows.get(f"llm.{provider}.base_url") or dflt["base_url"],
+        "model": rows.get(f"llm.{provider}.model") or "",
+    }
+
+
+def _seat_out(s: RoundtableSeat, db) -> RoundtableSeatOut:
+    conf = _get_llm_conf(db, s.provider or "deepseek")
+    return RoundtableSeatOut(
+        id=s.id, name=s.name or "", persona=s.persona or "",
+        mode=s.mode or "manual", provider=s.provider or "", model=s.model or "",
+        enabled=1 if s.enabled else 0, has_key=bool(conf.get("api_key")),
+        sort=s.sort or 0,
+        created_at=s.created_at.isoformat() if s.created_at else None,
+    )
+
+
+def _build_snapshot(u, db) -> dict:
+    """圆桌「今日快照」：大盘指数 + 当前用户可见持仓（市值/收益率/今日涨跌/最新建议）。"""
+    q = db.query(Project)
+    if not u.is_admin:
+        q = q.filter(Project.owner_id == u.id)
+    projects = q.order_by(Project.pinned.desc(), Project.created_at.desc()).all()
+
+    holdings = []
+    for p in projects:
+        mps = (db.query(MarketPrice).filter(MarketPrice.project_id == p.id)
+               .order_by(MarketPrice.date.desc()).limit(2).all())
+        latest, prev = (mps[0] if mps else None), (mps[1] if len(mps) > 1 else None)
+        shares = float(p.position_shares or 0.0)
+        cost = float(p.position_cost or 0.0)
+        close = latest.close if latest else None
+        h = {
+            "id": p.id, "name": p.name, "code": p.code or "", "market": p.market or "A",
+            "is_fund": (p.market == "fund"),
+            "shares": round(shares, 4), "cost": cost,
+            "latest_date": latest.date if latest else None,
+            "latest_close": close,
+            "prev_close": prev.close if prev else None,
+            "day_chg_pct": (round((close - prev.close) / prev.close * 100, 2)
+                            if (close and prev and prev.close) else None),
+            "market_value": round(shares * close, 2) if close else None,
+            "unrealized": round((close - cost) * shares, 2) if close else None,
+            "return_pct": (round((close - cost) / cost * 100, 2)
+                           if (close and cost > 0) else None),
+            "latest_signal": None, "latest_signal_date": None,
+        }
+        pred = (db.query(Prediction).filter(Prediction.project_id == p.id)
+                .order_by(Prediction.date.desc(), Prediction.id.desc()).first())
+        if pred:
+            h["latest_signal"] = pred.signal
+            h["latest_signal_date"] = pred.date
+        holdings.append(h)
+
+    try:
+        indices = fetch_index_quotes()
+    except Exception as e:
+        logger.warning("大盘指数获取失败：%s", e)
+        indices = []
+    return {
+        "date": _cn_today(),
+        "generated_at": datetime.utcnow().isoformat(),
+        "indices": indices,
+        "holdings": holdings,
+    }
+
+
+def _snapshot_prompt_text(snap: dict, seat: RoundtableSeat) -> str:
+    """把今日快照 + 席位人格 + 输出格式组装成完整提示词（自动/手动通道共用）。"""
+    L = ["# 角色", f"你是「{seat.name or '分析师'}」。{seat.persona or '语气专业、观点明确。'}",
+         "", f"# 今日快照（{snap['date']}）", "## 大盘"]
+    for idx in snap.get("indices") or []:
+        if idx.get("close") is None:
+            L.append(f"- {idx['name']}：数据获取失败")
+        else:
+            chg = f"{idx['chg_pct']:+.2f}%" if idx.get("chg_pct") is not None else "涨跌未知"
+            L.append(f"- {idx['name']} {idx['close']}（{chg}，{idx.get('date') or ''}）")
+    L.append("## 我的持仓")
+    for h in snap.get("holdings") or []:
+        seg = f"- {h['name']}（{h['code'] or h['market']}）："
+        if h.get("latest_close") is None:
+            seg += "暂无行情数据"
+        else:
+            parts = [f"最新价 {h['latest_close']}（{h.get('latest_date') or ''}）"]
+            if h.get("market_value") is not None:
+                parts.append(f"市值 {h['market_value']} 元")
+            if h.get("return_pct") is not None:
+                parts.append(f"收益率 {h['return_pct']:+.2f}%")
+            if h.get("day_chg_pct") is not None:
+                parts.append(f"今日 {h['day_chg_pct']:+.2f}%")
+            if h.get("latest_signal"):
+                parts.append(f"系统策略建议 {h['latest_signal']}（{h.get('latest_signal_date') or ''}）")
+            seg += "，".join(parts)
+        L.append(seg)
+    L += ["", "# 任务",
+          "1. 先点评今日大盘对整体持仓的影响；",
+          "2. 逐个持仓给出持有/加仓/减仓建议与一句理由；",
+          "3. 指出当前最需警惕的一个风险。",
+          "", PROMPT_OUTPUT_SPEC]
+    return "\n".join(L)
+
+
+def _upsert_post(db, date_s: str, seat_id: int, content: str, source: str, model: str):
+    """按 (date, seat_id) 唯一约束覆盖更新，返回该条观点。"""
+    post = (db.query(RoundtablePost)
+            .filter(RoundtablePost.date == date_s, RoundtablePost.seat_id == seat_id).first())
+    if post:
+        post.content = content
+        post.source = source
+        post.model = model
+    else:
+        post = RoundtablePost(date=date_s, seat_id=seat_id, content=content,
+                              source=source, model=model)
+        db.add(post)
+    db.commit()
+    db.refresh(post)
+    return post
+
+
+@app.get("/api/roundtable/seats", response_model=list[RoundtableSeatOut])
+def rt_list_seats(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_default_seats(db)
+    seats = db.query(RoundtableSeat).order_by(RoundtableSeat.sort, RoundtableSeat.id).all()
+    return [_seat_out(s, db) for s in seats]
+
+
+@app.post("/api/roundtable/seats", response_model=RoundtableSeatOut, status_code=201)
+def rt_create_seat(body: RoundtableSeatCreate, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    if body.mode not in ("manual", "auto"):
+        raise HTTPException(400, "mode 仅支持 manual / auto")
+    max_sort = db.query(RoundtableSeat.sort).order_by(RoundtableSeat.sort.desc()).first()
+    s = RoundtableSeat(name=body.name.strip() or "新席位", persona=body.persona,
+                       mode=body.mode, provider=body.provider or "deepseek",
+                       model=body.model, sort=(max_sort[0] + 1) if max_sort else 0)
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return _seat_out(s, db)
+
+
+@app.patch("/api/roundtable/seats/{sid}", response_model=RoundtableSeatOut)
+def rt_update_seat(sid: int, body: RoundtableSeatUpdate, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    s = db.get(RoundtableSeat, sid)
+    if not s:
+        raise HTTPException(404, "席位不存在")
+    for field in ("name", "persona", "mode", "provider", "model", "enabled", "sort"):
+        v = getattr(body, field)
+        if v is not None:
+            if field == "mode" and v not in ("manual", "auto"):
+                raise HTTPException(400, "mode 仅支持 manual / auto")
+            setattr(s, field, v)
+    db.commit()
+    db.refresh(s)
+    return _seat_out(s, db)
+
+
+@app.delete("/api/roundtable/seats/{sid}")
+def rt_delete_seat(sid: int, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    s = db.get(RoundtableSeat, sid)
+    if not s:
+        raise HTTPException(404, "席位不存在")
+    db.query(RoundtablePost).filter(RoundtablePost.seat_id == sid).delete()
+    db.delete(s)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/roundtable/snapshot")
+def rt_snapshot(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _build_snapshot(u, db)
+
+
+@app.get("/api/roundtable/prompt")
+def rt_prompt(seat_id: int, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """生成某席位今日提示词（手动通道：用户复制后去外部 AI 网页咨询）。"""
+    _ensure_default_seats(db)
+    s = db.get(RoundtableSeat, seat_id)
+    if not s:
+        raise HTTPException(404, "席位不存在")
+    snap = _build_snapshot(u, db)
+    return {"seat_id": s.id, "seat_name": s.name, "date": snap["date"],
+            "prompt": _snapshot_prompt_text(snap, s)}
+
+
+@app.get("/api/roundtable/posts", response_model=list[RoundtablePostOut])
+def rt_posts(date: Optional[str] = None, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    date_s = date or _cn_today()
+    rows = (db.query(RoundtablePost, RoundtableSeat.name)
+            .join(RoundtableSeat, RoundtableSeat.id == RoundtablePost.seat_id)
+            .filter(RoundtablePost.date == date_s)
+            .order_by(RoundtableSeat.sort, RoundtableSeat.id).all())
+    return [RoundtablePostOut(
+        seat_id=p.seat_id, seat_name=name or "", date=p.date, content=p.content or "",
+        source=p.source or "manual", model=p.model or "",
+        updated_at=p.updated_at.isoformat() if p.updated_at else None,
+    ) for p, name in rows]
+
+
+@app.post("/api/roundtable/posts", response_model=RoundtablePostOut, status_code=201)
+def rt_submit_post(body: RoundtablePostIn, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """手动通道：把外部 AI 的回复粘贴回填到对应席位（覆盖当日该席位观点）。"""
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    s = db.get(RoundtableSeat, body.seat_id)
+    if not s:
+        raise HTTPException(404, "席位不存在")
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(400, "反馈内容不能为空")
+    if len(content) > 20000:
+        raise HTTPException(400, "内容过长（上限 20000 字符）")
+    date_s = body.date or _cn_today()
+    post = _upsert_post(db, date_s, body.seat_id, content, "manual", "")
+    return RoundtablePostOut(
+        seat_id=post.seat_id, seat_name=s.name or "", date=post.date, content=post.content or "",
+        source=post.source or "manual", model=post.model or "",
+        updated_at=post.updated_at.isoformat() if post.updated_at else None,
+    )
+
+
+@app.get("/api/roundtable/settings")
+def rt_get_settings(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """LLM 设置（脱敏）：只返回是否已配置 Key 与 base_url/model，绝不回传 Key 本身。"""
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    providers = {}
+    for name in PROVIDER_DEFAULTS:
+        conf = _get_llm_conf(db, name)
+        providers[name] = {
+            "configured": bool(conf["api_key"]),
+            "base_url": conf["base_url"],
+            "model": conf["model"] or PROVIDER_DEFAULTS[name]["model"],
+        }
+    return {"providers": providers}
+
+
+@app.put("/api/roundtable/settings")
+def rt_put_settings(body: RoundtableSettingsIn, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """保存某提供方 LLM 配置；api_key 传空串 = 清除已配置的 Key。"""
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    provider = (body.provider or "").strip()
+    if provider not in PROVIDER_DEFAULTS:
+        raise HTTPException(400, f"不支持的提供方：{provider}")
+    fields = {"api_key": body.api_key, "base_url": body.base_url, "model": body.model}
+    for field, val in fields.items():
+        key = f"llm.{provider}.{field}"
+        row = db.get(Setting, key)
+        if val is None:
+            continue
+        val = str(val).strip()
+        if field == "api_key" and val == "":
+            if row:
+                db.delete(row)          # 清除 Key
+            continue
+        if row:
+            row.value = val
+        else:
+            db.add(Setting(key=key, value=val))
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/roundtable/generate")
+def rt_generate(body: Optional[RoundtableGenerateReq] = None,
+                u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """自动通道：对 mode=auto 且已配置 Key 的席位并发调用 LLM 生成今日观点并入库。"""
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    _ensure_default_seats(db)
+    date_s = (body.date if body and body.date else _cn_today())
+    q = db.query(RoundtableSeat).filter(RoundtableSeat.enabled == 1, RoundtableSeat.mode == "auto")
+    if body and body.seat_ids:
+        q = q.filter(RoundtableSeat.id.in_(body.seat_ids))
+    seats = q.order_by(RoundtableSeat.sort, RoundtableSeat.id).all()
+    if not seats:
+        return {"date": date_s, "results": [],
+                "message": "没有可自动生成的席位（需在席位管理中将席位设为「自动」并配置 API Key）"}
+
+    snap = _build_snapshot(u, db)
+    # 线程内只做网络调用（不碰 db session，SQLAlchemy Session 非线程安全），结果回主线程统一写库
+    seat_meta = {s.id: {"name": s.name or "", "provider": s.provider or "deepseek",
+                        "model": s.model or "", "persona": s.persona or ""} for s in seats}
+    confs = {sid: _get_llm_conf(db, m["provider"]) for sid, m in seat_meta.items()}
+
+    def _one(sid: int):
+        m = seat_meta[sid]
+        conf = confs[sid]
+        if not conf.get("api_key"):
+            return {"seat_id": sid, "seat_name": m["name"], "ok": False,
+                    "error": f"未配置 {m['provider']} 的 API Key"}
+        model = m["model"] or conf.get("model") or PROVIDER_DEFAULTS[m["provider"]]["model"]
+        seat_obj = RoundtableSeat(id=sid, name=m["name"], persona=m["persona"])  # 仅用于拼提示词
+        prompt = _snapshot_prompt_text(snap, seat_obj)
+        try:
+            content = chat_complete(
+                conf["base_url"], conf["api_key"], model,
+                [{"role": "system", "content": _LLM_SYSTEM},
+                 {"role": "user", "content": prompt}],
+            )
+        except Exception as e:
+            return {"seat_id": sid, "seat_name": m["name"], "ok": False,
+                    "error": str(e), "model": model}
+        if not content.strip():
+            return {"seat_id": sid, "seat_name": m["name"], "ok": False,
+                    "error": "模型返回为空", "model": model}
+        return {"seat_id": sid, "seat_name": m["name"], "ok": True,
+                "content": content, "model": model}
+
+    results = []
+    with ThreadPoolExecutor(max_workers=min(3, len(seats))) as ex:
+        for r in ex.map(_one, [s.id for s in seats]):
+            results.append(r)
+    # 主线程统一写库
+    for r in results:
+        if r.get("ok"):
+            _upsert_post(db, date_s, r["seat_id"], r["content"], "auto", r.get("model") or "")
+    return {"date": date_s, "results": results}
 
 
 # ---------------- 前端静态托管 ----------------

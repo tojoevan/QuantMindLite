@@ -3,7 +3,7 @@
 import os
 from datetime import datetime
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Float, Text, ForeignKey, DateTime
+    create_engine, Column, Integer, String, Float, Text, ForeignKey, DateTime, UniqueConstraint
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -104,6 +104,46 @@ class PasswordResetRequest(Base):
     status = Column(String(16), default="pending")      # pending / handled
     handled_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     handled_at = Column(DateTime, nullable=True)
+
+
+class RoundtableSeat(Base):
+    """圆桌讨论 · AI 席位（长期配置，可增删）。
+
+    mode: manual=手动席位（页面复制提示词→外部咨询→粘贴反馈）；
+          auto=自动席位（配置 API Key 后由后端直调 LLM 生成）。
+    """
+    __tablename__ = "roundtable_seats"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(64), nullable=False)           # 席位名，如「稳健配置」
+    persona = Column(Text, default="")                  # 人格 / 风格提示词
+    mode = Column(String(8), default="manual")          # manual / auto
+    provider = Column(String(32), default="deepseek")   # LLM 提供方（auto 席位用）
+    model = Column(String(64), default="")              # 模型名（留空用提供方默认）
+    enabled = Column(Integer, default=1)                # 0 / 1
+    sort = Column(Integer, default=0)                   # 展示顺序
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RoundtablePost(Base):
+    """圆桌讨论 · 每日观点（按天归档，每席位每天一条，重复提交覆盖更新）。"""
+    __tablename__ = "roundtable_posts"
+    __table_args__ = (UniqueConstraint("date", "seat_id", name="uq_rt_post_date_seat"),)
+    id = Column(Integer, primary_key=True)
+    date = Column(String(10), nullable=False)           # YYYY-MM-DD（讨论日期）
+    seat_id = Column(Integer, ForeignKey("roundtable_seats.id"), nullable=False)
+    content = Column(Text, default="")                  # 观点内容（结构化纯文本）
+    source = Column(String(8), default="manual")        # manual=人工粘贴 / auto=LLM 生成
+    model = Column(String(64), default="")              # auto 时记录实际模型名
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Setting(Base):
+    """站点级键值设置（如 LLM API Key：llm.<provider>.api_key / .base_url / .model）。"""
+    __tablename__ = "settings"
+    key = Column(String(128), primary_key=True)
+    value = Column(Text, default="")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 Base.metadata.create_all(engine)

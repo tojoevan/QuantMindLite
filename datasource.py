@@ -273,3 +273,115 @@ def fetch_a_hist(code: str, days: int = 250):
         errors.append(f"东方财富:{e}")
 
     raise RuntimeError("所有行情数据源均失败 -> " + " | ".join(errors))
+
+
+# ---------------- 大盘指数（圆桌讨论用，独立于个股逻辑） ----------------
+# key -> (显示名, 东财 secid)
+INDEX_SYMBOLS = {
+    "sh000001": ("上证指数", "1.000001"),
+    "sz399001": ("深证成指", "0.399001"),
+    "sz399006": ("创业板指", "0.399006"),
+}
+
+
+def _fetch_index_tencent(symbol, secid):
+    """腾讯 gtimg 日线（指数）。返回 [(date, close), ...] 升序。"""
+    url = (
+        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+        f"?param={symbol},day,,,5,qfq"
+    )
+    raw = _urlopen(url)
+    j = json.loads(raw)
+    data = (j or {}).get("data", {}) or {}
+    node = next(iter(data.values())) if data else {}
+    klines = node.get("qfqday") or node.get("day") or []
+    out = []
+    for k in klines:
+        try:
+            c = float(k[2])
+        except Exception:
+            continue
+        if c > 0:
+            out.append((str(k[0]), c))
+    out.sort(key=lambda x: x[0])
+    if not out:
+        raise ValueError("腾讯未返回指数数据")
+    return out
+
+
+def _fetch_index_sina(symbol, secid):
+    """新浪日线（指数）。返回 [(date, close), ...] 升序。"""
+    url = (
+        "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+        f"CN_MarketData.getKLineData?symbol={symbol}&scale=240&datalen=5"
+    )
+    raw = _urlopen(url)
+    arr = json.loads(raw)
+    out = []
+    for it in arr:
+        try:
+            c = float(it["close"])
+        except Exception:
+            continue
+        if c > 0:
+            out.append((str(it["day"]), c))
+    out.sort(key=lambda x: x[0])
+    if not out:
+        raise ValueError("新浪未返回指数数据")
+    return out
+
+
+def _fetch_index_eastmoney(symbol, secid):
+    """东方财富日线（指数）。返回 [(date, close), ...] 升序。"""
+    end = datetime.now()
+    start = end - timedelta(days=15)
+    url = (
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+        f"?fields1=f1,f2,f3&fields2=f51,f53&klt=101&fqt=1&secid={secid}"
+        f"&beg={start.strftime('%Y%m%d')}&end={end.strftime('%Y%m%d')}"
+        "&ut=7eea3edcaed734bea9cbfc24409ed989"
+    )
+    raw = _urlopen(url)
+    j = json.loads(raw)
+    if not j.get("data") or not j["data"].get("klines"):
+        raise ValueError("东方财富未返回指数数据")
+    out = []
+    for k in j["data"]["klines"]:
+        parts = k.split(",")
+        try:
+            c = float(parts[2])
+        except Exception:
+            continue
+        if c > 0:
+            out.append((parts[0], c))
+    out.sort(key=lambda x: x[0])
+    if not out:
+        raise ValueError("东方财富指数返回为空")
+    return out
+
+
+def fetch_index_quotes():
+    """三大指数最新快照。返回 [{key,name,date,close,prev_close,chg_pct,source}, ...]。
+    单个指数失败不影响其余（该指数 close=None，由调用方展示“数据获取失败”）。"""
+    fetchers = [
+        (_fetch_index_tencent, "腾讯"),
+        (_fetch_index_sina, "新浪"),
+        (_fetch_index_eastmoney, "东方财富"),
+    ]
+    out = []
+    for symbol, (name, secid) in INDEX_SYMBOLS.items():
+        item = {"key": symbol, "name": name, "date": None, "close": None,
+                "prev_close": None, "chg_pct": None, "source": None}
+        for fn, src_name in fetchers:
+            try:
+                rows = fn(symbol, secid)
+                item["date"], item["close"] = rows[-1]
+                if len(rows) >= 2 and rows[-2][1]:
+                    item["prev_close"] = rows[-2][1]
+                    item["chg_pct"] = round((rows[-1][1] - rows[-2][1]) / rows[-2][1] * 100, 2)
+                item["source"] = src_name
+                break
+            except Exception as e:
+                logger.warning("指数 %s 源 %s 失败：%s", symbol, src_name, e)
+        out.append(item)
+    return out

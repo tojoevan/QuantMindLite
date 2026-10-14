@@ -98,3 +98,63 @@ class ChartData(BaseModel):
     pnl_curve: list[dict]            # [{date, pnl}]
     position: dict                   # {shares, avg, realized, ...}
     strategy_curve: list[dict] = [] # 贯穿历史的策略预测价曲线 [{date, predicted_price, predicted_low, predicted_high, signal}]
+
+
+# ================= 圆桌讨论 =================
+class RoundtableSeatCreate(BaseModel):
+    name: str
+    persona: str = ""
+    mode: str = "manual"             # manual / auto
+    provider: str = "deepseek"
+    model: str = ""
+
+
+class RoundtableSeatUpdate(BaseModel):
+    name: Optional[str] = None
+    persona: Optional[str] = None
+    mode: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    enabled: Optional[int] = None
+    sort: Optional[int] = None
+
+
+class RoundtableSeatOut(BaseModel):
+    id: int
+    name: str = ""
+    persona: str = ""
+    mode: str = "manual"
+    provider: str = ""
+    model: str = ""
+    enabled: int = 1
+    has_key: bool = False            # 该席位 provider 是否已配置 Key（永不回传 Key 本身）
+    sort: int = 0
+    created_at: Optional[str] = None
+
+
+class RoundtablePostIn(BaseModel):
+    seat_id: int
+    content: str
+    date: Optional[str] = None       # 缺省今天（北京时间）
+
+
+class RoundtablePostOut(BaseModel):
+    seat_id: int
+    seat_name: str = ""
+    date: str = ""
+    content: str = ""
+    source: str = "manual"           # manual / auto
+    model: str = ""
+    updated_at: Optional[str] = None
+
+
+class RoundtableSettingsIn(BaseModel):
+    provider: str
+    api_key: Optional[str] = None    # 传空串表示清除已配置的 Key
+    base_url: Optional[str] = None
+    model: Optional[str] = None
+
+
+class RoundtableGenerateReq(BaseModel):
+    date: Optional[str] = None
+    seat_ids: Optional[list[int]] = None   # 缺省全部可自动生成的席位
