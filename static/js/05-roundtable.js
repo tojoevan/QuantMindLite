@@ -19,11 +19,9 @@ function rtModeInfo(m) { return RT_MODES[m] || RT_MODES.manual; }
 let rtState = { date: null, snap: null, seats: [], posts: {}, settings: null, history: null, admin: false };
 const rtAdmin = () => !!(me && me.is_admin);
 
-// 圆桌已是登录用户的落地页，「返回」改为跳转「交易仪表台」
-function backFromRoundtable() {
-  if (isGuest) { exitGuestToLogin(); return; }
-  showView("dashboard");
-}
+// P7：首页已改为「资讯工作台」，圆桌是二级页。
+// 页内不再放「← 交易仪表台」——顶栏已有全部页面入口，二级页里的「返回某页」既冗余、
+// 又把圆桌错误地挂在仪表台之下（这个按钮是 P1 侧栏时代的遗留）。
 
 async function renderRoundtable() {
   if (isGuest || !token) { showAuth("login"); return; }
@@ -31,7 +29,6 @@ async function renderRoundtable() {
   document.getElementById("main").innerHTML = `
     <div class="rt-page">
       <div class="rt-head">
-        <button class="btn-mini ghost" id="rt-back">← 交易仪表台</button>
         <div>
           <h1>圆桌讨论</h1>
           <p class="rt-sub">多个 AI 席位基于今日大盘与你的持仓独立给出建议 · <span id="rt-date">加载中…</span></p>
@@ -86,7 +83,6 @@ async function renderRoundtable() {
         </div>` : ""}
       </div>
     </div>`;
-  document.getElementById("rt-back").onclick = backFromRoundtable;
   document.getElementById("rt-generate-all").onclick = () => rtGenerate(null);
   document.getElementById("rt-manage-toggle").onclick = () => {
     if (!rtState.admin) { showToast("仅管理员可管理席位"); return; }

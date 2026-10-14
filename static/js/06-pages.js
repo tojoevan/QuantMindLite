@@ -1,13 +1,13 @@
 // 06-pages —— 页级视图路由 / 交易仪表台 / 论坛（占位）
 // P1：把原先散落在各模块顶层的导航绑定收口到 showView()，统一页级入口。
-// 登录用户默认落地「圆桌」（讨论优先），游客落地「交易仪表台」（只读）。
+// P7：首页改为「资讯工作台」（RSS 订阅），登录与游客都落地到这里。
 
 // ===== 视图路由 =====
 let currentView = { name: null, arg: null };
 let prevView = { name: null, arg: null };
 
-// 默认落地页：登录 → 圆桌；游客 → 交易仪表台
-function navDefault() { return isGuest ? "dashboard" : "roundtable"; }
+// 默认落地页：资讯工作台（登录与游客一致；圆桌/论坛/仪表台为二级页）
+function navDefault() { return "news"; }
 
 // P6：侧栏已退场，全站单列全宽，不再需要按视图切换布局 class。
 // （原 P4 的 FULLWIDTH_VIEWS / applyLayout 一并删除；移动端导航改走 .nav-drawer 抽屉。）
@@ -24,6 +24,8 @@ async function showView(name, arg) {
   if (isMobile()) closeMenu();
   if (name === "about") prevView = currentView;   // 关于页提供「返回上一视图」
   switch (name) {
+    case "news":
+      currentView = { name, arg: null }; markNavActive(name); await renderNews(); break;
     case "dashboard":
       currentView = { name, arg: null }; markNavActive(name); await renderDashboard(); break;
     case "roundtable":
@@ -183,6 +185,7 @@ async function renderDashboard() {
 // ===== 统一导航绑定（收口原先散落在 04/05 顶层的点击绑定）=====
 function bindNav() {
   const entries = [
+    ["btn-news", "news"], ["drawer-news", "news"],
     ["btn-roundtable", "roundtable"], ["drawer-roundtable", "roundtable"],
     ["btn-forum", "forum"], ["drawer-forum", "forum"],
     ["btn-dashboard", "dashboard"], ["drawer-dashboard", "dashboard"],

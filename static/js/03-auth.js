@@ -12,7 +12,7 @@ function enterApp() {
   hideAuth();
   renderUserChip();
   renderNavForRole();
-  // 只刷新标的列表，落地视图交给统一路由（登录用户默认落地「圆桌」= 讨论优先）
+  // 只刷新标的列表，落地视图交给统一路由（P7 起默认落地「资讯工作台」）
   loadProjects(false).then(() => showView(navDefault()));
 }
 
@@ -86,7 +86,9 @@ function exitGuestToLogin() {
   showAuth("login");
 }
 
-// 进入游客模式：拉取 000002.SZ 公开项目（只读，无法增删/编辑）
+// 进入游客模式（只读，无法增删/编辑）
+// P7：游客与登录用户一样落地「资讯工作台」——资讯是公开内容，无需登录即可阅读；
+// 圆桌/论坛入口对游客仍可见，点击会落到登录门禁，作为登录引导。
 async function enterGuest() {
   isGuest = true;
   token = "";
@@ -94,27 +96,14 @@ async function enterGuest() {
   hideAuth();
   document.getElementById("user-chip").classList.add("hidden");
   document.getElementById("nav-users")?.classList.add("hidden");
-  // 圆桌入口对游客保留可见：点击会落到登录门禁，作为登录引导
   closeMenu();                       // P6：侧栏已删除，收起可能开着的导航抽屉
+  // 公开标的列表：资讯页用不到，但「交易仪表台」下钻要用，顺手预取（失败不阻断落地）
   try {
-    const list = await guestApi("GET", "/api/guest/projects");
-    if (!list || !list.length) {
-      document.getElementById("main").innerHTML = `
-        <div class="panel"><h3>游客模式 · 只读</h3>
-        <p class="muted">暂无可公开查看的 000002.SZ 项目。请先以管理员身份登录，创建代码为 000002.SZ 的项目并拉取行情。</p>
-        <button class="btn-mini" id="g-login">登录 / 注册</button></div>`;
-      document.getElementById("g-login").onclick = exitGuestToLogin;
-      return;
-    }
-    projects = list;
-    showView("dashboard");   // 游客落地「交易仪表台」（只读）
+    projects = (await guestApi("GET", "/api/guest/projects")) || [];
   } catch (e) {
-    document.getElementById("main").innerHTML = `
-      <div class="panel"><h3>游客模式</h3>
-      <p class="muted">加载失败：${escapeHtml(e.message)}</p>
-      <button class="btn-mini" id="g-login">登录 / 注册</button></div>`;
-    document.getElementById("g-login").onclick = exitGuestToLogin;
+    projects = [];
   }
+  showView("news");
 }
 
 // 游客只读视图：仅图表 + 最新建议 + 行情表，无增删/编辑控件

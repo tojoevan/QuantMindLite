@@ -16,6 +16,7 @@ from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -25,6 +26,7 @@ from db import (
     engine, SessionLocal, Project, MarketPrice, Prediction, Feedback,
     User, Session as SessionModel, PasswordResetRequest,
     RoundtableSeat, RoundtablePost, ForumThread, ForumPost, Setting,
+    NewsFeed, NewsItem,
 )
 from models import (
     ProjectCreate, ProjectOut, ProjectUpdate, PricePoint, PredictionCreate, PredictionOut,
@@ -32,10 +34,12 @@ from models import (
     RoundtableSeatCreate, RoundtableSeatUpdate, RoundtableSeatOut,
     RoundtablePostIn, RoundtablePostOut, RoundtableSettingsIn, RoundtableGenerateReq,
     ForumThreadCreate, ForumPostCreate, ForumPostOut, ForumThreadOut, ForumThreadDetail,
+    NewsFeedCreate, NewsFeedUpdate, NewsFeedOut, NewsItemOut, NewsFetchReq, NewsSettingsIn,
 )
 from predictor import run_strategy, STRATEGY_CATALOG, rolling_predict, forecast_future
 from datasource import fetch_a_hist, fetch_stock_name, fetch_index_quotes
 from llm import chat_complete
+import newsfetch
 
 app = FastAPI(title="慢量化操作台", version="0.1.0")
 
@@ -1515,6 +1519,255 @@ def forum_delete_post(pid: int, u: User = Depends(get_current_user), db: Session
     db.delete(p)
     db.commit()
     return {"ok": True}
+
+
+# ---------------- 资讯工作台（RSS 订阅 · 中继抓取 · 列表） ----------------
+# 首页。抓取经 Cloudflare 中继（本机 VPS 只有 IPv6 出站，多数资讯源仅有 A 记录）。
+NEWS_DEFAULT_FEEDS = [
+    {
+        "url": "https://aihot.news/feed.xml?aihot_actor=639fc075-f02f-4d72-915f-500b963d101a",
+        "title": "AIHOT 精选",
+        "category": "AI 动态",
+    },
+]
+
+
+def _ensure_default_feeds(db) -> None:
+    """空库时播种默认订阅源（幂等；已有任何源就跳过，不覆盖用户增删）。"""
+    if db.query(NewsFeed).count():
+        return
+    for i, f in enumerate(NEWS_DEFAULT_FEEDS):
+        db.add(NewsFeed(url=f["url"], title=f["title"], category=f["category"], sort=i))
+    db.commit()
+
+
+def _ensure_relay_settings(db) -> None:
+    """中继配置优先从环境变量播种（首次部署用），已有值不覆盖。"""
+    url = (os.environ.get("NEWS_RELAY_URL") or "").strip()
+    key = (os.environ.get("NEWS_RELAY_KEY") or "").strip()
+    if url and not newsfetch.get_setting(db, newsfetch.RELAY_URL_KEY):
+        newsfetch.put_setting(db, newsfetch.RELAY_URL_KEY, url)
+    if key and not newsfetch.get_setting(db, newsfetch.RELAY_KEY_KEY):
+        newsfetch.put_setting(db, newsfetch.RELAY_KEY_KEY, key)
+    db.commit()
+
+
+def _news_range_start(range_s: str):
+    """把筛选区间换算成 UTC 起点。「今天」按北京时间零点算。"""
+    if range_s == "today":
+        cn_now = datetime.utcnow() + _CN_TZ_OFFSET
+        cn_midnight = cn_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return cn_midnight - _CN_TZ_OFFSET
+    if range_s == "7d":
+        return datetime.utcnow() - timedelta(days=7)
+    if range_s == "30d":
+        return datetime.utcnow() - timedelta(days=30)
+    return None
+
+
+def _news_items_payload(db, range_s="today", category="", q="", star_only=False, limit=300) -> dict:
+    query = (db.query(NewsItem, NewsFeed)
+             .join(NewsFeed, NewsItem.feed_id == NewsFeed.id)
+             .filter(NewsFeed.enabled == 1))
+    start = _news_range_start(range_s)
+    if start is not None:
+        query = query.filter(NewsItem.published_at.isnot(None), NewsItem.published_at >= start)
+    category = (category or "").strip()
+    if category:
+        query = query.filter((NewsItem.category == category) | (NewsFeed.category == category))
+    q = (q or "").strip()
+    if q:
+        like = f"%{q}%"
+        query = query.filter((NewsItem.title.like(like)) | (NewsItem.summary.like(like))
+                             | (NewsItem.source_name.like(like)))
+    if star_only:
+        query = query.filter(NewsItem.star == 1)
+
+    rows = (query.order_by(NewsItem.published_at.desc(), NewsItem.id.desc())
+            .limit(max(1, min(limit, 1000))).all())
+    items = [newsfetch.item_out(it, fd.title or "") for it, fd in rows]
+
+    # 分类 chips：按当前时间窗内的条目实时聚合（不维护计数表）
+    cat_rows = (db.query(NewsItem.category, func.count(NewsItem.id))
+                .join(NewsFeed, NewsItem.feed_id == NewsFeed.id)
+                .filter(NewsFeed.enabled == 1, NewsItem.category != "")
+                .group_by(NewsItem.category).order_by(func.count(NewsItem.id).desc()).all())
+    cats = [{"name": c, "count": n} for c, n in cat_rows]
+    all_cats = (db.query(NewsItem.category).filter(NewsItem.category != "").distinct().all())
+    for (c,) in all_cats:
+        if c and not any(x["name"] == c for x in cats):
+            cats.append({"name": c, "count": 0})
+
+    today_start = _news_range_start("today")
+    today_n = (db.query(func.count(NewsItem.id))
+               .filter(NewsItem.published_at.isnot(None), NewsItem.published_at >= today_start)
+               .scalar() or 0)
+    feed_n = db.query(func.count(NewsFeed.id)).filter(NewsFeed.enabled == 1).scalar() or 0
+    err_n = db.query(func.count(NewsFeed.id)).filter(NewsFeed.enabled == 1,
+                                                     NewsFeed.last_status == "error").scalar() or 0
+    last = (db.query(func.max(NewsFeed.last_fetched)).scalar())
+    conf = newsfetch.relay_conf(db)
+    return {
+        "items": items,
+        "categories": cats,
+        "stats": {
+            "today": int(today_n),
+            "feeds": int(feed_n),
+            "feed_errors": int(err_n),
+            "last_fetched": last.isoformat() + "Z" if last else None,
+            "relay_ready": bool(conf.get("url") and conf.get("key")),
+        },
+    }
+
+
+def _news_feed_out(db, f: NewsFeed) -> NewsFeedOut:
+    n = db.query(func.count(NewsItem.id)).filter(NewsItem.feed_id == f.id).scalar() or 0
+    return NewsFeedOut(
+        id=f.id, title=f.title or "", url=f.url or "", site_url=f.site_url or "",
+        category=f.category or "", enabled=1 if f.enabled else 0, sort=f.sort or 0,
+        last_fetched=f.last_fetched.isoformat() + "Z" if f.last_fetched else None,
+        last_status=f.last_status or "", last_error=f.last_error or "",
+        item_count=int(n),
+        created_at=f.created_at.isoformat() if f.created_at else None,
+    )
+
+
+@app.get("/api/news/items")
+def news_items(range: str = "today", category: str = "", q: str = "",
+               starred: int = 0, u: User = Depends(get_current_user),
+               db: Session = Depends(get_db)):
+    _ensure_default_feeds(db)
+    return _news_items_payload(db, range, category, q, bool(starred))
+
+
+@app.get("/api/guest/news/items")
+def guest_news_items(range: str = "today", category: str = "", q: str = "",
+                     starred: int = 0, db: Session = Depends(get_db)):
+    """游客只读：与登录态同一份资讯流，不暴露订阅源地址与抓取配置。"""
+    _ensure_default_feeds(db)
+    data = _news_items_payload(db, range, category, q, bool(starred))
+    data["stats"].pop("relay_ready", None)
+    return data
+
+
+@app.get("/api/news/feeds", response_model=list[NewsFeedOut])
+def news_list_feeds(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_default_feeds(db)
+    feeds = db.query(NewsFeed).order_by(NewsFeed.sort, NewsFeed.id).all()
+    return [_news_feed_out(db, f) for f in feeds]
+
+
+@app.post("/api/news/feeds", response_model=NewsFeedOut, status_code=201)
+def news_add_feed(body: NewsFeedCreate, u: User = Depends(get_current_user),
+                  db: Session = Depends(get_db)):
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    url = (body.url or "").strip()
+    if not re.match(r"^https?://", url):
+        raise HTTPException(400, "Feed 地址必须以 http:// 或 https:// 开头")
+    if db.query(NewsFeed).filter(NewsFeed.url == url).first():
+        raise HTTPException(400, "该 Feed 地址已存在")
+    f = NewsFeed(url=url[:600], title=(body.title or "").strip()[:200],
+                 category=(body.category or "").strip()[:32])
+    db.add(f)
+    db.commit()
+    db.refresh(f)
+    return _news_feed_out(db, f)
+
+
+@app.patch("/api/news/feeds/{fid}", response_model=NewsFeedOut)
+def news_update_feed(fid: int, body: NewsFeedUpdate, u: User = Depends(get_current_user),
+                     db: Session = Depends(get_db)):
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    f = db.get(NewsFeed, fid)
+    if not f:
+        raise HTTPException(404, "订阅源不存在")
+    if body.title is not None:
+        f.title = body.title.strip()[:200]
+    if body.category is not None:
+        f.category = body.category.strip()[:32]
+    if body.enabled is not None:
+        f.enabled = 1 if body.enabled else 0
+    if body.sort is not None:
+        f.sort = body.sort
+    db.commit()
+    return _news_feed_out(db, f)
+
+
+@app.delete("/api/news/feeds/{fid}")
+def news_delete_feed(fid: int, u: User = Depends(get_current_user),
+                     db: Session = Depends(get_db)):
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    f = db.get(NewsFeed, fid)
+    if not f:
+        raise HTTPException(404, "订阅源不存在")
+    db.query(NewsItem).filter(NewsItem.feed_id == fid).delete()
+    db.delete(f)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/news/fetch")
+def news_fetch(body: Optional[NewsFetchReq] = None, u: User = Depends(get_current_user),
+               db: Session = Depends(get_db)):
+    """抓取并入库。管理员手动触发；后续可挂 systemd timer 定时调本接口。"""
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    _ensure_default_feeds(db)
+    conf = newsfetch.relay_conf(db)
+    if not (conf.get("url") and conf.get("key")):
+        raise HTTPException(400, "尚未配置中继（订阅管理 → 中继设置）。本机 VPS 只有 IPv6 出站，"
+                                 "不走中继将无法访问绝大多数资讯源。")
+    fid = body.feed_id if body else None
+    limit = (body.limit if body and body.limit else 60)
+    return newsfetch.refresh_all(db, feed_id=fid, limit=limit)
+
+
+@app.get("/api/news/settings")
+def news_get_settings(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """中继配置状态。密钥永不回显，只回传是否已配置。"""
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    conf = newsfetch.relay_conf(db)
+    return {"relay_url": conf.get("url") or "", "has_key": bool(conf.get("key"))}
+
+
+@app.put("/api/news/settings")
+def news_put_settings(body: NewsSettingsIn, u: User = Depends(get_current_user),
+                      db: Session = Depends(get_db)):
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    if body.relay_url is not None:
+        newsfetch.put_setting(db, newsfetch.RELAY_URL_KEY, body.relay_url.strip().rstrip("/"))
+    if body.relay_key is not None:
+        newsfetch.put_setting(db, newsfetch.RELAY_KEY_KEY, body.relay_key.strip())
+    db.commit()
+    conf = newsfetch.relay_conf(db)
+    return {"relay_url": conf.get("url") or "", "has_key": bool(conf.get("key"))}
+
+
+@app.post("/api/news/items/{iid}/star")
+def news_star(iid: int, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """收藏 / 取消收藏（站点级；单用户为主，未做按用户隔离）。"""
+    it = db.get(NewsItem, iid)
+    if not it:
+        raise HTTPException(404, "条目不存在")
+    it.star = 0 if it.star else 1
+    db.commit()
+    return {"id": it.id, "star": int(it.star or 0)}
+
+
+# 启动时补齐默认订阅源与中继配置（幂等）
+_news_boot = SessionLocal()
+try:
+    _ensure_default_feeds(_news_boot)
+    _ensure_relay_settings(_news_boot)
+except Exception as _e:      # 播种失败不应阻断启动
+    logger.warning("资讯默认数据播种跳过：%s", _e)
+finally:
+    _news_boot.close()
 
 
 # ---------------- 持仓模型迁移（一次性） ----------------

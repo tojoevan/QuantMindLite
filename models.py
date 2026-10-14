@@ -207,3 +207,60 @@ class ForumThreadOut(BaseModel):
 class ForumThreadDetail(BaseModel):
     thread: ForumThreadOut
     posts: list[ForumPostOut] = []
+
+
+# ================= 资讯工作台 =================
+class NewsFeedCreate(BaseModel):
+    url: str
+    title: str = ""
+    category: str = ""
+
+
+class NewsFeedUpdate(BaseModel):
+    title: Optional[str] = None
+    category: Optional[str] = None
+    enabled: Optional[int] = None
+    sort: Optional[int] = None
+
+
+class NewsFeedOut(BaseModel):
+    id: int
+    title: str = ""
+    url: str = ""
+    site_url: str = ""
+    category: str = ""
+    enabled: int = 1
+    sort: int = 0
+    last_fetched: Optional[str] = None
+    last_status: str = ""
+    last_error: str = ""
+    item_count: int = 0                # 该源已入库条目数（实时统计）
+    created_at: Optional[str] = None
+
+
+class NewsItemOut(BaseModel):
+    id: int
+    feed_id: int
+    feed_title: str = ""
+    title: str = ""
+    link: str = ""
+    source_name: str = ""              # 原始来源名（如 MIT News）
+    category: str = ""                 # 条目分类（如 论文 / AI 产品）
+    summary: str = ""
+    date: str = ""                     # 北京时间 YYYY-MM-DD（服务端算好，前端直接分组）
+    time: str = ""                     # 北京时间 HH:MM
+    published_at: Optional[str] = None # UTC naive ISO（留档用）
+    star: int = 0
+    ai_score: Optional[int] = None     # P7b 预留
+    ai_reason: str = ""
+    ai_tags: str = ""
+
+
+class NewsFetchReq(BaseModel):
+    feed_id: Optional[int] = None      # 缺省抓取全部启用的源
+    limit: Optional[int] = 60          # 每源最多入库条数（防止首抓灌爆）
+
+
+class NewsSettingsIn(BaseModel):
+    relay_url: Optional[str] = None    # 中继地址，如 https://relay.kapibala.icu
+    relay_key: Optional[str] = None    # 中继密钥（传空串表示清除）

@@ -11,7 +11,7 @@
   <script>
     (function(){ try { if (localStorage.getItem('qw_theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch(e){} })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=39" />
+  <link rel="stylesheet" href="/style.css?v=40" />
   <script src="/vendor/echarts.min.js?v=27"></script>
 </head>
 <body>
@@ -22,6 +22,7 @@
       <span class="sub">建议 → 反馈 → 再预测</span>
     </div>
     <div class="top-actions">
+      <a id="btn-news" class="top-link" data-nav="news">资讯</a>
       <a id="btn-roundtable" class="top-link" data-nav="roundtable">圆桌</a>
       <a id="btn-forum" class="top-link" data-nav="forum">论坛</a>
       <a id="btn-dashboard" class="top-link" data-nav="dashboard">交易仪表台</a>
@@ -36,7 +37,7 @@
   <!-- 主区（P6：侧栏已退场，全站单列全宽） -->
   <div class="layout">
     <main class="main" id="main">
-      <div class="placeholder">← 请选择或新建一个标的</div>
+      <div class="placeholder">加载中…</div>
     </main>
   </div>
 
@@ -47,6 +48,7 @@
       <button class="nd-close" id="nav-drawer-close" type="button" aria-label="关闭菜单">✕</button>
     </div>
     <div id="side-links" class="side-links">
+      <a id="drawer-news" class="side-link" data-nav="news">资讯</a>
       <a id="drawer-roundtable" class="side-link" data-nav="roundtable">圆桌</a>
       <a id="drawer-forum" class="side-link" data-nav="forum">论坛</a>
       <a id="drawer-dashboard" class="side-link" data-nav="dashboard">交易仪表台</a>
@@ -126,12 +128,13 @@
   </div>
 
   <!-- 前端脚本按序加载（经典脚本，共享全局作用域）：由原 app.js 按顶层边界原样拆分 -->
-  <script src="/js/01-core.js?v=42"></script>
-  <script src="/js/02-dashboard.js?v=42"></script>
-  <script src="/js/03-auth.js?v=42"></script>
-  <script src="/js/04-about-users.js?v=42"></script>
-  <script src="/js/05-roundtable.js?v=42"></script>
-  <script src="/js/06-pages.js?v=42"></script>
-  <script src="/js/07-forum.js?v=42"></script>
+  <script src="/js/01-core.js?v=43"></script>
+  <script src="/js/02-dashboard.js?v=43"></script>
+  <script src="/js/03-auth.js?v=43"></script>
+  <script src="/js/04-about-users.js?v=43"></script>
+  <script src="/js/05-roundtable.js?v=43"></script>
+  <script src="/js/06-pages.js?v=43"></script>
+  <script src="/js/07-forum.js?v=43"></script>
+  <script src="/js/08-news.js?v=43"></script>
 </body>
 </html>

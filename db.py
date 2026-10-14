@@ -165,6 +165,52 @@ class ForumPost(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class NewsFeed(Base):
+    """资讯工作台 · 订阅源（RSS 2.0 / Atom）。
+
+    抓取走 Cloudflare 中继（见 newsfetch.py）：本机 VPS 只有 IPv6 出站，
+    而多数资讯源仅有 A 记录，直连必然失败。
+    """
+    __tablename__ = "news_feeds"
+    __table_args__ = (UniqueConstraint("url", name="uq_news_feed_url"),)
+    id = Column(Integer, primary_key=True)
+    title = Column(String(200), default="")             # 源名称（抓取后由 feed 自报覆盖）
+    url = Column(String(600), nullable=False)           # Feed URL（唯一）
+    site_url = Column(String(600), default="")          # 站点主页
+    category = Column(String(32), default="")           # 人工分类：AI 动态 / 科技 / 政策 …
+    enabled = Column(Integer, default=1)                # 0 / 1
+    sort = Column(Integer, default=0)                   # 展示顺序
+    last_fetched = Column(DateTime, nullable=True)      # 最近一次抓取时间（UTC）
+    last_status = Column(String(16), default="")        # ok / error
+    last_error = Column(Text, default="")               # 失败原因（截断存）
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class NewsItem(Base):
+    """资讯工作台 · 条目。按 (feed_id, guid) 去重，重复抓取只更新不新增。
+
+    ai_* 三列为 P7b「AI 识别关键信息」预留，本期只建列不写入。
+    """
+    __tablename__ = "news_items"
+    __table_args__ = (UniqueConstraint("feed_id", "guid", name="uq_news_item_feed_guid"),)
+    id = Column(Integer, primary_key=True)
+    feed_id = Column(Integer, ForeignKey("news_feeds.id"), nullable=False)
+    guid = Column(String(255), nullable=False)          # 源内唯一 id（缺省用 link 或标题哈希）
+    title = Column(String(500), default="")
+    link = Column(String(900), default="")
+    author = Column(String(200), default="")            # 原始 author 字段
+    source_name = Column(String(200), default="")       # 从 author 括号中提取的原始来源名
+    category = Column(String(64), default="")           # 条目自带分类（如 论文 / AI 产品）
+    summary = Column(Text, default="")                  # 去 HTML 的纯文本摘要
+    content = Column(Text, default="")                  # 原始 HTML（留档）
+    published_at = Column(DateTime, nullable=True, index=True)  # 发布时间（UTC naive）
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+    star = Column(Integer, default=0)                   # 收藏：0 / 1（站点级，单用户为主）
+    ai_score = Column(Integer, nullable=True)           # P7b 预留：AI 评分
+    ai_reason = Column(Text, default="")                # P7b 预留：推荐理由
+    ai_tags = Column(String(200), default="")           # P7b 预留：标签（逗号分隔）
+
+
 class Setting(Base):
     """站点级键值设置（如 LLM API Key：llm.<provider>.api_key / .base_url / .model）。"""
     __tablename__ = "settings"
