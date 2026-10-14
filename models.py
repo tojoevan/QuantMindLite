@@ -104,7 +104,7 @@ class ChartData(BaseModel):
 class RoundtableSeatCreate(BaseModel):
     name: str
     persona: str = ""
-    mode: str = "manual"             # manual / auto
+    mode: str = "manual"             # 接入方式：manual 手动回填 / auto LLM Key 自动 / mcp（本期仅标注）
     provider: str = "deepseek"
     model: str = ""
     role: str = ""                   # AI 角色（豆包/DeepSeek/元宝等），手动席位身份标签

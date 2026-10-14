@@ -109,14 +109,14 @@ class PasswordResetRequest(Base):
 class RoundtableSeat(Base):
     """圆桌讨论 · AI 席位（长期配置，可增删）。
 
-    mode: manual=手动席位（页面复制提示词→外部咨询→粘贴反馈）；
+    mode: manual=手动回填（页面复制提示词→外部咨询→粘贴反馈）；
           auto=自动席位（配置 API Key 后由后端直调 LLM 生成）。
     """
     __tablename__ = "roundtable_seats"
     id = Column(Integer, primary_key=True)
     name = Column(String(64), nullable=False)           # 席位名，如「稳健配置」
     persona = Column(Text, default="")                  # 人格 / 风格提示词
-    mode = Column(String(8), default="manual")          # manual / auto
+    mode = Column(String(8), default="manual")          # 接入方式：manual / auto / mcp（mcp 本期仅标注，行为同 manual）
     provider = Column(String(32), default="deepseek")   # LLM 提供方（auto 席位用）
     model = Column(String(64), default="")              # 模型名（留空用提供方默认）
     enabled = Column(Integer, default=1)                # 0 / 1

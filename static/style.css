@@ -454,11 +454,20 @@ th { color: var(--muted); font-weight: 600; }
 .rt-seat-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center; }
 .rt-seat-title { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; min-width: 0; }
 .rt-seat-name { font-weight: 600; font-size: 15px; }
+.rt-editable { cursor: text; border-radius: 4px; padding: 0 2px; }
+.rt-editable:hover { outline: 1px dashed var(--accent); background: var(--accent-soft); }
+.rt-inline-input {
+  font: inherit; font-size: 13px; padding: 1px 6px; border-radius: 6px;
+  border: 1px solid var(--accent); background: var(--bg); color: var(--text);
+  width: 9em; max-width: 60vw; outline: none;
+}
 .rt-badge {
   font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border);
   color: var(--muted); margin-left: 6px; white-space: nowrap;
 }
 .rt-badge.mode-auto { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+/* MCP 接入：本期仅标注（置灰虚线，视觉上「待接」） */
+.rt-badge.mode-mcp { color: var(--muted); border-style: dashed; opacity: .85; }
 .rt-badge.state-done { color: #3fb950; border-color: rgba(63, 185, 80, .5); }
 .rt-badge.state-pending { color: var(--yellow); border-color: rgba(210, 153, 34, .5); }
 .rt-role {

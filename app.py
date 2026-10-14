@@ -921,6 +921,12 @@ PROMPT_OUTPUT_SPEC = """# 输出格式（严格遵守，不要使用表格）
 
 _LLM_SYSTEM = "你是严谨的A股投研助手。严格基于用户给出的持仓与行情快照作答，不臆测快照之外的数据，并严格遵守用户指定的输出格式。"
 
+# 圆桌席位「接入方式」取值：
+#   manual = 手动回填（复制提示词 → 外部咨询 → 粘贴反馈）
+#   auto   = LLM Key 自动（后端直调 LLM 生成）
+#   mcp    = MCP 接入（本期仅为标注/预留，行为等同 manual，不参与自动生成）
+RT_MODES = ("manual", "auto", "mcp")
+RT_MODE_HINT = "mode 仅支持 manual / auto / mcp"
 
 
 def _ensure_default_seats(db):
@@ -1093,8 +1099,8 @@ def rt_list_seats(u: User = Depends(get_current_user), db: Session = Depends(get
 def rt_create_seat(body: RoundtableSeatCreate, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not u.is_admin:
         raise HTTPException(403, "forbidden")
-    if body.mode not in ("manual", "auto"):
-        raise HTTPException(400, "mode 仅支持 manual / auto")
+    if body.mode not in RT_MODES:
+        raise HTTPException(400, RT_MODE_HINT)
     max_sort = db.query(RoundtableSeat.sort).order_by(RoundtableSeat.sort.desc()).first()
     s = RoundtableSeat(name=body.name.strip() or "新席位", persona=body.persona,
                        role=body.role or "",
@@ -1116,8 +1122,8 @@ def rt_update_seat(sid: int, body: RoundtableSeatUpdate, u: User = Depends(get_c
     for field in ("name", "persona", "mode", "provider", "model", "role", "enabled", "sort"):
         v = getattr(body, field)
         if v is not None:
-            if field == "mode" and v not in ("manual", "auto"):
-                raise HTTPException(400, "mode 仅支持 manual / auto")
+            if field == "mode" and v not in RT_MODES:
+                raise HTTPException(400, RT_MODE_HINT)
             setattr(s, field, v)
     db.commit()
     db.refresh(s)
