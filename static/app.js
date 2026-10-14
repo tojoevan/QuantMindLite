@@ -1170,7 +1170,7 @@ const RT_PROVIDERS = {
   moonshot: { base_url: "https://api.moonshot.cn/v1", model: "moonshot-v1-8k" },
   openai: { base_url: "https://api.openai.com/v1", model: "gpt-4o-mini" },
 };
-let rtState = { date: null, snap: null, seats: [], posts: {}, settings: null, admin: false };
+let rtState = { date: null, snap: null, seats: [], posts: {}, settings: null, history: null, admin: false };
 const rtAdmin = () => !!(me && me.is_admin);
 
 function backFromRoundtable() {
@@ -1202,6 +1202,15 @@ async function renderRoundtable() {
       <div class="panel"><h3>持仓总览 <span class="muted" id="rt-holdings-count"></span></h3>
         <div class="table-wrap"><table id="rt-holdings"><thead><tr><th>标的</th><th>最新价</th><th>市值(元)</th><th>收益率</th><th>今日</th><th>系统建议</th></tr></thead><tbody></tbody></table></div>
       </div>
+      <div class="panel" id="rt-history-panel">
+        <h3>历史标的与操作记录 <span class="muted" id="rt-history-count"></span><button class="btn-mini ghost" id="rt-history-toggle">收起</button></h3>
+        <div id="rt-history-body">
+          <div class="rt-hist-sub">历史标的 <span class="muted" id="rt-hist-sym-count"></span></div>
+          <div class="table-wrap"><table id="rt-hist-symbols"><thead><tr><th>标的</th><th>状态</th><th>持仓(份)</th><th>成本</th><th>操作数</th><th>累计实现盈亏(元)</th><th>最近操作</th></tr></thead><tbody></tbody></table></div>
+          <div class="rt-hist-sub">仓位操作记录 <span class="muted" id="rt-hist-ops-count"></span></div>
+          <div class="table-wrap rt-scroll"><table id="rt-hist-ops"><thead><tr><th>日期</th><th>标的</th><th>操作</th><th>价格</th><th>数量</th><th>实现盈亏(元)</th><th>备注</th></tr></thead><tbody></tbody></table></div>
+        </div>
+      </div>
       <div class="panel">
         <h3>AI 席位 <span class="muted">自动席位：后端直调 LLM · 手动席位：复制提示词去外部咨询后回填</span></h3>
         <div class="rt-seats" id="rt-seats"><span class="muted">加载中…</span></div>
@@ -1217,19 +1226,27 @@ async function renderRoundtable() {
     if (!rtState.admin) { showToast("仅管理员可修改 AI 设置"); return; }
     document.getElementById("rt-settings-panel").classList.toggle("hidden");
   };
+  document.getElementById("rt-history-toggle").onclick = () => {
+    const body = document.getElementById("rt-history-body");
+    const btn = document.getElementById("rt-history-toggle");
+    const hidden = body.classList.toggle("hidden");
+    btn.textContent = hidden ? "展开" : "收起";
+  };
   await rtLoadAll();
 }
 
 async function rtLoadAll() {
   try {
-    const [seats, posts, snap] = await Promise.all([
+    const [seats, posts, snap, hist] = await Promise.all([
       API("GET", "/api/roundtable/seats"),
       API("GET", "/api/roundtable/posts"),
       API("GET", "/api/roundtable/snapshot"),
+      API("GET", "/api/roundtable/history").catch(() => null),
     ]);
     rtState.seats = seats || [];
     rtState.snap = snap;
     rtState.date = snap ? snap.date : null;
+    rtState.history = hist;
     rtState.posts = {};
     (posts || []).forEach(p => { rtState.posts[p.seat_id] = p; });
     if (rtState.admin) {
@@ -1247,6 +1264,7 @@ function rtRenderAll() {
   if (d) d.textContent = rtState.date || "";
   rtRenderIndices();
   rtRenderHoldings();
+  rtRenderHistory();
   rtRenderSeats();
   if (rtState.admin) { rtRenderManage(); rtRenderSettings(); }
 }
@@ -1286,6 +1304,69 @@ function rtRenderHoldings() {
       <td class="${rtChgCls(h.day_chg_pct)}">${rtFmtChg(h.day_chg_pct)}</td>
       <td>${h.latest_signal ? escapeHtml(h.latest_signal) : "—"}</td>
     </tr>`).join("");
+}
+
+const RT_HIST_STATUS = {
+  holding:   { label: "持仓中", cls: "state-done" },
+  cleared:   { label: "已清仓", cls: "state-cleared" },
+  untracked: { label: "未建仓", cls: "state-pending" },
+};
+const RT_HIST_ACTION = {
+  BUY:  { label: "买入", cls: "pos" },
+  SELL: { label: "卖出", cls: "neg" },
+  HOLD: { label: "持有", cls: "flat" },
+};
+
+function rtRenderHistory() {
+  const symTb = document.querySelector("#rt-hist-symbols tbody");
+  const opsTb = document.querySelector("#rt-hist-ops tbody");
+  if (!symTb || !opsTb) return;
+  const h = rtState.history;
+  const cnt = document.getElementById("rt-history-count");
+  if (!h) {
+    if (cnt) cnt.textContent = "加载失败";
+    symTb.innerHTML = `<tr><td colspan="7" class="muted">历史数据加载失败（不影响今日讨论）</td></tr>`;
+    opsTb.innerHTML = "";
+    return;
+  }
+  const syms = h.symbols || [], ops = h.operations || [];
+  if (cnt) cnt.textContent = `${syms.length} 个标的 · ${ops.length} 条操作`;
+  const sc = document.getElementById("rt-hist-sym-count");
+  if (sc) sc.textContent = syms.length ? `共 ${syms.length} 个` : "";
+  const oc = document.getElementById("rt-hist-ops-count");
+  if (oc) oc.textContent = ops.length ? `共 ${ops.length} 条` : "";
+  if (!syms.length) {
+    symTb.innerHTML = `<tr><td colspan="7" class="muted">暂无项目</td></tr>`;
+  } else {
+    symTb.innerHTML = syms.map(s => {
+      const st = RT_HIST_STATUS[s.status] || RT_HIST_STATUS.untracked;
+      return `<tr>
+        <td>${escapeHtml(s.name)}${s.code ? ` <span class="muted">${escapeHtml(s.code)}</span>` : ""}${s.is_fund ? `<span class="rt-badge">基金</span>` : ""}</td>
+        <td><span class="rt-badge ${st.cls}">${st.label}</span></td>
+        <td>${s.shares > 0 ? s.shares : "—"}</td>
+        <td>${s.cost > 0 ? s.cost : "—"}</td>
+        <td>${s.op_count || "—"}</td>
+        <td class="${rtChgCls(s.realized_pnl)}">${s.op_count ? s.realized_pnl : "—"}</td>
+        <td>${escapeHtml(s.last_date || "—")}</td>
+      </tr>`;
+    }).join("");
+  }
+  if (!ops.length) {
+    opsTb.innerHTML = `<tr><td colspan="7" class="muted">暂无操作记录——在项目页「反馈」里录入的买卖会自动汇总到这里。</td></tr>`;
+  } else {
+    opsTb.innerHTML = ops.map(o => {
+      const a = RT_HIST_ACTION[o.action] || { label: o.action, cls: "flat" };
+      return `<tr>
+        <td>${escapeHtml(o.date)}</td>
+        <td>${escapeHtml(o.name)}${o.code ? ` <span class="muted">${escapeHtml(o.code)}</span>` : ""}</td>
+        <td class="${a.cls}">${a.label}</td>
+        <td>${o.price}</td>
+        <td>${o.qty}</td>
+        <td class="${rtChgCls(o.realized_pnl)}">${o.realized_pnl}</td>
+        <td class="muted">${escapeHtml(o.note || "")}</td>
+      </tr>`;
+    }).join("");
+  }
 }
 
 function rtRenderSeats() {

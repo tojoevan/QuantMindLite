@@ -491,3 +491,12 @@ th { color: var(--muted); font-weight: 600; }
   .rt-seats { grid-template-columns: 1fr; }
   .rt-page h1 { font-size: 20px; }
 }
+
+/* 圆桌 · 历史标的与操作记录 */
+.rt-badge.state-cleared { color: var(--muted); border-color: var(--border); }
+#rt-history-panel h3 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#rt-history-toggle { margin-left: auto; }
+.rt-hist-sub { font-size: 13px; font-weight: 600; margin: 14px 0 8px; color: var(--text); }
+.rt-hist-sub:first-child { margin-top: 0; }
+.rt-hist-sub .muted { font-weight: 400; }
+.rt-scroll { max-height: 340px; overflow: auto; }

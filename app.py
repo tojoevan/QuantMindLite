@@ -857,10 +857,12 @@ def _build_snapshot(u, db) -> dict:
 
     holdings = []
     for p in projects:
+        shares = float(p.position_shares or 0.0)
+        if shares <= 0:
+            continue          # 圆桌只点评当前有持仓的标的；历史标的见「历史标的与操作记录」
         mps = (db.query(MarketPrice).filter(MarketPrice.project_id == p.id)
                .order_by(MarketPrice.date.desc()).limit(2).all())
         latest, prev = (mps[0] if mps else None), (mps[1] if len(mps) > 1 else None)
-        shares = float(p.position_shares or 0.0)
         cost = float(p.position_cost or 0.0)
         close = latest.close if latest else None
         h = {
@@ -909,7 +911,10 @@ def _snapshot_prompt_text(snap: dict, seat: RoundtableSeat) -> str:
             chg = f"{idx['chg_pct']:+.2f}%" if idx.get("chg_pct") is not None else "涨跌未知"
             L.append(f"- {idx['name']} {idx['close']}（{chg}，{idx.get('date') or ''}）")
     L.append("## 我的持仓")
-    for h in snap.get("holdings") or []:
+    hs = snap.get("holdings") or []
+    if not hs:
+        L.append("- 当前无持仓（本轮只点评大盘即可）")
+    for h in hs:
         seg = f"- {h['name']}（{h['code'] or h['market']}）："
         if h.get("latest_close") is None:
             seg += "暂无行情数据"
@@ -1007,6 +1012,55 @@ def rt_delete_seat(sid: int, u: User = Depends(get_current_user), db: Session = 
 @app.get("/api/roundtable/snapshot")
 def rt_snapshot(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _build_snapshot(u, db)
+
+
+@app.get("/api/roundtable/history")
+def rt_history(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """圆桌 · 历史标的与仓位操作记录。
+
+    symbols：当前用户全部项目（含已清仓/未建仓），status=holding/cleared/untracked；
+    operations：全部反馈操作按日期倒序（含标的信息）。
+    与今日快照互补：快照只含有持仓标的，完整历史在这里承载。
+    """
+    q = db.query(Project)
+    if not u.is_admin:
+        q = q.filter(Project.owner_id == u.id)
+    projects = q.order_by(Project.pinned.desc(), Project.created_at.desc()).all()
+
+    symbols, operations = [], []
+    for p in projects:
+        fbs = (db.query(Feedback).filter(Feedback.project_id == p.id)
+               .order_by(Feedback.date.desc(), Feedback.id.desc()).all())
+        shares = float(p.position_shares or 0.0)
+        if shares > 0:
+            status = "holding"
+        elif fbs:
+            status = "cleared"
+        else:
+            status = "untracked"
+        symbols.append({
+            "id": p.id, "name": p.name, "code": p.code or "", "market": p.market or "A",
+            "is_fund": (p.market == "fund"),
+            "shares": round(shares, 4), "cost": float(p.position_cost or 0.0),
+            "status": status,
+            "op_count": len(fbs),
+            "realized_pnl": round(sum(float(f.realized_pnl or 0.0) for f in fbs), 2),
+            "first_date": fbs[-1].date if fbs else None,   # fbs 为日期倒序，末条最早
+            "last_date": fbs[0].date if fbs else None,
+        })
+        for f in fbs:
+            operations.append({
+                "id": f.id, "date": f.date, "project_id": p.id,
+                "name": p.name, "code": p.code or "",
+                "action": f.action, "price": f.price, "qty": f.qty,
+                "realized_pnl": round(float(f.realized_pnl or 0.0), 2),
+                "note": f.note or "",
+            })
+    # 持仓中优先，其余维持项目原顺序（pinned/创建时间）；操作记录按日期倒序
+    order = {"holding": 0, "cleared": 1, "untracked": 2}
+    symbols.sort(key=lambda s: order.get(s["status"], 9))
+    operations.sort(key=lambda o: (o["date"], o["id"]), reverse=True)
+    return {"symbols": symbols, "operations": operations}
 
 
 @app.get("/api/roundtable/prompt")
