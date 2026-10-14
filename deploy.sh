@@ -208,7 +208,7 @@ cmd_status() {
     err "health：无响应（服务可能已挂）"
   fi
 
-  VER="$(ssh_run "curl -s -m 3 http://127.0.0.1:${PORT}/ | grep -o 'app.js?v=[0-9]*' | head -1" 2>/dev/null || true)"
+  VER="$(ssh_run "curl -s -m 3 http://127.0.0.1:${PORT}/ | grep -o '01-core.js?v=[0-9]*' | head -1" 2>/dev/null || true)"
   info "线上静态资源版本：${VER:-未识别}"
 
   DISK="$(ssh_run "df -h /opt | tail -1 | awk '{print \$4\" 可用 / \"\$5\" 已用\"}'" 2>/dev/null || true)"
@@ -356,7 +356,7 @@ cmd_deploy() {
 
   remote_prune
   echo
-  VER="$(ssh_run "curl -s -m 3 http://127.0.0.1:${PORT}/ | grep -o 'app.js?v=[0-9]*' | head -1" 2>/dev/null || true)"
+  VER="$(ssh_run "curl -s -m 3 http://127.0.0.1:${PORT}/ | grep -o '01-core.js?v=[0-9]*' | head -1" 2>/dev/null || true)"
   info "线上静态资源版本：${VER:-未识别}（改了 JS/CSS 请确认 ?v= 已递增并硬刷新）"
 }
 

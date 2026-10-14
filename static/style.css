@@ -25,7 +25,18 @@
   --toast-text: #c9d1d9;
   --code-bg: #0d1117;
   --code-text: #c9d1d9;
-  --radius: 10px;
+  --radius: 12px;
+
+  /* ===== 设计令牌（P0 新增，供组件与后续页面复用；不影响既有选择器）=====
+     间距 / 圆角 / 字号 / 描边 / 阴影 五组刻度：新增样式一律取这里的值，
+     避免再散落 6/8/10/14px 这类魔法数。 */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px; --sp-5: 22px; --sp-6: 30px;
+  --radius-sm: 6px; --radius-md: 8px; --radius-lg: var(--radius); --radius-pill: 999px;
+  --fs-xs: 12px; --fs-sm: 13px; --fs-md: 14px; --fs-lg: 15px; --fs-xl: 18px; --fs-2xl: 22px;
+  --bd-w: 1px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.20);
+  --shadow-md: 0 8px 24px rgba(0,0,0,.35);
+  --shadow-lg: 0 16px 56px rgba(0,0,0,.55);
 }
 
 /* ===== 浅色主题 ===== */
@@ -56,6 +67,10 @@
   --toast-text: #1f2328;
   --code-bg: #f6f8fa;
   --code-text: #1f2328;
+  /* 浅色下阴影更收敛，避免白底发灰 */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.06);
+  --shadow-md: 0 8px 24px rgba(0,0,0,.10);
+  --shadow-lg: 0 16px 56px rgba(0,0,0,.18);
 }
 
 * { box-sizing: border-box; }
@@ -505,3 +520,78 @@ th { color: var(--muted); font-weight: 600; }
 .rt-hist-sub:first-child { margin-top: 0; }
 .rt-hist-sub .muted { font-weight: 400; }
 .rt-scroll { max-height: 340px; overflow: auto; }
+
+/* ============ 设计系统 · 组件（P0 规范）============
+   下面这组类是组件的「唯一表达」：按钮 / 输入 / 徽章 / 卡片 / 表格 / 标签页。
+   P0 仅建立规范并保证既有页面零回归（不改动任何页面标记、不改动既有选择器）；
+   P1 起页面重组时，逐步把散落的 .btn-mini / .card button / form.inline button
+   / .auth-tab 等收口到 .btn / .tab 系列，实现统一视觉与更小的样式面积。 */
+
+/* —— 按钮 —— */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  font: inherit; font-size: var(--fs-md); font-weight: 600; line-height: 1;
+  padding: 9px 14px; border-radius: var(--radius-md);
+  border: var(--bd-w) solid transparent; background: var(--panel-2); color: var(--text);
+  cursor: pointer; white-space: nowrap; text-decoration: none;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.btn:hover { border-color: var(--border-strong); }
+.btn:disabled { opacity: .55; cursor: not-allowed; }
+.btn.primary { background: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-hover); border-color: transparent; }
+.btn.success { background: var(--green); color: #fff; }
+.btn.success:hover { filter: brightness(1.08); border-color: transparent; }
+.btn.ghost { background: transparent; color: var(--muted); border-color: var(--border); }
+.btn.ghost:hover { color: var(--text); background: var(--subtle-bg); border-color: var(--border-strong); }
+.btn.danger { background: transparent; color: var(--red); border-color: var(--border); }
+.btn.danger:hover { border-color: var(--red); background: rgba(248,81,73,.08); }
+.btn.sm { font-size: var(--fs-sm); padding: 6px 12px; }
+
+/* —— 输入 —— */
+.input {
+  font: inherit; font-size: var(--fs-md); width: 100%;
+  color: var(--text); background: var(--input-bg);
+  border: var(--bd-w) solid var(--border); border-radius: var(--radius-md);
+  padding: 9px 11px;
+}
+.input:focus { outline: none; border-color: var(--accent); }
+
+/* —— 徽章 —— */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; line-height: 1.6; padding: 1px 8px;
+  border-radius: var(--radius-pill); border: var(--bd-w) solid var(--border);
+  color: var(--muted); white-space: nowrap;
+}
+.badge.accent { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.badge.ok { color: var(--green); border-color: var(--green); background: rgba(63,185,80,.12); }
+.badge.warn { color: var(--yellow); border-color: var(--yellow); background: rgba(210,153,34,.12); }
+.badge.danger { color: var(--red); border-color: var(--red); background: rgba(248,81,73,.12); }
+.badge.plain { background: transparent; }
+
+/* —— 卡片 ——
+   注意：.card 已被侧栏「新建项目」表单占用（含输入/按钮的垂直排布），
+   组件级卡片沿用既有 .panel；需要一块更轻的卡片时用 .card-surface。 */
+.card-surface {
+  background: var(--panel); border: var(--bd-w) solid var(--border);
+  border-radius: var(--radius-lg); padding: var(--sp-4);
+}
+
+/* —— 表格 —— */
+.table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.table th, .table td {
+  text-align: left; padding: 9px 10px;
+  border-bottom: var(--bd-w) solid var(--border); white-space: nowrap;
+}
+.table th { color: var(--muted); font-weight: 600; }
+
+/* —— 标签页 —— */
+.tabs { display: flex; gap: var(--sp-2); }
+.tab {
+  flex: 1; padding: 8px; cursor: pointer; font-size: var(--fs-md);
+  color: var(--muted); background: var(--panel-2);
+  border: var(--bd-w) solid var(--border); border-radius: var(--radius-md);
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }

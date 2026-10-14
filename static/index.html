@@ -11,7 +11,7 @@
   <script>
     (function(){ try { if (localStorage.getItem('qw_theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch(e){} })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=30" />
+  <link rel="stylesheet" href="/style.css?v=36" />
   <script src="/vendor/echarts.min.js?v=27"></script>
 </head>
 <body>
@@ -108,6 +108,11 @@
     </div>
   </div>
 
-  <script src="/app.js?v=32"></script>
+  <!-- 前端脚本按序加载（经典脚本，共享全局作用域）：由原 app.js 按顶层边界原样拆分 -->
+  <script src="/js/01-core.js?v=39"></script>
+  <script src="/js/02-dashboard.js?v=39"></script>
+  <script src="/js/03-auth.js?v=39"></script>
+  <script src="/js/04-about-users.js?v=39"></script>
+  <script src="/js/05-roundtable.js?v=39"></script>
 </body>
 </html>
