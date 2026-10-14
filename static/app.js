@@ -1330,6 +1330,12 @@ function rtRenderHistory() {
     return;
   }
   const syms = h.symbols || [], ops = h.operations || [];
+  const panel = document.getElementById("rt-history-panel");
+  if (!syms.length && !ops.length) {
+    if (panel) panel.classList.add("hidden");   // 无历史可展示时整面板隐藏
+    return;
+  }
+  if (panel) panel.classList.remove("hidden");
   if (cnt) cnt.textContent = `${syms.length} 个标的 · ${ops.length} 条操作`;
   const sc = document.getElementById("rt-hist-sym-count");
   if (sc) sc.textContent = syms.length ? `共 ${syms.length} 个` : "";

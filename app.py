@@ -1026,8 +1026,8 @@ def rt_snapshot(u: User = Depends(get_current_user), db: Session = Depends(get_d
 def rt_history(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """圆桌 · 历史标的与仓位操作记录。
 
-    symbols：当前用户全部项目（含已清仓/未建仓），status=holding/cleared/untracked；
-    operations：全部反馈操作按日期倒序（含标的信息）。
+    symbols：有持仓或有操作记录的项目（未建仓且无操作的不纳入），
+    status=holding/cleared；operations：全部反馈操作按日期倒序（含标的信息）。
     与今日快照互补：快照只含有持仓标的，完整历史在这里承载。
     """
     q = db.query(Project)
@@ -1043,7 +1043,7 @@ def rt_history(u: User = Depends(get_current_user), db: Session = Depends(get_db
         elif fbs:
             status = "cleared"
         else:
-            status = "untracked"
+            continue          # 未建仓且无操作记录：不进历史面板
         symbols.append({
             "id": p.id, "name": p.name, "code": p.code or "", "market": p.market or "A",
             "is_fund": (p.market == "fund"),
