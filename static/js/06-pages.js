@@ -9,6 +9,66 @@ let prevView = { name: null, arg: null };
 // 默认落地页：资讯工作台（登录与游客一致；圆桌/论坛/仪表台为二级页）
 function navDefault() { return "news"; }
 
+// ===== URL 路由（hash 同步）=====
+// 存在理由：此前视图状态只在内存里，刷新必然回 navDefault()，后退/收藏/分享也都不可用。
+// 形态：#/news、#/roundtable、#/forum、#/dashboard、#/about、#/users、#/project/12
+// 用 hash 而非真实路径：后端 StaticFiles(html=True) 只对 / 返回 index.html，
+// 真实路径（/roundtable）会 404，需要同时改 FastAPI 与线上 nginx；hash 零后端改动，
+// 且同样支持刷新/后退/收藏/分享。
+const ROUTES = ["news", "roundtable", "forum", "dashboard", "about", "users", "project"];
+
+// 需要登录的视图：游客落到登录门禁（保留原引导行为），但不改写 URL——
+// 直链 #/roundtable 时保留 hash，登录成功后 enterApp 会按 URL 直接进圆桌。
+function viewNeedsAuth(name) { return name === "roundtable" || name === "forum"; }
+
+// 视图 → hash（无视图时为空串）
+function viewHash(v) {
+  if (!v || !v.name) return "";
+  return "#/" + v.name + (v.arg != null ? "/" + v.arg : "");
+}
+function viewKey(v) { return v && v.name ? v.name + "/" + (v.arg == null ? "" : v.arg) : ""; }
+
+// 解析 location.hash → {name, arg}；空或非法返回 null
+function parseHash() {
+  const raw = (location.hash || "").replace(/^#\/?/, "").trim();
+  if (!raw) return null;
+  const parts = raw.split("/").filter(Boolean);
+  const name = decodeURIComponent(parts[0] || "");
+  if (ROUTES.indexOf(name) < 0) return null;
+  if (name === "project") {
+    const id = parseInt(parts[1], 10);
+    return Number.isFinite(id) ? { name, arg: id } : null;
+  }
+  return { name, arg: null };
+}
+
+// 用当前视图重置 URL（不新增历史）：用于脏 hash 纠正 / 非法跳转回退
+function resetHash() {
+  history.replaceState(null, "", location.pathname + location.search + viewHash(currentView));
+}
+
+// 把当前视图写进 URL：正常导航走 location.hash（进历史栈，可后退）；
+// replace=true 用 replaceState（不新增历史，用于首次落地与 hash 纠正）。
+// 视图未变（同页重复点击 / 非法跳转）时只纠正 URL，不污染历史。
+function applyHash(prevKey, opts) {
+  const nextKey = viewHash(currentView);
+  if (location.hash === nextKey) return;
+  if (opts.replace || nextKey === prevKey) resetHash();
+  else location.hash = nextKey;
+}
+
+// 浏览器后退/前进、手动改 hash → 切到对应视图
+function onHashChange() {
+  const v = parseHash();
+  if (!v) { resetHash(); return; }        // 无法识别的 hash：纠正回当前视图
+  if (viewKey(v) === viewKey(currentView)) return;
+  showView(v.name, v.arg);
+}
+window.addEventListener("hashchange", onHashChange);
+
+// 首次落地的目标视图：优先 URL 里的，其次默认首页
+function initialView() { return parseHash() || { name: navDefault(), arg: null }; }
+
 // P6：侧栏已退场，全站单列全宽，不再需要按视图切换布局 class。
 // （原 P4 的 FULLWIDTH_VIEWS / applyLayout 一并删除；移动端导航改走 .nav-drawer 抽屉。）
 
@@ -20,7 +80,25 @@ function markNavActive(name) {
   });
 }
 
-async function showView(name, arg) {
+async function showView(name, arg, opts) {
+  opts = opts || {};
+  // 受限视图先过门禁：未通过就不进入该视图，避免 currentView / 导航高亮 / URL
+  // 与实际展示的页面（登录门禁）三者不一致。
+  // 冷启动直链受限页时当前还没有任何视图，先落地默认首页，否则 URL 被否决后页面留白。
+  if (viewNeedsAuth(name) && (isGuest || !token)) {
+    if (!currentView.name) showView(navDefault(), null, { replace: true });
+    else resetHash();
+    showAuth("login");
+    return;
+  }
+  if (name === "users" && !(me && me.is_admin)) {
+    if (!currentView.name) showView(navDefault(), null, { replace: true });
+    else resetHash();
+    showToast("仅管理员可访问用户管理");
+    return;
+  }
+
+  const prevKey = viewKey(currentView);
   if (isMobile()) closeMenu();
   if (name === "about") prevView = currentView;   // 关于页提供「返回上一视图」
   switch (name) {
@@ -42,6 +120,7 @@ async function showView(name, arg) {
     default:
       break;
   }
+  applyHash(prevKey, opts);   // 视图 → URL：刷新/后退/直链都停在当前页
 }
 
 // 从「关于」返回上一视图（无历史则回默认落地页）

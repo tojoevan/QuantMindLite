@@ -12,8 +12,12 @@ function enterApp() {
   hideAuth();
   renderUserChip();
   renderNavForRole();
-  // 只刷新标的列表，落地视图交给统一路由（P7 起默认落地「资讯工作台」）
-  loadProjects(false).then(() => showView(navDefault()));
+  // 只刷新标的列表，落地视图交给统一路由：优先 URL 里的视图（刷新/直链），否则默认首页。
+  // replace=true —— 首次落地不额外塞一条历史，避免「后退一步回到无 hash 的空状态」。
+  loadProjects(false).then(() => {
+    const v = initialView();
+    showView(v.name, v.arg, { replace: true });
+  });
 }
 
 function showAuth(view) {
@@ -103,7 +107,9 @@ async function enterGuest() {
   } catch (e) {
     projects = [];
   }
-  showView("news");
+  // 落地视图同样交给统一路由（游客直链 #/dashboard 等也生效；受限页会落登录门禁）
+  const v = initialView();
+  showView(v.name, v.arg, { replace: true });
 }
 
 // 游客只读视图：仅图表 + 最新建议 + 行情表，无增删/编辑控件

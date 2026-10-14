@@ -75,8 +75,15 @@ async function togglePin(id) {
 }
 
 async function selectProject(id) {
-  currentId = id;
   const p = projects.find(x => x.id === id);
+  if (!p) {
+    // 直链 / 后退到 #/project/12，但该标的已不存在或当前身份无权访问：
+    // 回仪表台并纠正 URL（否则页面会因 p.name 取空而报错）
+    showToast("标的不存在或无权访问");
+    showView("dashboard", null, { replace: true });
+    return;
+  }
+  currentId = id;
   if (isGuest) { await renderGuestProject(p); return; }
   document.getElementById("main").innerHTML = `
     <div class="page-crumb">
