@@ -1,14 +1,29 @@
-"""A股行情数据源（多源顺序回退，任一可用即用）。
+"""行情数据源（按品种路由 + 多源顺序回退，任一可用即用）。
 
-优先级：腾讯 gtimg（前复权，最稳） → 新浪日线 → akshare → 东方财富直连（兜底）。
+**品种是第一层路由**（market 字段），决定代码怎么解析、走哪个源：
+
+    A     股票      600519.SH / 000002.SZ      腾讯日线（前复权）
+    etf   场内基金  510300 / 159915 / 161725   腾讯日线（前复权）
+    bond  债券      113056（可转债）/ 019547（国债）  腾讯日线（不复权）
+    fund  场外基金  012969 / 206006            东财历史单位净值（无 K 线）
+
+**可达性约束（实测，务必遵守）**：线上 VPS 只有 IPv6 默认路由、无 IPv4 路由，
+所以只有带 AAAA 记录的域名能连上。实测结论：
+  ✅ qt.gtimg.cn（实时/名称）、proxy.finance.qq.com（日线 newfqkline、代码检索 smartbox）、
+     api.fund.eastmoney.com（基金净值，须带 Referer）
+  ❌ web.ifzq.gtimg.cn（腾讯**旧**日线地址，只有 A 记录）、money.finance.sina.com.cn、
+     fund.eastmoney.com、smartbox.gtimg.cn —— 无 AAAA，直连必然 ENETUNREACH
+  ⚠️ push2his.eastmoney.com 有 AAAA 但服务端拒答（RemoteDisconnected）
+因此腾讯日线**必须走 proxy.finance.qq.com**，旧地址仅作其他网络环境下的兜底。
+
 返回统一结构：[(date_str "YYYY-MM-DD", close_float), ...] 升序。
-
-注意：东方财富 / akshare 在部分云服务器出口 IP 会被反爬断连，因此把
-腾讯、新浪这类“对服务器 IP 友好”的源放在前面。
+（场外基金为当日单位净值，含义与收盘价一致，下游按同一结构消费。）
 """
 import re
 import json
+import time
 import logging
+import urllib.parse
 import urllib.request
 import ssl
 from datetime import datetime, timedelta
@@ -37,28 +52,108 @@ _HEADERS = {
 }
 
 
-def parse_symbol(code: str):
-    """识别常见写法：600519.SH / sh600519 / 600519。
-    返回 (digits, secid_prefix) ，secid_prefix: 1=上交所 0=深交所。"""
-    code = (code or "").strip()
-    if not code:
-        return None
-    m = re.search(r"(\d{6})", code)
+# ---------------- 品种（market）与代码解析 ----------------
+MARKET_LABELS = {"A": "股票", "etf": "场内基金", "fund": "场外基金", "bond": "债券"}
+MARKET_HINTS = {
+    "A": "如 600519.SH / 000002.SZ",
+    "etf": "如 510300（沪深300ETF）/ 159915（创业板ETF）/ 161725（LOF）",
+    "bond": "如 113056（可转债）/ 127045（深市转债）/ 019547（国债）",
+    "fund": "如 012969 / 206006（场外基金，6 位数字）",
+}
+_MARKET_ALIAS = {
+    "a": "A", "stock": "A", "gp": "A", "股票": "A",
+    "etf": "etf", "lof": "etf", "场内基金": "etf", "基金": "etf",
+    "fund": "fund", "otc": "fund", "otcfund": "fund", "场外基金": "fund",
+    "bond": "bond", "zq": "bond", "债券": "bond",
+}
+# 腾讯 smartbox 的品种码 → 中文（仅用于展示，未收录的原样显示）
+KIND_LABELS = {
+    "GP-A": "股票 · A股", "GP-B": "股票 · B股", "GP-KCB": "股票 · 科创板",
+    "GP-CYB": "股票 · 创业板", "GP-BJ": "股票 · 北交所",
+    "ETF": "场内基金 · ETF", "LOF": "场内基金 · LOF",
+    "ZQ-KZZ": "债券 · 可转债", "ZQ-GZ": "债券 · 国债", "ZQ-QYZ": "债券 · 企业债",
+    # 场外基金（smartbox 用 jj 前缀 + 子类码）
+    "KJ": "场外基金 · 联接", "QDII": "场外基金 · QDII",
+    "HH": "场外基金 · 混合", "GP": "场外基金 · 股票型",
+    "ZQ": "场外基金 · 债券型", "HB": "场外基金 · 货币",
+}
+
+
+def normalize_market(market: str) -> str:
+    """把各种写法（A/股票/etf/fund/债券…）归一到四种取值之一，未知按 A 处理。"""
+    return _MARKET_ALIAS.get((market or "").strip().lower(), "A")
+
+
+def _suffix_tag(code: str) -> Optional[str]:
+    """从显式后缀/前缀取市场标签：600519.SH / sh600519 / 113056.SZ / jj012969。"""
+    s = (code or "").strip().lower()
+    for suf, tag in ((".sh", "sh"), (".sz", "sz"), (".bj", "bj"), (".of", "jj")):
+        if s.endswith(suf):
+            return tag
+    for pre, tag in (("sh", "sh"), ("sz", "sz"), ("bj", "bj"), ("jj", "jj")):
+        if s.startswith(pre):
+            return tag
+    return None
+
+
+def _guess_tag(digits: str, market: str) -> str:
+    """按品种规则猜市场标签。猜错也不要紧：调用方会拿另一个市场再试一次。"""
+    if market == "fund":
+        return "jj"
+    if market == "etf":
+        # 场内基金：沪市 5xxxxx（ETF/LOF），深市 15xxxx/16xxxx/18xxxx
+        return "sh" if digits.startswith("5") else "sz"
+    if market == "bond":
+        p3 = digits[:3]
+        # 沪市：110/111/113/118 转债、132 可交换债、122 企业债、019/020/018/010 国债
+        if p3 in ("110", "111", "113", "118", "122", "132", "019", "020", "018", "010"):
+            return "sh"
+        # 深市：123/127/128 转债、120 可交换债、112 企业债、100-108 国债
+        if p3 in ("120", "123", "127", "128", "112", "100", "101", "102", "103", "108"):
+            return "sz"
+        return "sh"
+    # A 股：沿用原有规则（6/9 → 沪，0/2/3 → 深，其余按沪处理）
+    if digits.startswith(("6", "9")):
+        return "sh"
+    if digits.startswith(("0", "2", "3")):
+        return "sz"
+    return "sh"
+
+
+def resolve_symbol(code: str, market: str = "A"):
+    """把各种写法解析成 (digits, tag)，tag ∈ sh/sz/bj/jj。解析不出返回 None。
+    显式后缀优先；无后缀时按品种规则猜。场外基金恒用 jj（与场内代码书写可能撞车）。"""
+    market = normalize_market(market)
+    m = re.search(r"(\d{6})", code or "")
     if not m:
         return None
     digits = m.group(1)
-    head = code.lower().replace(digits, "")
-    if head.startswith("sh") or digits.startswith(("6", "9")):
-        secid_prefix = "1"
-    elif head.startswith("sz") or digits.startswith(("0", "2", "3")):
-        secid_prefix = "0"
-    else:
-        secid_prefix = "1"
-    return digits, secid_prefix
+    tag = _suffix_tag(code) or _guess_tag(digits, market)
+    if market == "fund":
+        tag = "jj"
+    elif tag == "jj":
+        tag = _guess_tag(digits, market)
+    return digits, tag
 
 
-def _market_tag(secid_prefix: str) -> str:
-    return "sh" if secid_prefix == "1" else "sz"
+def parse_symbol(code: str, market: str = "A"):
+    """兼容旧签名：返回 (digits, secid_prefix)，secid_prefix 1=沪 0=深（东财 secid 用）。"""
+    got = resolve_symbol(code, market)
+    if not got:
+        return None
+    digits, tag = got
+    return digits, ("1" if tag == "sh" else "0")
+
+
+def _symbol_of(digits: str, tag: str) -> str:
+    return f"{tag}{digits}"
+
+
+def _fallback_tags(digits: str, market: str, tag: str):
+    """场内品种（ETF/债券）代码段有交叉，首选市场取不到数据时再试另一个。"""
+    if market in ("etf", "bond") and tag in ("sh", "sz"):
+        return [tag, "sz" if tag == "sh" else "sh"]
+    return [tag]
 
 
 def _urlopen(url: str, timeout: int = 20):
@@ -67,57 +162,45 @@ def _urlopen(url: str, timeout: int = 20):
         return resp.read().decode("utf-8", "ignore")
 
 
-def _fetch_tencent(digits, secid_prefix, days):
-    """腾讯 gtimg 日线（前复权 qfqday）。返回 [(date, close), ...]。"""
-    symbol = f"{_market_tag(secid_prefix)}{digits}"
-    count = max(120, int(days) + 20)
-    url = (
-        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-        f"?param={symbol},day,,,{count},qfq"
-    )
-    raw = _urlopen(url)
-    j = json.loads(raw)
-    data = (j or {}).get("data", {}) or {}
-    node = next(iter(data.values())) if data else {}
-    klines = node.get("qfqday") or node.get("day") or []
-    out = []
-    for k in klines:
-        try:
-            d = str(k[0])
-            c = float(k[2])  # [日期, 开, 收, 高, 低, 量] -> 索引2为收盘
-        except Exception:
-            continue
-        if c > 0:
-            out.append((d, c))
-    out.sort(key=lambda x: x[0])
-    if not out:
-        raise ValueError("腾讯未返回数据")
-    return out
+# 腾讯日线：**主机顺序即优先级**。proxy.finance.qq.com 有 AAAA，是本 VPS 唯一可达的口；
+# web.ifzq.gtimg.cn 只有 A 记录（本 VPS 不可达），保留它只为其他网络环境下兜底。
+# 两个地址的路径与参数不同，但返回结构一致：data.{symbol}.qfqday 或 .day。
+_TENCENT_KLINE = (
+    ("proxy.finance.qq.com", "/ifzqgtimg/appstock/app/newfqkline/get"),
+    ("web.ifzq.gtimg.cn", "/appstock/app/fqkline/get"),
+)
 
 
-def _fetch_sina(digits, secid_prefix, days):
-    """新浪日线（不复权）。返回 [(date, close), ...]。"""
-    symbol = f"{_market_tag(secid_prefix)}{digits}"
+def _fetch_tencent(tag, digits, days):
+    """腾讯日线。qfqday=前复权（股票/ETF），day=不复权（债券无复权数据）。
+    返回 [(date, close), ...] 升序。"""
+    symbol = _symbol_of(digits, tag)
     count = max(120, int(days) + 20)
-    url = (
-        "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-        f"CN_MarketData.getKLineData?symbol={symbol}&scale=240&datalen={count}"
-    )
-    raw = _urlopen(url)
-    arr = json.loads(raw)
-    out = []
-    for it in arr:
+    errors = []
+    for host, path in _TENCENT_KLINE:
+        url = f"https://{host}{path}?param={symbol},day,,,{count},qfq"
         try:
-            d = str(it["day"])
-            c = float(it["close"])
-        except Exception:
+            j = json.loads(_urlopen(url))
+        except Exception as e:
+            errors.append(f"{host}:{e}")
             continue
-        if c > 0:
-            out.append((d, c))
-    out.sort(key=lambda x: x[0])
-    if not out:
-        raise ValueError("新浪未返回数据")
-    return out
+        data = (j or {}).get("data", {}) or {}
+        node = data.get(symbol) or (next(iter(data.values())) if data else {})
+        klines = node.get("qfqday") or node.get("day") or []
+        out = []
+        for k in klines:
+            try:
+                d = str(k[0])
+                c = float(k[2])  # [日期, 开, 收, 高, 低, 量] -> 索引2为收盘
+            except Exception:
+                continue
+            if c > 0:
+                out.append((d, c))
+        if out:
+            out.sort(key=lambda x: x[0])
+            return out
+        errors.append(f"{host}:无数据")
+    raise ValueError("腾讯未返回数据 -> " + " | ".join(errors))
 
 
 def _fetch_akshare(digits, start_s, end_s, days):
@@ -139,6 +222,58 @@ def _fetch_akshare(digits, start_s, end_s, days):
     out.sort(key=lambda x: x[0])
     if not out:
         raise ValueError("akshare 未返回数据")
+    return out
+
+
+# ---------------- 场外基金净值（东财） ----------------
+# ⚠️ 必须带 Referer（fundf10.eastmoney.com），否则接口返回 ErrCode -999（实测）；
+#    且每页 20 条最稳，pageSize 放大到几百会返回空列表。
+_FUND_NAV_API = "https://api.fund.eastmoney.com/f10/lsjz"
+_FUND_PAGE_SIZE = 20
+_FUND_MAX_PAGES = 300
+_FUND_HEADERS = {**_HEADERS, "Referer": "https://fundf10.eastmoney.com/"}
+
+
+def _fetch_fund_nav(digits, days):
+    """场外基金历史单位净值（DWJZ）→ [(date, nav), ...] 升序。
+    分红/拆分等无净值日期跳过。"""
+    end = datetime.now()
+    start = end - timedelta(days=max(30, int(days)))
+    start_s, end_s = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+    out = []
+    for page in range(1, _FUND_MAX_PAGES + 1):
+        url = (f"{_FUND_NAV_API}?fundCode={digits}&pageIndex={page}"
+               f"&pageSize={_FUND_PAGE_SIZE}&startDate={start_s}&endDate={end_s}")
+        lst, last_err = None, None
+        for attempt in range(1, 4):          # 东财偶发限速，重试 3 次
+            try:
+                req = urllib.request.Request(url, headers=_FUND_HEADERS)
+                with urllib.request.urlopen(req, timeout=20, context=_SSL_CTX) as resp:
+                    j = json.loads(resp.read().decode("utf-8", "ignore"))
+                lst = (j.get("Data") or {}).get("LSJZList") or []
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                time.sleep(1.0 * attempt)
+        if last_err is not None:
+            raise RuntimeError(f"东财基金净值请求失败：{last_err}")
+        if not lst:
+            break
+        for r in lst:
+            d = (r.get("FSRQ") or "").strip()
+            try:
+                c = float((r.get("DWJZ") or "").strip())
+            except ValueError:
+                continue                      # 分红/拆分等无净值日期
+            if d and c > 0:
+                out.append((d, c))
+        if len(lst) < _FUND_PAGE_SIZE:
+            break
+        time.sleep(0.3)                       # 页间小延迟，避免被限速
+    out.sort(key=lambda x: x[0])
+    if not out:
+        raise ValueError(f"东财未返回基金净值（{digits}）")
     return out
 
 
@@ -180,48 +315,44 @@ def _decode_bytes(raw: bytes) -> str:
             return raw.decode("latin-1", "ignore")
 
 
-def fetch_stock_name(code: str) -> Optional[str]:
-    """根据股票代码查询股票名称（证券缩写）。多源回退：腾讯 → 新浪 → akshare。
-    查询失败返回 None（调用方应忽略，保留原有项目名）。"""
-    parsed = parse_symbol(code)
-    if not parsed:
-        return None
-    digits, secid_prefix = parsed
-    symbol = f"{_market_tag(secid_prefix)}{digits}"
-
-    # 1) 腾讯 qt.gtimg.cn（返回形如 v_sh600519="1~贵州茅台~600519~..."，~ 分隔，第2段为名称）
-    #    注意：该接口为 GBK 编码，需按字节读取后再以 gbk 解码，否则中文会乱码。
+def _tencent_name(symbol: str) -> Optional[str]:
+    """腾讯实时报价里取名称（v_sh600519="1~贵州茅台~600519~..."，~ 分隔，第 2 段为名称）。
+    该接口为 GBK 编码，必须按字节读取后再以 gbk 解码。场外基金用 jj 前缀同样适用。"""
     try:
         req = urllib.request.Request(f"https://qt.gtimg.cn/q={symbol}", headers=_HEADERS)
-        with urllib.request.urlopen(req, timeout=20, context=_SSL_CTX) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
             raw = resp.read()
-        text = raw.decode("gbk", "ignore")
-        m = re.search(r'"([^"]*)"', text)
+        m = re.search(r'"([^"]*)"', raw.decode("gbk", "ignore"))
         if m:
             fields = m.group(1).split("~")
-            if len(fields) > 1 and fields[1]:
+            if len(fields) > 1 and fields[1].strip():
                 return fields[1].strip()
     except Exception as e:
-        logger.warning("腾讯名称查询失败：%s", e)
+        logger.warning("腾讯名称查询失败(%s)：%s", symbol, e)
+    return None
 
-    # 2) 新浪（返回形如 var hq_str_sz000002="万科A,..."，首字段为名称，GBK 编码）
-    try:
-        req = urllib.request.Request(
-            f"https://hq.sinajs.cn/list={symbol}",
-            headers={**_HEADERS, "Referer": "https://finance.sina.com.cn"},
-        )
-        with urllib.request.urlopen(req, timeout=20, context=_SSL_CTX) as resp:
-            raw = resp.read().decode("gbk", "ignore")
-        m = re.search(r'"([^"]*)"', raw)
-        if m:
-            parts = m.group(1).split(",")
-            if parts and parts[0]:
-                return parts[0].strip()
-    except Exception as e:
-        logger.warning("新浪名称查询失败：%s", e)
 
-    # 3) akshare
-    if HAS_AKSHARE:
+def fetch_symbol_name(code: str, market: str = "A") -> Optional[str]:
+    """按品种查询标的中文名称（证券缩写）。腾讯实时接口 → smartbox 检索 → akshare。
+    查询失败返回 None（调用方应忽略，保留原有项目名）。"""
+    market = normalize_market(market)
+    got = resolve_symbol(code, market)
+    if not got:
+        return None
+    digits, tag = got
+
+    for tg in _fallback_tags(digits, market, tag):
+        nm = _tencent_name(_symbol_of(digits, tg))
+        if nm:
+            return nm
+
+    # smartbox 检索兜底（可覆盖代码前缀猜错的情况）
+    for cand in lookup_symbol(digits):
+        if cand.get("code") == digits and cand.get("name"):
+            return cand["name"]
+
+    # A 股再兜一层 akshare
+    if market == "A" and HAS_AKSHARE:
         try:
             info = ak.stock_individual_info_em(symbol=digits)
             nm = info[info["item"] == "股票简称"]["value"].iloc[0]
@@ -229,50 +360,144 @@ def fetch_stock_name(code: str) -> Optional[str]:
                 return str(nm).strip()
         except Exception as e:
             logger.warning("akshare 名称查询失败：%s", e)
-
     return None
 
 
-def fetch_a_hist(code: str, days: int = 250):
-    """拉取 A股日线（前复权优先），返回 (rows, source)。
-    rows 为 [(date, close), ...] 升序；source 为实际命中的源名。
-    多源顺序尝试：腾讯 → 新浪 → akshare → 东方财富。全失败抛出 RuntimeError。"""
-    parsed = parse_symbol(code)
-    if not parsed:
-        raise ValueError("无法识别股票代码，示例：600519.SH / sh600519 / 600519")
-    digits, secid_prefix = parsed
-    end = datetime.now()
-    start = end - timedelta(days=int(days) * 2 + 10)
-    start_s = start.strftime("%Y%m%d")
-    end_s = end.strftime("%Y%m%d")
+def fetch_stock_name(code: str, market: str = "A") -> Optional[str]:
+    """兼容旧名。"""
+    return fetch_symbol_name(code, market)
 
+
+def fetch_hist(code: str, market: str = "A", days: int = 250):
+    """按品种拉取历史序列，返回 (rows, source)。
+    rows 为 [(date, close), ...] 升序（场外基金为当日单位净值）；
+    source 为数据源中文名。全部失败抛出 RuntimeError。"""
+    market = normalize_market(market)
+    got = resolve_symbol(code, market)
+    if not got:
+        raise ValueError(
+            f"无法识别代码「{code}」—— {MARKET_LABELS[market]}的写法：{MARKET_HINTS[market]}")
+    digits, tag = got
     errors = []
 
-    # 1) 腾讯（最稳，前复权）
-    try:
-        return _fetch_tencent(digits, secid_prefix, days), "tencent"
-    except Exception as e:
-        errors.append(f"腾讯:{e}")
+    # 场外基金：走东财历史净值（无 K 线）
+    if market == "fund":
+        try:
+            return _fetch_fund_nav(digits, max(int(days), 365)), "东财基金净值"
+        except Exception as e:
+            errors.append(f"东财基金净值:{e}")
 
-    # 2) 新浪
-    try:
-        return _fetch_sina(digits, secid_prefix, days), "sina"
-    except Exception as e:
-        errors.append(f"新浪:{e}")
+    # 场内品种（股票 / ETF / LOF / 债券）：腾讯日线，必要时换市场再试一次
+    for tg in _fallback_tags(digits, market, tag):
+        try:
+            return _fetch_tencent(tg, digits, days), "腾讯行情"
+        except Exception as e:
+            errors.append(f"腾讯行情({tg}):{e}")
 
-    # 3) akshare
-    try:
-        return _fetch_akshare(digits, start_s, end_s, days), "akshare"
-    except Exception as e:
-        errors.append(f"akshare:{e}")
-
-    # 4) 东方财富直连兜底
-    try:
-        return _fetch_eastmoney(digits, secid_prefix, start_s, end_s), "eastmoney"
-    except Exception as e:
-        errors.append(f"东方财富:{e}")
+    # A 股兜底：akshare → 东方财富直连（后者在本 VPS 会被拒答，仅作其他环境兜底）
+    if market == "A":
+        end = datetime.now()
+        start = end - timedelta(days=int(days) * 2 + 10)
+        start_s, end_s = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+        try:
+            return _fetch_akshare(digits, start_s, end_s, days), "akshare"
+        except Exception as e:
+            errors.append(f"akshare:{e}")
+        try:
+            prefix = "1" if tag == "sh" else "0"
+            return _fetch_eastmoney(digits, prefix, start_s, end_s), "东方财富"
+        except Exception as e:
+            errors.append(f"东方财富:{e}")
 
     raise RuntimeError("所有行情数据源均失败 -> " + " | ".join(errors))
+
+
+def fetch_a_hist(code: str, days: int = 250):
+    """兼容旧名：等同 fetch_hist(code, "A", days)。"""
+    return fetch_hist(code, "A", days)
+
+
+# ---------------- 代码检索（新建标的时自动带出名称与品种） ----------------
+_SMARTBOX_API = "https://proxy.finance.qq.com/ifzqgtimg/appstock/smartbox/search/get?q="
+_EM_SUGGEST_API = "https://searchadapter.eastmoney.com/api/suggest/get?input="
+
+
+def _mk_candidate(tag: str, code: str, name: str, kind: str) -> dict:
+    """把「市场标签 + 代码 + 名称 + 品种码」整理成统一候选结构。"""
+    tag = (tag or "").lower()
+    if tag == "jj":
+        market = "fund"
+    elif kind.startswith("GP"):
+        market = "A"
+    elif kind.startswith("ZQ"):
+        market = "bond"
+    elif kind in ("ETF", "LOF", "JJ"):
+        market = "etf"
+    else:
+        market = "A"
+    suffix = {"sh": ".SH", "sz": ".SZ", "bj": ".BJ"}.get(tag, "")
+    # 品种码未收录时退回品种名，不把英文码直接甩给用户
+    kind_label = KIND_LABELS.get(kind) or MARKET_LABELS[market]
+    return {
+        "code": code,
+        "name": name,
+        "market": market,
+        "market_label": MARKET_LABELS[market],
+        "tag": tag,
+        "kind": kind,
+        "kind_label": kind_label,
+        "display": f"{code}{suffix}",
+    }
+
+
+def _lookup_eastmoney(q: str, limit: int) -> list:
+    """东财检索兜底（实测本 VPS 可达，返回 Classify / MktNum / QuoteID）。"""
+    url = f"{_EM_SUGGEST_API}{urllib.parse.quote(q)}&type=14&count=10"
+    try:
+        rows = ((json.loads(_urlopen(url, timeout=12)).get("QuotationCodeTable") or {})
+                .get("Data")) or []
+    except Exception as e:
+        logger.warning("东财代码检索失败：%s", e)
+        return []
+    out = []
+    for r in rows[:limit]:
+        classify = (r.get("Classify") or "").strip()
+        market = {"Stock": "A", "Fund": "etf", "OTCFUND": "fund",
+                  "Bond": "bond"}.get(classify, "A")
+        tag = {"1": "sh", "0": "sz", "150": "jj"}.get(str(r.get("MktNum") or ""), "")
+        if market == "fund":
+            tag = "jj"
+        out.append(_mk_candidate(tag, r.get("Code") or "", r.get("Name") or "",
+                                 classify or (r.get("SecurityTypeName") or "")))
+    return out
+
+
+def lookup_symbol(q: str, limit: int = 8) -> list:
+    """按代码或名称检索标的，返回候选列表（含**权威的市场前缀与品种**）。
+    主源腾讯 smartbox（实测本 VPS 可达），失败回退东财检索；两者都失败返回 []。
+
+    用途：新建标的时自动带出名称与品种；同一代码有歧义时（如 019547 既是沪市国债
+    又是某场外基金、161725 既是深市 LOF 又是场外基金）把候选全部列出让用户选。
+    """
+    q = (q or "").strip()
+    if not q:
+        return []
+    try:
+        j = json.loads(_urlopen(_SMARTBOX_API + urllib.parse.quote(q), timeout=12))
+        stocks = (j.get("data") or {}).get("stock") or []
+    except Exception as e:
+        logger.warning("腾讯 smartbox 检索失败：%s", e)
+        return _lookup_eastmoney(q, limit)
+    out = []
+    for item in stocks[:limit]:
+        try:
+            tag, code, name = item[0], item[1], item[2]
+            kind = item[4] if len(item) > 4 else ""
+        except Exception:
+            continue
+        if code:
+            out.append(_mk_candidate(tag, code, name, kind))
+    return out or _lookup_eastmoney(q, limit)
 
 
 # ---------------- 大盘指数（圆桌讨论用，独立于个股逻辑） ----------------

@@ -124,7 +124,7 @@ async function renderGuestProject(p) {
     </div>
     <div id="g-refresh-status" class="guest-refresh-status muted">正在检查最新行情…</div>
     <div class="panel">
-      <h3>${p.name} <span class="muted">${p.code || ""} · ${p.market}</span></h3>
+      <h3>${p.name} <span class="muted">${p.code || ""} · ${escapeHtml(marketLabel(p.market))}</span></h3>
       <div id="note-wrap"></div>
     </div>
     <div class="panel"><h3>最新操作建议</h3><div id="suggestion" class="sug"><span class="muted">尚未生成</span></div></div>
@@ -183,7 +183,8 @@ async function guestRefresh() {
       const gp = projects.find(x => x.id === currentId);
       if (gp) gp.name = r.name;
       const title = document.querySelector("#main .panel h3");
-      if (title) title.innerHTML = `${r.name} <span class="muted">${gp ? (gp.code || "") : ""} · ${gp ? (gp.market || "A") : "A"}</span>`;
+      const mk = escapeHtml(marketLabel(gp ? gp.market : "A"));
+      if (title) title.innerHTML = `${escapeHtml(r.name)} <span class="muted">${gp ? escapeHtml(gp.code || "") : ""} · ${mk}</span>`;
     }
   } catch (e) {
     if (status) { status.textContent = "行情检查失败：" + e.message; status.className = "guest-refresh-status err"; }

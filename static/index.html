@@ -11,7 +11,7 @@
   <script>
     (function(){ try { if (localStorage.getItem('qw_theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch(e){} })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=41" />
+  <link rel="stylesheet" href="/style.css?v=43" />
   <script src="/vendor/echarts.min.js?v=27"></script>
 </head>
 <body>
@@ -70,12 +70,15 @@
       </div>
       <form id="project-form" class="card">
         <input id="p-name" placeholder="标的名称（如 贵州茅台）" required />
-        <input id="p-code" placeholder="标的代码(如 600519.SH)" />
+        <input id="p-code" placeholder="标的代码（如 600519.SH）" autocomplete="off" />
         <select id="p-market">
-          <option value="A">A股</option>
-          <option value="HK">港股</option>
-          <option value="US">美股</option>
+          <option value="A">股票</option>
+          <option value="etf">场内基金（ETF / LOF）</option>
+          <option value="fund">场外基金</option>
+          <option value="bond">债券（可转债 / 国债）</option>
         </select>
+        <div id="p-lookup" class="pm-lookup hidden"></div>
+        <div id="p-hint" class="pm-hint muted"></div>
         <select id="p-bias">
           <option value="neutral">中性</option>
           <option value="long">偏多</option>
@@ -128,13 +131,13 @@
   </div>
 
   <!-- 前端脚本按序加载（经典脚本，共享全局作用域）：由原 app.js 按顶层边界原样拆分 -->
-  <script src="/js/01-core.js?v=44"></script>
-  <script src="/js/02-dashboard.js?v=44"></script>
-  <script src="/js/03-auth.js?v=44"></script>
-  <script src="/js/04-about-users.js?v=44"></script>
-  <script src="/js/05-roundtable.js?v=44"></script>
-  <script src="/js/06-pages.js?v=44"></script>
-  <script src="/js/07-forum.js?v=44"></script>
-  <script src="/js/08-news.js?v=44"></script>
+  <script src="/js/01-core.js?v=46"></script>
+  <script src="/js/02-dashboard.js?v=46"></script>
+  <script src="/js/03-auth.js?v=46"></script>
+  <script src="/js/04-about-users.js?v=46"></script>
+  <script src="/js/05-roundtable.js?v=46"></script>
+  <script src="/js/06-pages.js?v=46"></script>
+  <script src="/js/07-forum.js?v=46"></script>
+  <script src="/js/08-news.js?v=46"></script>
 </body>
 </html>

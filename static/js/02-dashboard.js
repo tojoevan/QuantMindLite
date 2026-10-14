@@ -91,7 +91,7 @@ async function selectProject(id) {
       <span class="muted">个股详情</span>
     </div>
     <div class="panel">
-      <h3>${p.name} <span class="muted">${p.code || ""} · ${p.market}</span></h3>
+      <h3>${p.name} <span class="muted">${p.code || ""} · ${escapeHtml(marketLabel(p.market))}</span></h3>
       <div id="note-wrap"></div>
     </div>
     <div class="panel">
@@ -131,7 +131,8 @@ async function selectProject(id) {
           <option value="120">近120日</option>
           <option value="250">近250日</option>
         </select>
-        <span class="muted" id="fetch-hint">按项目代码自动同步</span>
+        <span class="muted" id="fetch-hint">${escapeHtml(marketLabel(p.market))} · ${
+          p.market === "fund" ? "按日净值同步（合并写入，不删历史）" : "按代码自动同步"}</span>
       </div>
       <form id="price-form" class="inline" style="margin-top:10px">
         <input id="px-date" type="date" value="${today()}" />
@@ -686,6 +687,8 @@ async function saveStrategyNote() {
 function openProjectModal() {
   const root = document.getElementById("project-modal");
   if (!root) return;
+  pmClearLookup();
+  pmPaintHint();
   root.classList.remove("hidden");
   const first = document.getElementById("p-name");
   if (first) setTimeout(() => first.focus(), 30);
@@ -714,8 +717,85 @@ document.getElementById("project-form").onsubmit = async (e) => {
     return;
   }
   e.target.reset();
+  pmClearLookup();
+  pmPaintHint();
   closeProjectModal();
   await loadProjects(false);                                   // 只刷新数据，不强制选中
   if (currentView && currentView.name === "dashboard") await renderDashboard();
   showToast("标的已创建");
 };
+
+// ===== 代码识别（P9）：填完代码自动带出名称与品种 =====
+// 为什么必须有：① 沪深前缀按代码段猜不准（510300 沪 / 159915 深）；
+// ② 同一 6 位数字可能既是场内又是场外（019547 国债 vs 某 QDII、161725 LOF vs 某 LOF 联接），
+// 用户手填只能试错。后端 /api/symbol/lookup 走腾讯 smartbox（实测本 VPS 可达）。
+let pmTimer = null;
+let pmSeq = 0;                 // 只认最后一次输入的结果，避免慢请求把新结果覆盖掉
+
+function pmPaintHint() {
+  const mkEl = document.getElementById("p-market");
+  const hintEl = document.getElementById("p-hint");
+  const codeEl = document.getElementById("p-code");
+  if (!mkEl) return;
+  const mk = mkEl.value;
+  if (hintEl) hintEl.textContent = "代码写法：" + (MARKET_HINTS[mk] || MARKET_HINTS.A)
+    + " · 填好代码会自动识别名称与品种";
+  if (codeEl) codeEl.placeholder = "标的代码（" + marketLabel(mk) + "）";
+}
+
+function pmClearLookup() {
+  const box = document.getElementById("p-lookup");
+  if (box) { box.classList.add("hidden"); box.innerHTML = ""; }
+}
+
+function pmApplyCandidate(c) {
+  if (!c) return;
+  const nameEl = document.getElementById("p-name");
+  const codeEl = document.getElementById("p-code");
+  const mkEl = document.getElementById("p-market");
+  if (c.name && nameEl) nameEl.value = c.name;
+  if (c.code && codeEl) codeEl.value = c.display || c.code;
+  if (c.market && mkEl) mkEl.value = c.market;
+  pmPaintHint();
+  pmClearLookup();
+  showToast("已识别：" + (c.name || c.code) + "（" + marketLabel(c.market) + "）");
+}
+
+async function pmLookup() {
+  const box = document.getElementById("p-lookup");
+  const codeEl = document.getElementById("p-code");
+  if (!box || !codeEl) return;
+  // 弹窗对游客本就不可达（#dash-new 不渲染），但检索接口要鉴权，
+  // 万一被触达，401 会走 API() 的登出分支——这里先挡住。
+  if (isGuest || !token) return;
+  const q = (codeEl.value || "").trim();
+  if (q.length < 2) { pmClearLookup(); return; }
+  const seq = ++pmSeq;
+  let items = [];
+  try {
+    const r = await API("GET", "/api/symbol/lookup?q=" + encodeURIComponent(q));
+    items = (r && r.items) || [];
+  } catch (err) {
+    items = [];               // 检索失败不打扰用户：手填代码仍然可用
+  }
+  if (seq !== pmSeq) return;
+  if (!items.length) { pmClearLookup(); return; }
+  box.innerHTML = items.map((c, i) => `
+    <button type="button" class="pm-cand" data-cand="${i}">
+      <span class="pm-cand-name">${escapeHtml(c.name || c.code)}</span>
+      <span class="pm-cand-code">${escapeHtml(c.display || c.code)}</span>
+      <span class="pm-kind">${escapeHtml(c.kind_label || c.market_label || "")}</span>
+    </button>`).join("");
+  box.classList.remove("hidden");
+  box.querySelectorAll(".pm-cand").forEach(btn => {
+    btn.onclick = () => pmApplyCandidate(items[Number(btn.getAttribute("data-cand"))]);
+  });
+}
+
+document.getElementById("p-market").onchange = () => { pmPaintHint(); pmLookup(); };
+document.getElementById("p-code").addEventListener("blur", pmLookup);
+document.getElementById("p-code").addEventListener("input", () => {
+  clearTimeout(pmTimer);
+  pmTimer = setTimeout(pmLookup, 450);      // 防抖：连续输入只查最后一次
+});
+pmPaintHint();

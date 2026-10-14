@@ -37,7 +37,10 @@ from models import (
     NewsFeedCreate, NewsFeedUpdate, NewsFeedOut, NewsItemOut, NewsFetchReq, NewsSettingsIn,
 )
 from predictor import run_strategy, STRATEGY_CATALOG, rolling_predict, forecast_future
-from datasource import fetch_a_hist, fetch_stock_name, fetch_index_quotes
+from datasource import (
+    fetch_hist, fetch_symbol_name, fetch_index_quotes, lookup_symbol,
+    normalize_market, MARKET_LABELS, MARKET_HINTS,
+)
 from llm import chat_complete
 import newsfetch
 
@@ -429,6 +432,8 @@ def update_project(pid: int, body: ProjectUpdate, u: User = Depends(get_current_
         if v is not None:
             if field == "strategy_config" and isinstance(v, dict):
                 v = json.dumps(v, ensure_ascii=False)
+            if field == "market":
+                v = normalize_market(v)
             setattr(p, field, v)
     db.commit()
     db.refresh(p)
@@ -480,7 +485,7 @@ def create_project(body: ProjectCreate, u: User = Depends(get_current_user), db:
     cfg = body.strategy_config
     if isinstance(cfg, dict):
         cfg = json.dumps(cfg, ensure_ascii=False)
-    p = Project(name=body.name, code=body.code, market=body.market,
+    p = Project(name=body.name, code=body.code, market=normalize_market(body.market),
                 strategy=body.strategy, strategy_type=body.strategy_type,
                 strategy_config=cfg if cfg is not None else "{}", bias=body.bias,
                 position_shares=body.position_shares, position_cost=body.position_cost,
@@ -509,6 +514,22 @@ def delete_project(pid: int, u: User = Depends(get_current_user), db: Session = 
     return {"ok": True}
 
 
+# ---------------- 标的检索（新建/编辑标的时自动带出名称与品种） ----------------
+@app.get("/api/symbol/lookup")
+def symbol_lookup(q: str = "", u: User = Depends(get_current_user)):
+    """按代码或名称检索标的，返回候选（含权威的市场前缀与品种）。
+
+    主源腾讯 smartbox（本 VPS 实测可达），失败回退东财检索。
+    解决两类写法歧义：① 沪深前缀猜不准（510300 沪 / 159915 深）；
+    ② 同一 6 位数字既是场内又是场外（019547 国债 vs 某 QDII、161725 LOF vs 某 LOF 联接）。
+    """
+    q = (q or "").strip()
+    if len(q) < 2:
+        return {"query": q, "items": [], "markets": MARKET_LABELS, "hints": MARKET_HINTS}
+    return {"query": q, "items": lookup_symbol(q, limit=8),
+            "markets": MARKET_LABELS, "hints": MARKET_HINTS}
+
+
 # ---------------- 行情（实际线） ----------------
 @app.post("/api/projects/{pid}/prices", status_code=201)
 def add_price(pid: int, body: PricePoint, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -531,17 +552,20 @@ def list_prices(pid: int, u: User = Depends(get_current_user), db: Session = Dep
 @app.post("/api/projects/{pid}/fetch")
 def fetch_prices(pid: int, body: Optional[FetchReq] = None,
                  u: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """从行情数据源自动拉取 A股日线并写入实际线（覆盖式）。
+    """按**品种**从对应数据源拉取历史序列并写入实际线。
 
+    品种路由（见 datasource.py）：股票/场内基金/债券 → 腾讯日线；场外基金 → 东财净值。
     - force=False（进入项目时自动拉取）：若今日已拉取过或行情已是最新，则跳过外部
       调用，避免频繁请求数据源；
     - force=True（手动强制刷新）：始终重新拉取。
     """
     p = _project_or_404(pid, u, db)
     code = (body.code if body and body.code else p.code) or ""
+    mk = normalize_market(p.market)
     if not code:
         raise HTTPException(
-            400, "项目未设置股票代码：新建/编辑项目时填写 code，例如 600519.SH")
+            400, f"项目未设置代码：新建/编辑项目时填写 code，{MARKET_LABELS[mk]}的写法如 "
+                 f"{MARKET_HINTS[mk]}")
     force = bool(body and body.force)
     today_s = _cn_today()
     # 自动拉取（非强制）：今日已拉取或行情已是最新 → 跳过外部调用
@@ -557,25 +581,39 @@ def fetch_prices(pid: int, body: Optional[FetchReq] = None,
             return {"ok": False, "skipped": True, "already_today": True,
                     "latest_date": latest_date, "name": p.name,
                     "message": f"今日已拉取行情（最新 {latest_date}），无需重复获取"}
-    days = (body.days if body and body.days else 60)
+    # 场外基金默认多取一年：净值序列短（一天一个点），窗口太小会把历史截没
+    default_days = 365 if mk == "fund" else 60
+    days = (body.days if body and body.days else default_days)
     try:
-        rows, source = fetch_a_hist(code, days)
+        rows, source = fetch_hist(code, mk, days)
     except Exception as e:
-        raise HTTPException(502, f"行情拉取失败：{e}")
+        raise HTTPException(502, f"{MARKET_LABELS[mk]}拉取失败：{e}")
     if not rows:
         raise HTTPException(502, "未获取到任何行情数据")
-    # 覆盖式：清空旧行情后写入
-    db.query(MarketPrice).filter(MarketPrice.project_id == pid).delete()
-    for d, c in rows:
-        db.add(MarketPrice(project_id=pid, date=d, close=c))
-    # 同步成功后，自动把项目名更新为股票名称（查询失败则保留原名）
-    stock_name = None
+    if mk == "fund":
+        # 场外基金：合并写入。**绝不能用覆盖式**——净值一次只回一段窗口，
+        # 先删后写会把窗口外的历史（可能上千条）整段丢掉。
+        existing = {m.date: m for m in
+                    db.query(MarketPrice).filter(MarketPrice.project_id == pid).all()}
+        for d, c in rows:
+            m = existing.get(d)
+            if m is None:
+                db.add(MarketPrice(project_id=pid, date=d, close=c))
+            elif m.close != c:
+                m.close = c
+    else:
+        # 场内品种：覆盖式重写（前复权价会随除权整体变化，必须整段替换）
+        db.query(MarketPrice).filter(MarketPrice.project_id == pid).delete()
+        for d, c in rows:
+            db.add(MarketPrice(project_id=pid, date=d, close=c))
+    # 同步成功后，自动把项目名更新为标的名称（查询失败则保留原名）
+    sym_name = None
     try:
-        stock_name = fetch_stock_name(code)
-        if stock_name:
-            p.name = stock_name
+        sym_name = fetch_symbol_name(code, mk)
+        if sym_name:
+            p.name = sym_name
     except Exception as e:
-        logger.warning("股票名称查询失败（保留原项目名）：%s", e)
+        logger.warning("标的名称查询失败（保留原项目名）：%s", e)
     # 记录今日已拉取，供自动拉取限频（每天最多实际调用一次数据源）
     p.last_fetch_date = today_s
     db.commit()
@@ -585,9 +623,10 @@ def fetch_prices(pid: int, body: Optional[FetchReq] = None,
         "start": rows[0][0],
         "end": rows[-1][0],
         "latest_close": rows[-1][1],
-        "name": stock_name or p.name,
-        "source": {"tencent": "腾讯", "sina": "新浪",
-                   "akshare": "akshare", "eastmoney": "东方财富"}.get(source, source),
+        "name": sym_name or p.name,
+        "market": mk,
+        "market_label": MARKET_LABELS[mk],
+        "source": source,
     }
 
 
@@ -804,7 +843,7 @@ def guest_refresh(pid: int, db: Session = Depends(get_db)):
         return {"updated": False, "already_today": True, "latest_date": latest_date,
                 "message": f"今日已拉取行情（最新 {latest_date}），无需重复获取"}
     try:
-        rows, source = fetch_a_hist(p.code, 250)
+        rows, source = fetch_hist(p.code, normalize_market(p.market), 250)
     except Exception as e:
         return {"updated": False, "already_today": False, "latest_date": latest_date,
                 "error": True, "message": f"行情拉取失败：{e}"}
@@ -819,17 +858,17 @@ def guest_refresh(pid: int, db: Session = Depends(get_db)):
             db.add(MarketPrice(project_id=p.id, date=d, close=c))
             added += 1
     p.last_fetch_date = today_s
-    # 同步成功后，自动把项目名更新为股票名称（查询失败则保留原名）
+    # 同步成功后，自动把项目名更新为标的名称（查询失败则保留原名）
     stock_name = None
     try:
-        stock_name = fetch_stock_name(p.code)
+        stock_name = fetch_symbol_name(p.code, normalize_market(p.market))
         if stock_name:
             p.name = stock_name
     except Exception as e:
-        logger.warning("游客股票名称查询失败（保留原项目名）：%s", e)
+        logger.warning("游客标的名称查询失败（保留原项目名）：%s", e)
     db.commit()
     new_latest = max(r[0] for r in rows)
-    src_name = {"tencent": "腾讯", "sina": "新浪", "akshare": "akshare", "eastmoney": "东方财富"}.get(source, source)
+    src_name = source
     name = stock_name or p.name
     if added == 0:
         return {"updated": False, "already_today": True, "latest_date": new_latest, "name": name,

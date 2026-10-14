@@ -183,7 +183,7 @@ async function renderDashboard() {
       <td><b>${escapeHtml(p.name || "")}</b>${isGuest ? "" : `
         <button class="pin-btn ${pinOf(p.id) ? "on" : ""}" type="button"
           title="${pinOf(p.id) ? "取消置顶" : "置顶"}" data-pin="${p.id}">📌</button>`}</td>
-      <td class="muted">${escapeHtml(p.code || p.market || "")}</td>
+      <td class="muted">${p.code ? escapeHtml(p.code) + marketTag(p.market) : escapeHtml(marketLabel(p.market))}</td>
       <td>${fmtNum(p.shares, 0)}</td>
       <td>${fmtNum(p.cost, 2)}</td>
       <td>${fmtNum(p.last_close, 2)}</td>

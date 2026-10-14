@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """基金净值自动获取（独立脚本，不依赖主系统 datasource/app.py）。
 
+⚠️ 2026-10-15 起：主系统已支持场外基金（`market='fund'` 走 datasource._fetch_fund_nav，
+经 /api/projects/{id}/fetch 拉取，写入语义为「合并」不删历史），本脚本不再是唯一通道。
+保留原因：crontab `30 13 * * 1-5` 仍在跑，用于**每日自动补净值**（网页端要手动点）。
+两处写入互不冲突（本脚本 upsert，主系统对 fund 也是合并写）。
+
 遍历 projects 中 market='fund' 的标的，从东方财富基金净值接口
 (https://api.fund.eastmoney.com/f10/lsjz) 拉取历史单位净值(DWJZ)，
 按 (project_id, date) 幂等 upsert 进 market_prices。

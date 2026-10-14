@@ -21,6 +21,19 @@ const API = (method, path, body) => {
 
 const isMobile = () => window.matchMedia("(max-width: 768px)").matches;
 
+// 品种（与后端 datasource.MARKET_LABELS 一一对应）：决定代码怎么写、走哪个数据源
+const MARKET_LABELS = { A: "股票", etf: "场内基金", fund: "场外基金", bond: "债券" };
+const MARKET_HINTS = {
+  A: "如 600519.SH / 000002.SZ",
+  etf: "如 510300（沪深300ETF）/ 159915（创业板ETF）/ 161725（LOF）",
+  fund: "如 012969 / 206006（场外基金，6 位数字）",
+  bond: "如 113056（可转债）/ 127045（深市转债）/ 019547（国债）"
+};
+const marketLabel = m => MARKET_LABELS[m] || m || "";
+// 品种徽章：股票是默认值，不再重复标注，避免每行都挂一个多余标签
+const marketTag = m => (m && m !== "A")
+  ? `<span class="mk-tag">${escapeHtml(marketLabel(m))}</span>` : "";
+
 // 游客模式专用请求：不带 token，且不触发登出（401/403 直接抛错）
 const guestApi = (method, path, body) => {
   const opt = { method, headers: {} };

@@ -894,3 +894,37 @@ th { color: var(--muted); font-weight: 600; }
   .nf-search { flex: 1 1 100%; }
   .nm-url { max-width: 140px; }
 }
+
+/* ============ P9 · 新建标的支持基金 / 债券 ============ */
+/* 代码识别候选列表：填完代码自动带出名称与品种，点一条即填入 */
+.pm-hint { font-size: var(--fs-xs); line-height: 1.5; margin-top: -4px; }
+.pm-lookup {
+  display: flex; flex-direction: column; gap: 4px; margin-top: -4px;
+  padding: 6px; border: var(--bd-w) solid var(--border); border-radius: var(--radius-sm);
+  background: var(--subtle-bg); max-height: 216px; overflow-y: auto;
+}
+.pm-lookup.hidden { display: none; }
+/* 必须带 .pm-lookup 前缀提特异性：新建表单本身是 .card，
+   而 `.card button`（绿底主按钮）会盖掉单类选择器，候选条目会被刷成绿色。 */
+.pm-lookup .pm-cand {
+  display: flex; align-items: baseline; gap: var(--sp-2); width: 100%; text-align: left;
+  padding: 6px 8px; cursor: pointer; font-size: var(--fs-sm); font-weight: 400;
+  color: var(--text); background: transparent; border: 0; border-radius: var(--radius-sm);
+  transition: background .12s;
+}
+.pm-lookup .pm-cand:hover { background: var(--panel); }
+.pm-cand-name { font-weight: 500; }
+.pm-cand-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-xs); color: var(--muted);
+}
+.pm-kind {
+  margin-left: auto; padding: 1px 6px; font-size: 11px;
+  color: var(--muted); border: var(--bd-w) solid var(--border); border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+/* 品种徽章（列表与详情页用；股票为默认值不标注） */
+.mk-tag {
+  margin-left: 5px; padding: 1px 6px; font-size: 11px;
+  background: var(--accent-soft); color: var(--accent); border-radius: var(--radius-sm);
+}
