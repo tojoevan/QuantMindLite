@@ -166,10 +166,9 @@ def _proj_out(p):
 
 
 # ---------------- 盈亏回放 ----------------
-def replay(feedbacks, seed_shares=0.0, seed_cost=0.0):
-    """回放反馈序列，计算持仓与盈亏。
-    seed_shares / seed_cost 为用户输入的“当前仓位”种子，
-    可让已在持股、想接入系统跟踪的场景从该成本起算盈亏。"""
+def _replay_raw(feedbacks, seed_shares=0.0, seed_cost=0.0):
+    """回放反馈序列（全精度，不四舍五入），计算持仓与盈亏。
+    seed_shares / seed_cost 为“建仓起点”。返回 (out, dict(shares, avg, realized))。"""
     fb = sorted(feedbacks, key=lambda f: (f.date, f.id))
     shares = float(seed_shares or 0.0)
     avg = float(seed_cost or 0.0)
@@ -191,7 +190,34 @@ def replay(feedbacks, seed_shares=0.0, seed_cost=0.0):
                 shares = 0.0
                 avg = 0.0
         out.append((f, round(r, 2)))
-    return out, dict(shares=round(shares, 4), avg=round(avg, 2), realized=round(realized, 2))
+    return out, dict(shares=shares, avg=avg, realized=realized)
+
+
+def replay(feedbacks, seed_shares=0.0, seed_cost=0.0):
+    """对外展示用：在 _replay_raw 基础上对持仓/成本四舍五入（成本保留2位）。"""
+    out, pos = _replay_raw(feedbacks, seed_shares, seed_cost)
+    return out, dict(shares=round(pos["shares"], 4), avg=round(pos["avg"], 2), realized=round(pos["realized"], 2))
+
+
+def _holding_initial(fbs, cur_shares, cur_cost):
+    """由『当前持仓(position_shares)』反推『首笔反馈前的建仓起点』，用于盈亏曲线时间轴基准。
+
+    position_shares 现已维护为『含全部反馈回放的当前持仓』，故盈亏曲线不能再把它当种子再回放一次
+    （否则反馈被二次累加）。这里沿反馈逆序撤销每笔操作，得到建仓起点，再交由 replay 正向重放时间轴。
+    """
+    s = float(cur_shares or 0.0)
+    avg = float(cur_cost or 0.0)
+    for f in sorted(fbs, key=lambda x: (x.date, x.id), reverse=True):
+        if f.action == "BUY" and (f.qty or 0) > 0:
+            s0 = s - f.qty
+            if s0 > 1e-9:
+                avg = (avg * s - (f.price or 0.0) * f.qty) / s0
+            else:
+                avg = 0.0
+            s = s0
+        elif f.action == "SELL" and (f.qty or 0) > 0:
+            s = s + f.qty  # 卖出不改变成本基准
+    return s, avg
 
 
 # ---------------- 健康检查 ----------------
@@ -550,14 +576,16 @@ def predict(pid: int, body: Optional[PredictionCreate] = None,
 @app.post("/api/projects/{pid}/feedback", response_model=FeedbackOut, status_code=201)
 def submit_feedback(pid: int, body: FeedbackCreate, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
     p = _project_or_404(pid, u, db)
-    # 计算该笔实现的盈亏：回放已有 + 本笔（以用户输入仓位为种子）
-    existing = db.query(Feedback).filter(Feedback.project_id == pid).all()
     new_fb = Feedback(project_id=pid, date=body.date, action=body.action,
                       price=body.price, qty=body.qty,
                       prediction_id=body.prediction_id, note=body.note)
-    replayed, _ = replay(existing + [new_fb], p.position_shares or 0.0, p.position_cost or 0.0)
-    realized = replayed[-1][1]
-    new_fb.realized_pnl = realized
+    # position_shares 已是『含全部历史反馈的当前持仓』，本笔操作直接作用于当前持仓即可。
+    # 用全精度回放，避免四舍五入误差在反复买卖/反向还原基准时累积漂移。
+    replayed, pos = _replay_raw([new_fb], p.position_shares or 0.0, p.position_cost or 0.0)
+    new_fb.realized_pnl = pos["realized"]
+    # 维护当前持仓：买入/卖出后写回项目，使『持仓』在详情/列表/圆桌各处一致可见
+    p.position_shares = round(pos["shares"], 4)
+    p.position_cost = pos["avg"]
     db.add(new_fb)
     db.commit()
     db.refresh(new_fb)
@@ -575,12 +603,22 @@ def _build_chart(p, db):
     preds = db.query(Prediction).filter(Prediction.project_id == p.id).order_by(Prediction.date).all()
     fbs = db.query(Feedback).filter(Feedback.project_id == p.id).all()
 
-    replayed, pos = replay(fbs, p.position_shares or 0.0, p.position_cost or 0.0)
+    # position_shares 已是『含全部反馈回放的当前持仓』；时间轴起点用反向回放还原建仓起点，
+    # 再正向重放反馈得到历史持仓与逐笔实现盈亏（避免对反馈二次累加）。
+    init_s, init_c = _holding_initial(fbs, p.position_shares or 0.0, p.position_cost or 0.0)
+    replayed, _ = replay(fbs, init_s, init_c)
     realized_map = {f.id: r for f, r in replayed}
 
-    # pnl 曲线：按行情日期 mark-to-market（以用户输入仓位为种子）
-    shares = float(p.position_shares or 0.0)
-    avg = float(p.position_cost or 0.0)
+    # 当前持仓面板：直接取维护值（shares/cost），实现盈亏为各反馈累加
+    pos = dict(
+        shares=round(float(p.position_shares or 0.0), 4),
+        avg=round(float(p.position_cost or 0.0), 2),
+        realized=round(sum(float(f.realized_pnl or 0.0) for f in fbs), 2),
+    )
+
+    # pnl 曲线：按行情日期 mark-to-market（以建仓起点为基准，正向重放反馈）
+    shares = init_s
+    avg = init_c
     realized = 0.0
     fb_sorted = sorted(fbs, key=lambda f: (f.date, f.id))
     fi = 0
@@ -816,6 +854,7 @@ PROMPT_OUTPUT_SPEC = """# 输出格式（严格遵守，不要使用表格）
 _LLM_SYSTEM = "你是严谨的A股投研助手。严格基于用户给出的持仓与行情快照作答，不臆测快照之外的数据，并严格遵守用户指定的输出格式。"
 
 
+
 def _ensure_default_seats(db):
     """圆桌表为空时播种 3 个默认席位（幂等）；已存在的默认席位若未配置角色则补上示例角色。"""
     existing = {s.name: s for s in db.query(RoundtableSeat).all()}
@@ -859,12 +898,11 @@ def _seat_out(s: RoundtableSeat, db) -> RoundtableSeatOut:
 
 
 def _effective_position(p, db):
-    """项目有效持仓 = 用户种子仓位 + 反馈回放（与项目页盈亏曲线同源，保证三处口径一致）。
-    返回 (shares, avg, feedbacks按时间正序)。"""
+    """项目当前持仓 = 维护值 position_shares/position_cost（已含全部反馈回放，提交买卖时写回）。
+    返回 (shares, avg, feedbacks按时间正序)。与项目页盈亏曲线、圆桌快照口径一致。"""
     fbs = (db.query(Feedback).filter(Feedback.project_id == p.id)
            .order_by(Feedback.date, Feedback.id).all())
-    _, pos = replay(fbs, p.position_shares or 0.0, p.position_cost or 0.0)
-    return float(pos["shares"] or 0.0), float(pos["avg"] or 0.0), fbs
+    return float(p.position_shares or 0.0), float(p.position_cost or 0.0), fbs
 
 
 def _build_snapshot(u, db) -> dict:
@@ -1229,6 +1267,36 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
         if r.get("ok"):
             _upsert_post(db, date_s, r["seat_id"], r["content"], "auto", r.get("model") or "")
     return {"date": date_s, "results": results}
+
+
+# ---------------- 持仓模型迁移（一次性） ----------------
+def _migrate_positions():
+    """一次性迁移：将历史项目的 position_shares/position_cost 由『建仓种子』修正为
+    『含全部反馈回放的当前持仓』。此后提交买卖会持续维护该值（见 submit_feedback）。
+    幂等：用 settings 标记，已迁移则跳过，避免对反馈二次累加。"""
+    db = SessionLocal()
+    try:
+        flag = db.query(Setting).filter(Setting.key == "migrated_position_maintained").first()
+        if flag:
+            return
+        for p in db.query(Project).all():
+            fbs = (db.query(Feedback).filter(Feedback.project_id == p.id)
+                   .order_by(Feedback.date, Feedback.id).all())
+            if not fbs:
+                continue
+            _, pos = _replay_raw(fbs, p.position_shares or 0.0, p.position_cost or 0.0)
+            p.position_shares = round(pos["shares"], 4)
+            p.position_cost = pos["avg"]
+        db.add(Setting(key="migrated_position_maintained", value="1"))
+        db.commit()
+    except Exception as e:  # 迁移失败不应阻断启动
+        logger.warning("持仓迁移跳过：%s", e)
+        db.rollback()
+    finally:
+        db.close()
+
+
+_migrate_positions()
 
 
 # ---------------- 前端静态托管 ----------------
