@@ -46,62 +46,36 @@ function enterNoteEdit() {
 async function loadProjects(autoSelect = true) {
   STRATEGIES = await API("GET", "/api/strategies").catch(() => ({}));
   projects = await API("GET", "/api/projects");
-  renderProjectList();
+  // P6：侧栏已删除——标的列表改由交易仪表台「标的清单」渲染，这里不再重绘侧栏
   // currentId 已不在新列表中（如游客模式遗留/项目被删）则清空
   if (!projects.some(p => p.id === currentId)) currentId = null;
   // autoSelect=false：只刷新列表，由调用方决定落地视图（如登录后落地圆桌）
   if (!autoSelect) return;
   if (!projects.length) {
-    // 当前用户无项目：主区给出引导
+    // 当前用户无标的：主区给出引导
     document.getElementById("main").innerHTML = `
       <div class="panel"><h3>欢迎</h3>
-      <p class="muted">暂无项目，请在左侧「新建项目」中创建第一个项目（如 600519.SH）。</p></div>`;
+      <p class="muted">还没有任何标的。切到「交易仪表台」，点右上角「＋ 新建标的」创建第一个（如 600519.SH）。</p></div>`;
     return;
   }
   if (!currentId) selectProject(projects[0].id);
 }
 
-function renderProjectList() {
-  const ul = document.getElementById("project-list");
-  ul.innerHTML = "";
-  // 置顶项目排前（后端已按 pinned 排序，这里再排一次保证渲染顺序一致）
-  const sorted = [...projects].sort((a, b) => (b.pinned || 0) - (a.pinned || 0));
-  sorted.forEach(p => {
-    const li = document.createElement("li");
-    li.className = p.id === currentId ? "active" : "";
-    li.innerHTML = `
-      <div class="proj-line" title="${escapeHtml(p.name)}${p.code ? " " + escapeHtml(p.code) : ""}">
-        <span class="proj-name">${escapeHtml(p.name)}</span>
-        <span class="code">${escapeHtml(p.code || p.market)}</span>
-      </div>
-      <button class="pin-btn ${p.pinned ? "on" : ""}" type="button"
-        title="${p.pinned ? "取消置顶" : "置顶"}" data-pin="${p.id}">📌</button>`;
-    li.onclick = (e) => {
-      if (e.target.closest(".pin-btn")) return;   // 点置顶按钮不触发切换项目
-      showView("project", p.id);                  // 经统一路由切换（内部处理移动端收起抽屉）
-    };
-    ul.appendChild(li);
-  });
-  ul.querySelectorAll(".pin-btn").forEach(btn => {
-    btn.onclick = (e) => { e.stopPropagation(); togglePin(parseInt(btn.getAttribute("data-pin"), 10)); };
-  });
-}
-
-// 置顶 / 取消置顶（持久化到后端，列表置顶项排前）
+// 置顶 / 取消置顶：持久化到后端，交易仪表台「标的清单」按置顶优先排序
+// （原侧栏项目列表的置顶按钮 P6 已迁入仪表台表格，见 06-pages.js renderDashboard）
 async function togglePin(id) {
   const p = projects.find(x => x.id === id);
   if (!p) return;
   try {
     const r = await API("PATCH", `/api/projects/${id}`, { pinned: p.pinned ? 0 : 1 });
     p.pinned = r.pinned || 0;
-    renderProjectList();
+    if (currentView && currentView.name === "dashboard") await renderDashboard();   // 重排表格
     showToast(p.pinned ? "已置顶" : "已取消置顶");
   } catch (err) { showToast("操作失败：" + err.message); }
 }
 
 async function selectProject(id) {
   currentId = id;
-  renderProjectList();
   const p = projects.find(x => x.id === id);
   if (isGuest) { await renderGuestProject(p); return; }
   document.getElementById("main").innerHTML = `
@@ -606,10 +580,13 @@ async function addPrice(e) {
 async function autoFetch(id) {
   try {
     const r = await API("POST", `/api/projects/${id}/fetch`, { days: 60, force: false });
-    // 同步后项目名可能更新为股票名称，刷新侧栏标题
+    // 同步后标的名称可能更新为股票名称
     if (r.name) {
       const proj = projects.find(x => x.id === id);
-      if (proj && proj.name !== r.name) { proj.name = r.name; renderProjectList(); }
+      if (proj && proj.name !== r.name) {
+        proj.name = r.name;
+        if (currentView && currentView.name === "dashboard") await renderDashboard();
+      }
     }
   } catch (e) {
     // 自动拉取失败静默处理，不阻断用户查看已有数据
@@ -696,16 +673,42 @@ async function saveStrategyNote() {
   }
 }
 
+// ===== 新建标的弹窗（P6：侧栏删除后，入口从侧栏表单挪到交易仪表台页头）=====
+// 表单固定在文档层而非仪表台 innerHTML 内：其 onsubmit 绑定在此处只执行一次，
+// 若放进主区会随重渲染被重建而丢失绑定。
+function openProjectModal() {
+  const root = document.getElementById("project-modal");
+  if (!root) return;
+  root.classList.remove("hidden");
+  const first = document.getElementById("p-name");
+  if (first) setTimeout(() => first.focus(), 30);
+}
+function closeProjectModal() {
+  const root = document.getElementById("project-modal");
+  if (root) root.classList.add("hidden");
+}
+document.getElementById("pm-mask").onclick = closeProjectModal;
+document.getElementById("pm-close").onclick = closeProjectModal;
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeProjectModal(); });
+
 document.getElementById("project-form").onsubmit = async (e) => {
   e.preventDefault();
-  await API("POST", "/api/projects", {
-    name: document.getElementById("p-name").value,
-    code: document.getElementById("p-code").value,
-    market: document.getElementById("p-market").value,
-    bias: document.getElementById("p-bias").value,
-    strategy_type: document.getElementById("p-strategy-type").value,
-    strategy: document.getElementById("p-strategy").value
-  });
+  try {
+    await API("POST", "/api/projects", {
+      name: document.getElementById("p-name").value,
+      code: document.getElementById("p-code").value,
+      market: document.getElementById("p-market").value,
+      bias: document.getElementById("p-bias").value,
+      strategy_type: document.getElementById("p-strategy-type").value,
+      strategy: document.getElementById("p-strategy").value
+    });
+  } catch (err) {
+    showToast("新建失败：" + err.message);
+    return;
+  }
   e.target.reset();
-  await loadProjects();
+  closeProjectModal();
+  await loadProjects(false);                                   // 只刷新数据，不强制选中
+  if (currentView && currentView.name === "dashboard") await renderDashboard();
+  showToast("标的已创建");
 };

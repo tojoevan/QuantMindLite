@@ -10,10 +10,9 @@ function boot() {
 
 function enterApp() {
   hideAuth();
-  document.querySelector(".sidebar")?.classList.remove("hidden");
   renderUserChip();
-  renderSidebarForRole();
-  // 只刷新项目列表，落地视图交给统一路由（登录用户默认落地「圆桌」= 讨论优先）
+  renderNavForRole();
+  // 只刷新标的列表，落地视图交给统一路由（登录用户默认落地「圆桌」= 讨论优先）
   loadProjects(false).then(() => showView(navDefault()));
 }
 
@@ -61,29 +60,29 @@ function renderUserChip() {
   document.getElementById("btn-logout").onclick = () => { doLogout(); enterGuest(); };
 }
 
-function renderSidebarForRole() {
+// 顶栏 / 移动端导航抽屉的按角色显隐（P6：原 renderSidebarForRole——侧栏已删除，改名以符实）
+function renderNavForRole() {
   const admin = !!(me && me.is_admin);
-  const nav = document.getElementById("nav-users");
-  if (nav) nav.classList.toggle("hidden", !admin);
-  const snav = document.getElementById("side-users");
-  if (snav) snav.classList.toggle("hidden", !admin);
+  ["nav-users", "drawer-users"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle("hidden", !admin);
+  });
   // 圆桌入口：所有登录用户可见（生成/管理仅管理员可操作）
-  const rt1 = document.getElementById("btn-roundtable");
-  if (rt1) rt1.classList.remove("hidden");
-  const rt2 = document.getElementById("side-roundtable");
-  if (rt2) rt2.classList.remove("hidden");
+  ["btn-roundtable", "drawer-roundtable"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove("hidden");
+  });
 }
 
 // ===== 游客模式（只读 · 无需登录 · 仅展示 000002.SZ）=====
 // 退出游客模式、回到登录门禁
 function exitGuestToLogin() {
   isGuest = false;
-  currentId = null;   // 游客项目 id 对登录态无效，强制登录后重新选择
-  // 清空游客横幅 / 拉取状态 / 侧栏游客项目等残留，避免登录页遮罩下透出旧内容
+  currentId = null;   // 游客标的 id 对登录态无效，强制登录后重新选择
+  // 清空游客横幅 / 拉取状态等残留，避免登录页遮罩下透出旧内容
   document.getElementById("main").innerHTML = "";
-  document.getElementById("project-list").innerHTML = "";
-  document.querySelector(".sidebar")?.classList.remove("hidden");
-  renderSidebarForRole();
+  closeMenu();                       // 关掉可能开着的导航抽屉
+  renderNavForRole();
   showAuth("login");
 }
 
@@ -96,7 +95,7 @@ async function enterGuest() {
   document.getElementById("user-chip").classList.add("hidden");
   document.getElementById("nav-users")?.classList.add("hidden");
   // 圆桌入口对游客保留可见：点击会落到登录门禁，作为登录引导
-  document.querySelector(".sidebar").classList.add("hidden");
+  closeMenu();                       // P6：侧栏已删除，收起可能开着的导航抽屉
   try {
     const list = await guestApi("GET", "/api/guest/projects");
     if (!list || !list.length) {
@@ -184,11 +183,10 @@ async function guestRefresh() {
       await refreshGuestView();   // 重新拉取图表（含最新行情）
       showToast("行情已更新，图表已刷新");
     }
-    // 同步后项目名已更新为股票名称，刷新侧栏与当前游客面板标题
+    // 同步后标的名称已更新为股票名称，刷新当前游客面板标题
     if (r.name) {
       const gp = projects.find(x => x.id === currentId);
       if (gp) gp.name = r.name;
-      renderProjectList();
       const title = document.querySelector("#main .panel h3");
       if (title) title.innerHTML = `${r.name} <span class="muted">${gp ? (gp.code || "") : ""} · ${gp ? (gp.market || "A") : "A"}</span>`;
     }
@@ -242,14 +240,26 @@ document.getElementById("form-forgot").onsubmit = async (e) => {
 
 boot();
 
-// ===== 移动端抽屉菜单 =====
-const menuBtn = document.getElementById("menu-btn");
-const sidebar = document.querySelector(".sidebar");
-const backdrop = document.getElementById("backdrop");
+// ===== 移动端导航抽屉（P6：原「侧栏抽屉」改为纯导航抽屉）=====
+// ⚠️ openMenu / closeMenu 会在 boot() 引导链中被同步调用（此时本文件尚未执行到此处），
+// 若用模块级 const 持有元素会命中 TDZ（Cannot access before initialization），
+// 导致 enterGuest / showView 中断、游客态落地视图为 null。故一律惰性查找。
 function openMenu() {
-  if (sidebar.classList.contains("hidden")) return;   // 侧栏不可见时忽略（如游客模式），避免只弹灰色遮罩
-  sidebar.classList.add("open"); backdrop.classList.add("show");
+  const d = document.getElementById("nav-drawer");
+  const b = document.getElementById("backdrop");
+  if (!d) return;
+  d.classList.add("open");
+  if (b) b.classList.add("show");
 }
-function closeMenu() { sidebar.classList.remove("open"); backdrop.classList.remove("show"); }
-menuBtn.addEventListener("click", openMenu);
-backdrop.addEventListener("click", closeMenu);
+function closeMenu() {
+  const d = document.getElementById("nav-drawer");
+  const b = document.getElementById("backdrop");
+  if (d) d.classList.remove("open");
+  if (b) b.classList.remove("show");
+}
+const menuBtn = document.getElementById("menu-btn");
+const drawerClose = document.getElementById("nav-drawer-close");
+const backdrop = document.getElementById("backdrop");
+if (menuBtn) menuBtn.addEventListener("click", openMenu);
+if (drawerClose) drawerClose.addEventListener("click", closeMenu);
+if (backdrop) backdrop.addEventListener("click", closeMenu);

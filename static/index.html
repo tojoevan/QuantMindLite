@@ -11,7 +11,7 @@
   <script>
     (function(){ try { if (localStorage.getItem('qw_theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch(e){} })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=38" />
+  <link rel="stylesheet" href="/style.css?v=39" />
   <script src="/vendor/echarts.min.js?v=27"></script>
 </head>
 <body>
@@ -33,23 +33,41 @@
     </div>
   </header>
 
+  <!-- 主区（P6：侧栏已退场，全站单列全宽） -->
   <div class="layout">
-    <!-- 左侧：项目列表 -->
-    <aside class="sidebar">
-      <!-- 移动端专用：顶部文字链接收进抽屉（桌面隐藏），排在已建立项目上方 -->
-      <div id="side-links" class="side-links">
-        <a id="side-roundtable" class="side-link" data-nav="roundtable">圆桌</a>
-        <a id="side-forum" class="side-link" data-nav="forum">论坛</a>
-        <a id="side-dashboard" class="side-link" data-nav="dashboard">交易仪表台</a>
-        <a id="side-about" class="side-link" data-nav="about">关于</a>
-        <a id="side-users" class="side-link hidden" data-nav="users">用户管理</a>
-        <a id="side-github" class="side-link" href="https://github.com/tojoevan/QuantMindLite" target="_blank" rel="noopener">GitHub</a>
+    <main class="main" id="main">
+      <div class="placeholder">← 请选择或新建一个标的</div>
+    </main>
+  </div>
+
+  <!-- 移动端导航抽屉（P6：侧栏删除后导航的新家；桌面隐藏，仅小屏由 ☰ 打开） -->
+  <div class="nav-drawer" id="nav-drawer">
+    <div class="nav-drawer-head">
+      <span class="nd-title">导航</span>
+      <button class="nd-close" id="nav-drawer-close" type="button" aria-label="关闭菜单">✕</button>
+    </div>
+    <div id="side-links" class="side-links">
+      <a id="drawer-roundtable" class="side-link" data-nav="roundtable">圆桌</a>
+      <a id="drawer-forum" class="side-link" data-nav="forum">论坛</a>
+      <a id="drawer-dashboard" class="side-link" data-nav="dashboard">交易仪表台</a>
+      <a id="drawer-about" class="side-link" data-nav="about">关于</a>
+      <a id="drawer-users" class="side-link hidden" data-nav="users">用户管理</a>
+      <a id="drawer-github" class="side-link" href="https://github.com/tojoevan/QuantMindLite" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
+
+  <!-- 新建标的弹窗（登录态 · 由交易仪表台页头「＋ 新建标的」打开）
+       注意：表单固定在文档层而非仪表台 innerHTML 内——其 onsubmit 绑定在模块顶层只执行一次，
+       若随主区重渲染会被重建而丢失绑定。 -->
+  <div id="project-modal" class="pm-root hidden">
+    <div class="pm-mask" id="pm-mask"></div>
+    <div class="pm-card" role="dialog" aria-modal="true" aria-label="新建标的">
+      <div class="pm-head">
+        <h3>新建标的</h3>
+        <button class="pm-close" id="pm-close" type="button" aria-label="关闭">✕</button>
       </div>
-      <h3>已建立项目</h3>
-      <ul id="project-list" class="proj-list"></ul>
-      <h3>新建项目</h3>
       <form id="project-form" class="card">
-        <input id="p-name" placeholder="项目名称" required />
+        <input id="p-name" placeholder="标的名称（如 贵州茅台）" required />
         <input id="p-code" placeholder="标的代码(如 600519.SH)" />
         <select id="p-market">
           <option value="A">A股</option>
@@ -68,14 +86,9 @@
           <option value="baseline">策略：基线演示</option>
         </select>
         <textarea id="p-strategy" placeholder="策略说明(可选)"></textarea>
-        <button type="submit">＋ 新建项目</button>
+        <button type="submit">＋ 新建标的</button>
       </form>
-    </aside>
-
-    <!-- 右侧：主区 -->
-    <main class="main" id="main">
-      <div class="placeholder">← 请选择或新建一个项目</div>
-    </main>
+    </div>
   </div>
 
   <div class="backdrop" id="backdrop"></div>
@@ -113,12 +126,12 @@
   </div>
 
   <!-- 前端脚本按序加载（经典脚本，共享全局作用域）：由原 app.js 按顶层边界原样拆分 -->
-  <script src="/js/01-core.js?v=41"></script>
-  <script src="/js/02-dashboard.js?v=41"></script>
-  <script src="/js/03-auth.js?v=41"></script>
-  <script src="/js/04-about-users.js?v=41"></script>
-  <script src="/js/05-roundtable.js?v=41"></script>
-  <script src="/js/06-pages.js?v=41"></script>
-  <script src="/js/07-forum.js?v=41"></script>
+  <script src="/js/01-core.js?v=42"></script>
+  <script src="/js/02-dashboard.js?v=42"></script>
+  <script src="/js/03-auth.js?v=42"></script>
+  <script src="/js/04-about-users.js?v=42"></script>
+  <script src="/js/05-roundtable.js?v=42"></script>
+  <script src="/js/06-pages.js?v=42"></script>
+  <script src="/js/07-forum.js?v=42"></script>
 </body>
 </html>

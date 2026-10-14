@@ -101,21 +101,27 @@ header .sub { color: var(--muted); font-size: 12px; }
 }
 .menu-btn:active { background: var(--border); }
 
-/* 移动端专用：顶部文字链接收进抽屉（桌面隐藏，媒体查询内显示） */
-.side-links { display: none; margin-top: 22px; border-top: 1px solid var(--border); padding-top: 12px; }
+/* 导航抽屉（P6：原侧栏删除后，导航在移动端的新容器；桌面隐藏，仅小屏由 ☰ 打开） */
+.nav-drawer { display: none; }
+.nav-drawer-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 4px 12px; border-bottom: 1px solid var(--border); margin-bottom: 12px;
+}
+.nd-title { font-size: 12px; color: var(--muted); letter-spacing: .12em; }
+.nd-close {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 8px; width: 30px; height: 30px; font-size: 14px; cursor: pointer; line-height: 1;
+}
+.nd-close:hover { color: var(--text); border-color: var(--border-strong); }
+
 .side-links .side-link {
-  display: block; padding: 10px 10px; border-radius: 8px;
-  color: var(--muted); font-size: 14.5px; text-decoration: none; cursor: pointer;
+  display: block; padding: 11px 10px; border-radius: 8px;
+  color: var(--muted); font-size: 15px; text-decoration: none; cursor: pointer;
 }
 .side-links .side-link:hover { color: var(--text); background: var(--panel-2); }
 
 .layout { display: flex; min-height: calc(100vh - 58px); }
 
-.sidebar {
-  width: 290px; flex-shrink: 0; padding: 16px;
-  background: var(--bg-2); border-right: 1px solid var(--border);
-  overflow-y: auto;
-}
 .main { flex: 1; padding: 18px; overflow-y: auto; min-width: 0; }
 
 .card {
@@ -135,17 +141,7 @@ header .sub { color: var(--muted); font-size: 12px; }
 }
 .card button:hover { background: #2ea043; }
 
-.proj-list { list-style: none; padding: 0; margin: 14px 0 0; }
-.proj-list li {
-  padding: 11px 12px; border: 1px solid var(--border); border-radius: 8px;
-  margin-bottom: 8px; cursor: pointer; display: flex; justify-content: space-between; align-items: center;
-  transition: border-color .15s, background .15s;
-}
-.proj-list li:hover { border-color: var(--border-strong); }
-.proj-list li.active { border-color: var(--accent); background: var(--active-bg); }
-.proj-list .code { color: var(--muted); font-size: 12px; flex-shrink: 0; }
-.proj-line { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
-.proj-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 置顶按钮（P6：随项目列表从侧栏迁入交易仪表台「标的清单」表） */
 .pin-btn {
   background: transparent; border: none; cursor: pointer; font-size: 13px;
   padding: 2px 4px; border-radius: 6px; opacity: .4; flex-shrink: 0;
@@ -154,7 +150,6 @@ header .sub { color: var(--muted); font-size: 12px; }
 .pin-btn:hover { opacity: 1; background: var(--panel-2); }
 .pin-btn:active { transform: scale(.9); }
 .pin-btn.on { opacity: 1; color: #e3b341; }
-.proj-list li:hover .pin-btn { opacity: .9; }
 
 .placeholder { color: var(--muted); text-align: center; margin-top: 80px; }
 
@@ -396,12 +391,15 @@ th { color: var(--muted); font-weight: 600; }
 @media (max-width: 768px) {
   .menu-btn { display: block; }
   .layout { display: block; }
-  .sidebar {
+  .nav-drawer {
+    display: block;
     position: fixed; top: 0; left: 0; bottom: 0; width: 84%; max-width: 320px;
     z-index: 30; transform: translateX(-100%); transition: transform .25s ease;
+    background: var(--bg-2); border-right: 1px solid var(--border);
+    padding: 16px; overflow-y: auto;
     box-shadow: 2px 0 16px rgba(0,0,0,.4);
   }
-  .sidebar.open { transform: translateX(0); }
+  .nav-drawer.open { transform: translateX(0); }
   .main { padding: 14px; }
   .backdrop.show { display: block; }
   .chart { height: 260px; }
@@ -418,10 +416,9 @@ th { color: var(--muted); font-weight: 600; }
   .top-actions { gap: 2px; }
   .top-link { font-size: 12px; padding: 6px 7px; }
   .theme-btn { width: 32px; height: 32px; font-size: 15px; }
-  /* 登录态：文字链接移入抽屉；游客无抽屉则保留顶部链接 */
-  .side-links { display: block; }
+  /* 登录态：顶栏文字链接收进导航抽屉（☰ 打开）；游客无抽屉，保留顶栏链接 */
   body:not(.guest-mode) .top-actions .top-link { display: none; }
-  body.guest-mode .menu-btn { display: none; }   /* 游客模式无侧栏，隐藏菜单按钮避免误触灰色遮罩 */
+  body.guest-mode .menu-btn { display: none; }   /* 游客无抽屉，隐藏菜单按钮避免误触灰色遮罩 */
   .user-chip { max-width: 130px; font-size: 12px; gap: 6px; }
   .uc-email { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .uc-badge { display: none; }
@@ -727,20 +724,34 @@ th { color: var(--muted); font-weight: 600; }
   .fm-reply-identity { max-width: none; }
 }
 
-/* ============ P4 · 侧栏按视图显隐（全宽视图 / 移动端导航补位）============
-   桌面：圆桌 / 论坛 / 关于 / 用户管理为全宽视图，隐藏侧栏——项目列表与新建表单
-   只在「交易仪表台」及其下钻的个股详情出现，与「讨论优先」的落地页定位一致。
-   移动端：侧栏同时是导航抽屉的唯一入口（顶栏链接在非游客态被收起），故不能直接隐藏；
-   改为「仅导航」形态（隐藏项目区、只留 side-links），保证全宽视图下移动端仍有导航入口。 */
-@media (min-width: 769px) {
-  body.view-fullwidth .sidebar { display: none; }
+/* ============ P6 · 侧栏退场（全站单列全宽）============
+   原侧栏装三样东西：移动端导航链接 / 已建立项目列表（含置顶）/ 新建项目表单。
+   三者各自有了归宿之后才删除侧栏：
+   - 导航 → 移动端「导航抽屉」(.nav-drawer，仅小屏由 ☰ 打开)；
+   - 项目列表 → 交易仪表台「标的清单」表（本就含全部标的、点行进详情），置顶按钮一并迁入；
+   - 新建项目 → 仪表台页头「＋ 新建标的」弹窗（见 .pm-*）。
+   桌面不再有任何常驻侧栏，主区在全部视图下铺满。 */
+
+/* 新建标的弹窗（固定 DOM：其 onsubmit 绑定在模块顶层只执行一次，
+   若放进主区 innerHTML 会随重渲染被重建而丢失绑定） */
+.pm-root { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; }
+.pm-root.hidden { display: none; }
+.pm-mask { position: absolute; inset: 0; background: rgba(0,0,0,.5); }
+.pm-card {
+  position: relative; width: 92%; max-width: 460px; max-height: 88vh; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px; box-shadow: 0 16px 56px rgba(0,0,0,.45);
 }
+.pm-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.pm-head h3 { margin: 0; font-size: 16px; }
+.pm-close {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 8px; width: 30px; height: 30px; font-size: 14px; cursor: pointer; line-height: 1;
+}
+.pm-close:hover { color: var(--text); border-color: var(--border-strong); }
 
 @media (max-width: 768px) {
-  body.view-fullwidth .sidebar > h3,
-  body.view-fullwidth .sidebar > .proj-list,
-  body.view-fullwidth .sidebar > .card { display: none; }
-  body.view-fullwidth .side-links { margin-top: 0; border-top: none; padding-top: 0; }
+  .pm-card { width: 100%; max-width: none; max-height: 100%; border-radius: 0; padding: 14px; }
 }
 
 /* 个股详情页顶部返回条（从交易仪表台点入后可返回） */

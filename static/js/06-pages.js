@@ -9,12 +9,8 @@ let prevView = { name: null, arg: null };
 // 默认落地页：登录 → 圆桌；游客 → 交易仪表台
 function navDefault() { return isGuest ? "dashboard" : "roundtable"; }
 
-// 侧栏按视图显隐（P4 · 见方案 §3.4）：只有「交易仪表台」及其下钻的个股详情保留侧栏，
-// 圆桌 / 论坛 / 关于 / 用户管理均为全宽视图（不再常驻项目列表与新建表单）。
-const FULLWIDTH_VIEWS = ["roundtable", "forum", "about", "users"];
-function applyLayout(name) {
-  document.body.classList.toggle("view-fullwidth", FULLWIDTH_VIEWS.includes(name));
-}
+// P6：侧栏已退场，全站单列全宽，不再需要按视图切换布局 class。
+// （原 P4 的 FULLWIDTH_VIEWS / applyLayout 一并删除；移动端导航改走 .nav-drawer 抽屉。）
 
 // 导航高亮：个股详情属于「交易仪表台」体系，一并高亮仪表台入口
 function markNavActive(name) {
@@ -29,18 +25,18 @@ async function showView(name, arg) {
   if (name === "about") prevView = currentView;   // 关于页提供「返回上一视图」
   switch (name) {
     case "dashboard":
-      currentView = { name, arg: null }; markNavActive(name); applyLayout(name); await renderDashboard(); break;
+      currentView = { name, arg: null }; markNavActive(name); await renderDashboard(); break;
     case "roundtable":
-      currentView = { name, arg: null }; markNavActive(name); applyLayout(name); await renderRoundtable(); break;
+      currentView = { name, arg: null }; markNavActive(name); await renderRoundtable(); break;
     case "forum":
-      currentView = { name, arg: null }; markNavActive(name); applyLayout(name); await renderForum(); break;
+      currentView = { name, arg: null }; markNavActive(name); await renderForum(); break;
     case "about":
-      currentView = { name, arg: null }; markNavActive(name); applyLayout(name); renderAbout(); break;
+      currentView = { name, arg: null }; markNavActive(name); renderAbout(); break;
     case "users":
-      if (me && me.is_admin) { currentView = { name, arg: null }; markNavActive(name); applyLayout(name); await renderUsers(); }
+      if (me && me.is_admin) { currentView = { name, arg: null }; markNavActive(name); await renderUsers(); }
       break;
     case "project":
-      currentView = { name, arg: arg ?? null }; markNavActive(name); applyLayout(name); await selectProject(arg); break;
+      currentView = { name, arg: arg ?? null }; markNavActive(name); await selectProject(arg); break;
     default:
       break;
   }
@@ -98,9 +94,14 @@ async function renderDashboard() {
       <div class="guest-banner-actions"><button class="btn ghost sm" id="dash-login">登录 / 注册</button></div>
     </div>` : "";
 
-  const posRows = (d.positions || []).map(p => `
+  // 置顶项排前（pinned 在 /api/projects 上，overview 的 positions 不含该字段）
+  const pinOf = id => { const x = (projects || []).find(v => v.id === id); return x ? (x.pinned || 0) : 0; };
+  const posList = [...(d.positions || [])].sort((a, b) => pinOf(b.id) - pinOf(a.id));
+  const posRows = posList.map(p => `
     <tr data-open="${p.id}" class="rowlink" title="查看 ${escapeHtml(p.name || "")} 详情">
-      <td><b>${escapeHtml(p.name || "")}</b></td>
+      <td><b>${escapeHtml(p.name || "")}</b>${isGuest ? "" : `
+        <button class="pin-btn ${pinOf(p.id) ? "on" : ""}" type="button"
+          title="${pinOf(p.id) ? "取消置顶" : "置顶"}" data-pin="${p.id}">📌</button>`}</td>
       <td class="muted">${escapeHtml(p.code || p.market || "")}</td>
       <td>${fmtNum(p.shares, 0)}</td>
       <td>${fmtNum(p.cost, 2)}</td>
@@ -125,12 +126,13 @@ async function renderDashboard() {
     </tr>`;
   }).join("") || `<tr><td colspan="7" class="muted">暂无交易记录</td></tr>`;
 
+  const newBtn = isGuest ? "" : `<button class="btn primary sm" id="dash-new">＋ 新建标的</button>`;
   main.innerHTML = `
     <div class="page">
       ${banner}
       <div class="page-head">
         <div><h1>交易仪表台</h1><p class="page-sub">持仓总览 · 盈亏汇总 · 最近交易记录</p></div>
-        <div class="page-head-actions"><button class="btn ghost sm" id="dash-reload">刷新</button></div>
+        <div class="page-head-actions">${newBtn}<button class="btn ghost sm" id="dash-reload">刷新</button></div>
       </div>
 
       <div class="kpi-grid">
@@ -141,7 +143,7 @@ async function renderDashboard() {
       </div>
 
       <div class="panel">
-        <h3>持仓总览 <span class="muted">点击任意一行查看该标的详情</span></h3>
+        <h3>标的清单 <span class="muted">含全部标的（未建仓显示 0）· 点击任意一行查看详情</span></h3>
         <div class="table-wrap">
           <table class="table" id="dash-pos">
             <thead><tr><th>标的</th><th>代码</th><th>持仓</th><th>成本</th><th>现价</th><th>市值</th><th>浮动盈亏</th><th>收益率</th></tr></thead>
@@ -163,10 +165,16 @@ async function renderDashboard() {
 
   const rl = document.getElementById("dash-reload");
   if (rl) rl.onclick = () => renderDashboard();
+  const nw = document.getElementById("dash-new");
+  if (nw) nw.onclick = openProjectModal;          // 侧栏删除后，新建入口挪到仪表台页头
   const lg = document.getElementById("dash-login");
   if (lg) lg.onclick = exitGuestToLogin;
   main.querySelectorAll("#dash-pos tbody tr[data-open]").forEach(tr => {
     tr.onclick = () => showView("project", parseInt(tr.getAttribute("data-open"), 10));
+  });
+  // 置顶：阻止冒泡，避免连带触发行点击（进详情）
+  main.querySelectorAll("#dash-pos .pin-btn").forEach(btn => {
+    btn.onclick = (e) => { e.stopPropagation(); togglePin(parseInt(btn.getAttribute("data-pin"), 10)); };
   });
 }
 
@@ -175,17 +183,17 @@ async function renderDashboard() {
 // ===== 统一导航绑定（收口原先散落在 04/05 顶层的点击绑定）=====
 function bindNav() {
   const entries = [
-    ["btn-roundtable", "roundtable"], ["side-roundtable", "roundtable"],
-    ["btn-forum", "forum"], ["side-forum", "forum"],
-    ["btn-dashboard", "dashboard"], ["side-dashboard", "dashboard"],
-    ["btn-about", "about"], ["side-about", "about"],
+    ["btn-roundtable", "roundtable"], ["drawer-roundtable", "roundtable"],
+    ["btn-forum", "forum"], ["drawer-forum", "forum"],
+    ["btn-dashboard", "dashboard"], ["drawer-dashboard", "dashboard"],
+    ["btn-about", "about"], ["drawer-about", "about"],
   ];
   entries.forEach(([id, view]) => {
     const el = document.getElementById(id);
     if (el) el.onclick = () => showView(view);
   });
   // 用户管理：仅管理员
-  ["nav-users", "side-users"].forEach(id => {
+  ["nav-users", "drawer-users"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.onclick = () => { if (me && me.is_admin) showView("users"); };
   });
