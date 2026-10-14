@@ -595,3 +595,57 @@ th { color: var(--muted); font-weight: 600; }
 }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+
+/* ============ P1 · 页级视图（交易仪表台 / 论坛）============ */
+.page { max-width: 1080px; margin: 0 auto; padding: 4px 2px 48px; }
+.page-head { display: flex; align-items: flex-start; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4); }
+.page-head h1 { font-size: 24px; margin: 0 0 4px; }
+.page-sub { color: var(--muted); font-size: var(--fs-sm); margin: 0; }
+.page-head-actions { margin-left: auto; display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+
+/* KPI 指标卡 */
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--sp-3); margin-bottom: var(--sp-4); }
+.kpi {
+  background: var(--panel-2); border: var(--bd-w) solid var(--border);
+  border-radius: var(--radius-lg); padding: 14px var(--sp-4);
+}
+.kpi-label { color: var(--muted); font-size: var(--fs-xs); }
+.kpi-value {
+  font-size: var(--fs-2xl); font-weight: 600; margin-top: 6px;
+  font-variant-numeric: tabular-nums; letter-spacing: .2px;
+}
+.kpi-unit { font-size: var(--fs-sm); font-weight: 400; color: var(--muted); }
+
+/* 点击整行跳转 */
+.rowlink { cursor: pointer; }
+.rowlink:hover { background: var(--accent-soft); }
+
+/* 交易动作标签 */
+.tag {
+  display: inline-block; font-size: 11px; line-height: 1.6;
+  padding: 1px 8px; border-radius: var(--radius-pill);
+  border: var(--bd-w) solid var(--border); color: var(--muted);
+}
+.tag.buy { color: var(--red); border-color: var(--red); background: rgba(248,81,73,.12); }
+.tag.sell { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+/* 空态 */
+.empty-state { text-align: center; padding: 34px var(--sp-4); }
+.empty-title { font-size: var(--fs-lg); font-weight: 600; margin-bottom: var(--sp-2); }
+.empty-state .btn { margin-top: var(--sp-2); }
+
+/* 导航当前页高亮 */
+.top-link.active, .side-link.active { color: var(--text); background: var(--accent-soft); }
+
+@media (max-width: 768px) {
+  .page-head-actions { margin-left: 0; width: 100%; }
+  .page-head h1 { font-size: 20px; }
+  /* 指标卡移动端两列，避免四张卡纵向堆叠过长 */
+  .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); }
+  .kpi { padding: 12px var(--sp-3); }
+  .kpi-value { font-size: var(--fs-xl); }
+  /* 导航项增多后，允许顶栏横向滚动，避免挤压品牌 */
+  .top-actions { min-width: 0; overflow-x: auto; scrollbar-width: none; -ms-overflow-style: none; }
+  .top-actions::-webkit-scrollbar { display: none; }
+  .top-link { flex-shrink: 0; }
+}

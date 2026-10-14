@@ -165,6 +165,58 @@ def _proj_out(p):
     )
 
 
+def _build_overview(projects, db):
+    """交易仪表台聚合：持仓总览 + 汇总指标 + 最近交易记录（实时计算，不落新表）。
+
+    position_shares/position_cost 已是「含全部反馈回放的当前持仓」，此处直接取用；
+    实现盈亏取各反馈 realized_pnl 累加；市值/浮动盈亏按最新行情 mark-to-market。
+    """
+    positions, trades = [], []
+    tot_mv = tot_up = tot_real = 0.0
+    for p in projects:
+        fbs = (db.query(Feedback).filter(Feedback.project_id == p.id)
+               .order_by(Feedback.date).all())
+        realized = round(sum(float(f.realized_pnl or 0.0) for f in fbs), 2)
+        mp = (db.query(MarketPrice).filter(MarketPrice.project_id == p.id)
+              .order_by(MarketPrice.date.desc()).first())
+        last = float(mp.close) if mp else None
+        shares = float(p.position_shares or 0.0)
+        cost = float(p.position_cost or 0.0)
+        mv = round(shares * (last or 0.0), 2)
+        up = round((last - cost) * shares, 2) if last is not None else 0.0
+        pct = (round((last - cost) / cost * 100, 2)
+               if (last is not None and cost > 1e-9 and shares > 1e-9) else None)
+        tot_mv += mv
+        tot_up += up
+        tot_real += realized
+        positions.append({
+            "id": p.id, "name": p.name, "code": p.code, "market": p.market,
+            "shares": round(shares, 4), "cost": round(cost, 4),
+            "last_close": last, "last_date": mp.date if mp else None,
+            "market_value": mv, "unrealized": up, "pct": pct, "realized": realized,
+        })
+        for f in fbs:
+            trades.append({
+                "id": f.id, "date": f.date, "project_id": p.id,
+                "name": p.name, "code": p.code, "action": f.action,
+                "price": f.price, "qty": f.qty,
+                "realized_pnl": round(float(f.realized_pnl or 0.0), 2),
+                "note": f.note or "",
+            })
+    trades.sort(key=lambda t: (t["date"], t["id"]), reverse=True)
+    return {
+        "totals": {
+            "market_value": round(tot_mv, 2),
+            "unrealized": round(tot_up, 2),
+            "realized": round(tot_real, 2),
+            "positions": sum(1 for x in positions if x["shares"] > 1e-9),
+            "projects": len(positions),
+        },
+        "positions": positions,
+        "trades": trades[:60],
+    }
+
+
 # ---------------- 盈亏回放 ----------------
 def _replay_raw(feedbacks, seed_shares=0.0, seed_cost=0.0):
     """回放反馈序列（全精度，不四舍五入），计算持仓与盈亏。
@@ -691,6 +743,22 @@ def _build_chart(p, db):
 def chart(pid: int, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
     p = _project_or_404(pid, u, db)
     return _build_chart(p, db)
+
+
+@app.get("/api/overview")
+def overview(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """交易仪表台：当前用户（管理员为全部）的持仓总览 + 汇总指标 + 最近交易记录。"""
+    q = db.query(Project)
+    if not u.is_admin:
+        q = q.filter(Project.owner_id == u.id)
+    return _build_overview(q.order_by(Project.id).all(), db)
+
+
+@app.get("/api/guest/overview")
+def guest_overview(db: Session = Depends(get_db)):
+    """游客模式：仅聚合代码为 GUEST_STOCK_CODE 的公开项目（只读）。"""
+    rows = db.query(Project).filter(Project.code == GUEST_STOCK_CODE).order_by(Project.id).all()
+    return _build_overview(rows, db)
 
 
 @app.get("/api/guest/projects/{pid}/chart", response_model=ChartData)

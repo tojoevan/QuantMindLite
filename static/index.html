@@ -22,9 +22,11 @@
       <span class="sub">建议 → 反馈 → 再预测</span>
     </div>
     <div class="top-actions">
-      <a id="btn-about" class="top-link">关于</a>
-      <a id="btn-roundtable" class="top-link">圆桌</a>
-      <a id="nav-users" class="top-link hidden">用户管理</a>
+      <a id="btn-roundtable" class="top-link" data-nav="roundtable">圆桌</a>
+      <a id="btn-forum" class="top-link" data-nav="forum">论坛</a>
+      <a id="btn-dashboard" class="top-link" data-nav="dashboard">交易仪表台</a>
+      <a id="btn-about" class="top-link" data-nav="about">关于</a>
+      <a id="nav-users" class="top-link hidden" data-nav="users">用户管理</a>
       <a id="btn-github" class="top-link" href="https://github.com/tojoevan/QuantMindLite" target="_blank" rel="noopener" title="GitHub 开源仓库">GitHub</a>
       <button id="btn-theme" class="theme-btn" type="button" title="切换浅色 / 深色" aria-label="切换主题">🌙</button>
       <div id="user-chip" class="user-chip hidden"></div>
@@ -36,9 +38,11 @@
     <aside class="sidebar">
       <!-- 移动端专用：顶部文字链接收进抽屉（桌面隐藏），排在已建立项目上方 -->
       <div id="side-links" class="side-links">
-        <a id="side-about" class="side-link">关于</a>
-        <a id="side-roundtable" class="side-link">圆桌</a>
-        <a id="side-users" class="side-link hidden">用户管理</a>
+        <a id="side-roundtable" class="side-link" data-nav="roundtable">圆桌</a>
+        <a id="side-forum" class="side-link" data-nav="forum">论坛</a>
+        <a id="side-dashboard" class="side-link" data-nav="dashboard">交易仪表台</a>
+        <a id="side-about" class="side-link" data-nav="about">关于</a>
+        <a id="side-users" class="side-link hidden" data-nav="users">用户管理</a>
         <a id="side-github" class="side-link" href="https://github.com/tojoevan/QuantMindLite" target="_blank" rel="noopener">GitHub</a>
       </div>
       <h3>已建立项目</h3>
@@ -114,5 +118,6 @@
   <script src="/js/03-auth.js?v=39"></script>
   <script src="/js/04-about-users.js?v=39"></script>
   <script src="/js/05-roundtable.js?v=39"></script>
+  <script src="/js/06-pages.js?v=39"></script>
 </body>
 </html>
