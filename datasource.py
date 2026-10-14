@@ -16,9 +16,14 @@
   ⚠️ push2his.eastmoney.com 有 AAAA 但服务端拒答（RemoteDisconnected）
 因此腾讯日线**必须走 proxy.finance.qq.com**，旧地址仅作其他网络环境下的兜底。
 
+⚠️ 同理，A 股的 akshare / 东财直连回退链在本环境**必然失败**，现已由 `_DEAD_FALLBACK`
+   默认短路跳过（否则腾讯一抖动就要白等 akshare 超时）；换到有 IPv4 的机器部署时
+   设环境变量 `QW_DEAD_FALLBACK=1` 即可恢复。
+
 返回统一结构：[(date_str "YYYY-MM-DD", close_float), ...] 升序。
 （场外基金为当日单位净值，含义与收盘价一致，下游按同一结构消费。）
 """
+import os
 import re
 import json
 import time
@@ -50,6 +55,15 @@ _HEADERS = {
     ),
     "Accept": "*/*",
 }
+
+# ── 已知不可达回退源的开关 ────────────────────────────────────────────────
+# 本 VPS 只有 IPv6 出站、无 IPv4 默认路由，且东财 push2his 对本站出口定向拦截，
+# 因此 A 股回退链（akshare → 东财直连）在此环境**必然失败**，只会白吃
+# akshare 的导入/请求超时。默认关闭；换到有 IPv4 的机器部署时
+# 设环境变量 QW_DEAD_FALLBACK=1 即可恢复。
+# 完整取证见 quant-web/A股行情失效复盘.md。
+_DEAD_FALLBACK = os.environ.get("QW_DEAD_FALLBACK", "").strip().lower() in (
+    "1", "true", "yes", "on")
 
 
 # ---------------- 品种（market）与代码解析 ----------------
@@ -351,8 +365,8 @@ def fetch_symbol_name(code: str, market: str = "A") -> Optional[str]:
         if cand.get("code") == digits and cand.get("name"):
             return cand["name"]
 
-    # A 股再兜一层 akshare
-    if market == "A" and HAS_AKSHARE:
+    # A 股再兜一层 akshare（同 _DEAD_FALLBACK：本环境不可达，默认跳过）
+    if market == "A" and HAS_AKSHARE and _DEAD_FALLBACK:
         try:
             info = ak.stock_individual_info_em(symbol=digits)
             nm = info[info["item"] == "股票简称"]["value"].iloc[0]
@@ -394,8 +408,10 @@ def fetch_hist(code: str, market: str = "A", days: int = 250):
         except Exception as e:
             errors.append(f"腾讯行情({tg}):{e}")
 
-    # A 股兜底：akshare → 东方财富直连（后者在本 VPS 会被拒答，仅作其他环境兜底）
-    if market == "A":
+    # A 股兜底：akshare → 东方财富直连。
+    # ⚠️ 这两条在本 VPS 上必然失败（前者域名无 IPv4 路由、后者被定向拦截），
+    #    默认整段跳过，否则腾讯一抖动就要白等 akshare 的超时。见文件头 _DEAD_FALLBACK。
+    if market == "A" and _DEAD_FALLBACK:
         end = datetime.now()
         start = end - timedelta(days=int(days) * 2 + 10)
         start_s, end_s = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
@@ -409,6 +425,8 @@ def fetch_hist(code: str, market: str = "A", days: int = 250):
         except Exception as e:
             errors.append(f"东方财富:{e}")
 
+    if not _DEAD_FALLBACK:
+        errors.append("已跳过 A股回退链（akshare/东财，本环境必然不可达）")
     raise RuntimeError("所有行情数据源均失败 -> " + " | ".join(errors))
 
 

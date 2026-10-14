@@ -1,5 +1,7 @@
 """慢量化个人操作 Web —— 建议→反馈→再预测 决策台后端。
-FastAPI + SQLite，独立运行，对接 QuantMind 预测（可插拔）。
+FastAPI + SQLite，独立运行。预测引擎是本地纯函数策略（predictor.py），
+**不依赖 QuantMind / Qlib 代码**——同机的 QuantMind 容器处于空转状态、未接入，
+评估结论与将来接入条件见 QuantMind接入评估.md。
 """
 import os
 import re
