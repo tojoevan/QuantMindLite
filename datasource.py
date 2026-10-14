@@ -284,55 +284,58 @@ INDEX_SYMBOLS = {
 }
 
 
-def _fetch_index_tencent(symbol, secid):
-    """腾讯 gtimg 日线（指数）。返回 [(date, close), ...] 升序。"""
-    url = (
-        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-        f"?param={symbol},day,,,5,qfq"
-    )
-    raw = _urlopen(url)
-    j = json.loads(raw)
-    data = (j or {}).get("data", {}) or {}
-    node = next(iter(data.values())) if data else {}
-    klines = node.get("qfqday") or node.get("day") or []
-    out = []
-    for k in klines:
-        try:
-            c = float(k[2])
-        except Exception:
+def _tencent_quote_parse(raw: bytes) -> dict:
+    """解析 qt.gtimg.cn 实时报价响应（GBK），返回 {symbol: (name, price, prev_close, date)}。
+
+    字段布局（腾讯行情通用约定）：[1]名称 [3]现价 [4]昨收 [30]时间(YYYYMMDDHHMMSS)。
+    注意：[4] 是昨收而非涨跌额，涨跌需自行按 (现价-昨收)/昨收 计算。
+    """
+    out = {}
+    for line in raw.decode("gbk", "ignore").strip().splitlines():
+        if "=" not in line:
             continue
-        if c > 0:
-            out.append((str(k[0]), c))
-    out.sort(key=lambda x: x[0])
-    if not out:
-        raise ValueError("腾讯未返回指数数据")
+        var, val = line.split("=", 1)
+        var = var.strip()
+        if not var.startswith("v_"):
+            continue
+        symbol = var[2:]
+        f = val.strip().strip('"').split("~")
+        if len(f) < 33:
+            continue
+        try:
+            price = float(f[3])
+            prev = float(f[4])
+        except (ValueError, IndexError):
+            continue
+        if price <= 0 or prev <= 0:
+            continue
+        ts = f[30] if len(f) > 30 else ""
+        date = f"{ts[0:4]}-{ts[4:6]}-{ts[6:8]}" if len(ts) >= 8 and ts[:8].isdigit() else ""
+        out[symbol] = (f[1], price, prev, date)
     return out
 
 
-def _fetch_index_sina(symbol, secid):
-    """新浪日线（指数）。返回 [(date, close), ...] 升序。"""
-    url = (
-        "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-        f"CN_MarketData.getKLineData?symbol={symbol}&scale=240&datalen=5"
-    )
-    raw = _urlopen(url)
-    arr = json.loads(raw)
-    out = []
-    for it in arr:
-        try:
-            c = float(it["close"])
-        except Exception:
-            continue
-        if c > 0:
-            out.append((str(it["day"]), c))
-    out.sort(key=lambda x: x[0])
-    if not out:
-        raise ValueError("新浪未返回指数数据")
+def _fetch_indices_tencent() -> dict:
+    """腾讯实时报价一次拉全部指数；批量失败时逐个重试。返回 {symbol: (...)}。"""
+    url = f"https://qt.gtimg.cn/q={','.join(INDEX_SYMBOLS.keys())}"
+    req = urllib.request.Request(url, headers=_HEADERS)
+    with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
+        out = _tencent_quote_parse(resp.read())
+    if len(out) < len(INDEX_SYMBOLS):
+        for sym in INDEX_SYMBOLS:
+            if sym in out:
+                continue
+            try:
+                req = urllib.request.Request(f"https://qt.gtimg.cn/q={sym}", headers=_HEADERS)
+                with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
+                    out.update(_tencent_quote_parse(resp.read()))
+            except Exception as e:
+                logger.warning("腾讯指数 %s 单个重试失败：%s", sym, e)
     return out
 
 
 def _fetch_index_eastmoney(symbol, secid):
-    """东方财富日线（指数）。返回 [(date, close), ...] 升序。"""
+    """东方财富日线（指数，兜底源）。返回 [(date, close), ...] 升序。"""
     end = datetime.now()
     start = end - timedelta(days=15)
     url = (
@@ -362,26 +365,31 @@ def _fetch_index_eastmoney(symbol, secid):
 
 def fetch_index_quotes():
     """三大指数最新快照。返回 [{key,name,date,close,prev_close,chg_pct,source}, ...]。
-    单个指数失败不影响其余（该指数 close=None，由调用方展示“数据获取失败”）。"""
-    fetchers = [
-        (_fetch_index_tencent, "腾讯"),
-        (_fetch_index_sina, "新浪"),
-        (_fetch_index_eastmoney, "东方财富"),
-    ]
+    主源：腾讯实时报价（qt.gtimg.cn，现价+昨现算涨跌，本 VPS IPv6 可达）；
+    兜底：东方财富日线。单个指数失败不影响其余（close=None，调用方展示“数据获取失败”）。"""
+    quotes = {}
+    try:
+        quotes = _fetch_indices_tencent()
+    except Exception as e:
+        logger.warning("腾讯指数报价失败：%s", e)
     out = []
     for symbol, (name, secid) in INDEX_SYMBOLS.items():
         item = {"key": symbol, "name": name, "date": None, "close": None,
                 "prev_close": None, "chg_pct": None, "source": None}
-        for fn, src_name in fetchers:
+        q = quotes.get(symbol)
+        if q:
+            _, price, prev, date = q
+            item.update(date=date, close=price, prev_close=prev,
+                        chg_pct=round((price - prev) / prev * 100, 2), source="腾讯")
+        else:
             try:
-                rows = fn(symbol, secid)
+                rows = _fetch_index_eastmoney(symbol, secid)
                 item["date"], item["close"] = rows[-1]
                 if len(rows) >= 2 and rows[-2][1]:
                     item["prev_close"] = rows[-2][1]
                     item["chg_pct"] = round((rows[-1][1] - rows[-2][1]) / rows[-2][1] * 100, 2)
-                item["source"] = src_name
-                break
+                item["source"] = "东方财富"
             except Exception as e:
-                logger.warning("指数 %s 源 %s 失败：%s", symbol, src_name, e)
+                logger.warning("指数 %s 东财兜底失败：%s", symbol, e)
         out.append(item)
     return out
