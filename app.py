@@ -549,7 +549,7 @@ def predict(pid: int, body: Optional[PredictionCreate] = None,
 # ---------------- 提交反馈（实际操作） ----------------
 @app.post("/api/projects/{pid}/feedback", response_model=FeedbackOut, status_code=201)
 def submit_feedback(pid: int, body: FeedbackCreate, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _project_or_404(pid, u, db)
+    p = _project_or_404(pid, u, db)
     # 计算该笔实现的盈亏：回放已有 + 本笔（以用户输入仓位为种子）
     existing = db.query(Feedback).filter(Feedback.project_id == pid).all()
     new_fb = Feedback(project_id=pid, date=body.date, action=body.action,
@@ -848,6 +848,15 @@ def _seat_out(s: RoundtableSeat, db) -> RoundtableSeatOut:
     )
 
 
+def _effective_position(p, db):
+    """项目有效持仓 = 用户种子仓位 + 反馈回放（与项目页盈亏曲线同源，保证三处口径一致）。
+    返回 (shares, avg, feedbacks按时间正序)。"""
+    fbs = (db.query(Feedback).filter(Feedback.project_id == p.id)
+           .order_by(Feedback.date, Feedback.id).all())
+    _, pos = replay(fbs, p.position_shares or 0.0, p.position_cost or 0.0)
+    return float(pos["shares"] or 0.0), float(pos["avg"] or 0.0), fbs
+
+
 def _build_snapshot(u, db) -> dict:
     """圆桌「今日快照」：大盘指数 + 当前用户可见持仓（市值/收益率/今日涨跌/最新建议）。"""
     q = db.query(Project)
@@ -857,13 +866,12 @@ def _build_snapshot(u, db) -> dict:
 
     holdings = []
     for p in projects:
-        shares = float(p.position_shares or 0.0)
+        shares, cost, _fbs = _effective_position(p, db)
         if shares <= 0:
             continue          # 圆桌只点评当前有持仓的标的；历史标的见「历史标的与操作记录」
         mps = (db.query(MarketPrice).filter(MarketPrice.project_id == p.id)
                .order_by(MarketPrice.date.desc()).limit(2).all())
         latest, prev = (mps[0] if mps else None), (mps[1] if len(mps) > 1 else None)
-        cost = float(p.position_cost or 0.0)
         close = latest.close if latest else None
         h = {
             "id": p.id, "name": p.name, "code": p.code or "", "market": p.market or "A",
@@ -1029,9 +1037,7 @@ def rt_history(u: User = Depends(get_current_user), db: Session = Depends(get_db
 
     symbols, operations = [], []
     for p in projects:
-        fbs = (db.query(Feedback).filter(Feedback.project_id == p.id)
-               .order_by(Feedback.date.desc(), Feedback.id.desc()).all())
-        shares = float(p.position_shares or 0.0)
+        shares, cost, fbs = _effective_position(p, db)
         if shares > 0:
             status = "holding"
         elif fbs:
@@ -1041,12 +1047,12 @@ def rt_history(u: User = Depends(get_current_user), db: Session = Depends(get_db
         symbols.append({
             "id": p.id, "name": p.name, "code": p.code or "", "market": p.market or "A",
             "is_fund": (p.market == "fund"),
-            "shares": round(shares, 4), "cost": float(p.position_cost or 0.0),
+            "shares": round(shares, 4), "cost": round(cost, 4),
             "status": status,
             "op_count": len(fbs),
             "realized_pnl": round(sum(float(f.realized_pnl or 0.0) for f in fbs), 2),
-            "first_date": fbs[-1].date if fbs else None,   # fbs 为日期倒序，末条最早
-            "last_date": fbs[0].date if fbs else None,
+            "first_date": fbs[0].date if fbs else None,    # fbs 为时间正序，首条最早
+            "last_date": fbs[-1].date if fbs else None,
         })
         for f in fbs:
             operations.append({
