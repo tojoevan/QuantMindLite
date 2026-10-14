@@ -36,6 +36,13 @@
     <aside class="sidebar">
       <h3>已建立项目</h3>
       <ul id="project-list" class="proj-list"></ul>
+      <!-- 移动端专用：顶部文字链接收进抽屉（桌面隐藏），排在新建项目上方 -->
+      <div id="side-links" class="side-links">
+        <a id="side-about" class="side-link">关于</a>
+        <a id="side-roundtable" class="side-link">圆桌</a>
+        <a id="side-users" class="side-link hidden">用户管理</a>
+        <a id="side-github" class="side-link" href="https://github.com/tojoevan/QuantMindLite" target="_blank" rel="noopener">GitHub</a>
+      </div>
       <h3>新建项目</h3>
       <form id="project-form" class="card">
         <input id="p-name" placeholder="项目名称" required />
@@ -59,13 +66,6 @@
         <textarea id="p-strategy" placeholder="策略说明(可选)"></textarea>
         <button type="submit">＋ 新建项目</button>
       </form>
-      <!-- 移动端专用：顶部文字链接收进抽屉（桌面隐藏） -->
-      <div id="side-links" class="side-links">
-        <a id="side-about" class="side-link">关于</a>
-        <a id="side-roundtable" class="side-link">圆桌</a>
-        <a id="side-users" class="side-link hidden">用户管理</a>
-        <a id="side-github" class="side-link" href="https://github.com/tojoevan/QuantMindLite" target="_blank" rel="noopener">GitHub</a>
-      </div>
     </aside>
 
     <!-- 右侧：主区 -->
