@@ -1170,6 +1170,8 @@ const RT_PROVIDERS = {
   moonshot: { base_url: "https://api.moonshot.cn/v1", model: "moonshot-v1-8k" },
   openai: { base_url: "https://api.openai.com/v1", model: "gpt-4o-mini" },
 };
+// 手动席位可选配置的「AI 角色」（预设下拉 + 自定义），仅作身份标签与提示词注入
+const RT_ROLES = ["豆包", "DeepSeek", "元宝", "Kimi", "通义千问", "ChatGPT", "Claude", "Gemini", "文心一言", "其他"];
 let rtState = { date: null, snap: null, seats: [], posts: {}, settings: null, history: null, admin: false };
 const rtAdmin = () => !!(me && me.is_admin);
 
@@ -1405,6 +1407,7 @@ function rtRenderSeats() {
         <div class="rt-seat-title">
           <span class="rt-seat-name">${escapeHtml(s.name)}</span>
           <span class="rt-badge ${isAuto ? "mode-auto" : ""}">${isAuto ? "自动" : "手动"}</span>
+          ${s.role ? `<span class="rt-role">${escapeHtml(s.role)}</span>` : ""}
           ${stateBadge}
         </div>
         <div class="rt-seat-actions">${actions}</div>
@@ -1442,11 +1445,13 @@ async function rtReloadSettings() {
 async function rtCopyPrompt(seatId) {
   const btn = document.querySelector(`[data-copy="${seatId}"]`);
   if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
+  const seat = rtState.seats.find(x => x.id === seatId);
+  const toRole = (seat && seat.role) ? `，去 ${seat.role} 网页` : "，去外部 AI 网页";
   try {
     const r = await API("GET", `/api/roundtable/prompt?seat_id=${seatId}`);
     try {
       await navigator.clipboard.writeText(r.prompt);
-      showToast("提示词已复制，去外部 AI 网页粘贴咨询吧");
+      showToast("提示词已复制" + toRole + "粘贴咨询吧");
     } catch (clipErr) {
       rtShowTextModal(`提示词 · ${r.seat_name}（${r.date}）`, r.prompt,
         "剪贴板不可用，请手动全选复制以下内容", false);
@@ -1562,6 +1567,7 @@ function rtRenderManage() {
           </select>
         </label>
         <label class="rt-field grow">人格 / 风格提示词<textarea rows="2" data-f="persona">${escapeHtml(s.persona)}</textarea></label>
+        <label class="rt-field" style="width:120px">AI 角色<input type="text" data-f="role" value="${escapeHtml(s.role)}" list="rt-role-list" placeholder="豆包/元宝…"></label>
       </div>
       <div class="row">
         <label class="rt-field" style="width:150px">提供方
@@ -1577,6 +1583,7 @@ function rtRenderManage() {
       </div>
     </div>`).join("");
   body.innerHTML = `
+    <datalist id="rt-role-list">${RT_ROLES.map(r => `<option value="${r}"></option>`).join("")}</datalist>
     <h4>席位列表</h4>${rows || '<div class="muted">暂无席位</div>'}
     <h4>新增席位</h4>
     <form id="rt-seat-add" class="rt-manage-row">
@@ -1586,6 +1593,7 @@ function rtRenderManage() {
           <select name="mode"><option value="manual">手动</option><option value="auto">自动</option></select>
         </label>
         <label class="rt-field grow">人格 / 风格提示词<textarea name="persona" rows="2" placeholder="该席位的分析风格与偏好…"></textarea></label>
+        <label class="rt-field" style="width:120px">AI 角色<input type="text" name="role" list="rt-role-list" placeholder="豆包/元宝…"></label>
       </div>
       <div class="row">
         <label class="rt-field" style="width:150px">提供方
@@ -1605,6 +1613,7 @@ function rtRenderManage() {
       mode: q("mode").value,
       provider: q("provider").value,
       model: q("model").value.trim(),
+      role: q("role").value.trim(),
       enabled: q("enabled").checked ? 1 : 0,
     };
     try {
@@ -1633,6 +1642,7 @@ function rtRenderManage() {
         mode: q("mode").value,
         provider: q("provider").value,
         model: q("model").value.trim(),
+        role: q("role").value.trim(),
       });
       f.reset();
       showToast("席位已添加");

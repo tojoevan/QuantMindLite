@@ -107,6 +107,7 @@ class RoundtableSeatCreate(BaseModel):
     mode: str = "manual"             # manual / auto
     provider: str = "deepseek"
     model: str = ""
+    role: str = ""                   # AI 角色（豆包/DeepSeek/元宝等），手动席位身份标签
 
 
 class RoundtableSeatUpdate(BaseModel):
@@ -115,6 +116,7 @@ class RoundtableSeatUpdate(BaseModel):
     mode: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    role: Optional[str] = None
     enabled: Optional[int] = None
     sort: Optional[int] = None
 
@@ -126,6 +128,7 @@ class RoundtableSeatOut(BaseModel):
     mode: str = "manual"
     provider: str = ""
     model: str = ""
+    role: str = ""
     enabled: int = 1
     has_key: bool = False            # 该席位 provider 是否已配置 Key（永不回传 Key 本身）
     sort: int = 0

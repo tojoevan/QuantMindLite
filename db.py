@@ -121,6 +121,7 @@ class RoundtableSeat(Base):
     model = Column(String(64), default="")              # 模型名（留空用提供方默认）
     enabled = Column(Integer, default=1)                # 0 / 1
     sort = Column(Integer, default=0)                   # 展示顺序
+    role = Column(String(64), default="")               # AI 角色（豆包/DeepSeek/元宝等），手动席位身份标签
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -163,6 +164,17 @@ _for_add = {
 }
 for _cname, _ddl in _for_add.items():
     if _cname not in _cols:
+        with engine.connect() as _conn:
+            _conn.execute(text(_ddl))
+            _conn.commit()
+
+# roundtable_seats 补列（role）
+_cols_rt = [c["name"] for c in _insp.get_columns("roundtable_seats")]
+_for_add_rt = {
+    "role": "ALTER TABLE roundtable_seats ADD COLUMN role VARCHAR(64) DEFAULT ''",
+}
+for _cname, _ddl in _for_add_rt.items():
+    if _cname not in _cols_rt:
         with engine.connect() as _conn:
             _conn.execute(text(_ddl))
             _conn.commit()

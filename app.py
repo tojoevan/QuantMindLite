@@ -788,11 +788,11 @@ def guest_consensus(pid: int, strategies: str = "momentum,meanreversion,breakout
 # ================= 圆桌讨论（多 AI 席位 · 双通道） =================
 # 默认席位：首次访问圆桌接口时自动播种（后续可在页面「席位管理」增删改）
 DEFAULT_SEATS = [
-    {"name": "稳健配置", "persona": "风格稳健保守：重视仓位控制与安全边际，偏好低频操作，"
+    {"name": "稳健配置", "role": "元宝", "persona": "风格稳健保守：重视仓位控制与安全边际，偏好低频操作，"
      "对高估值与高波动标的保持谨慎，建议以持有观察为主、设定明确止损线。"},
-    {"name": "趋势跟踪", "persona": "风格趋势跟踪：尊重价格与量能的方向，顺势而为，"
+    {"name": "趋势跟踪", "role": "DeepSeek", "persona": "风格趋势跟踪：尊重价格与量能的方向，顺势而为，"
      "对突破关键位/均线的标的给予跟进建议，弱化主观判断、强调纪律执行。"},
-    {"name": "风险控制", "persona": "风格风险优先：首先评估回撤与集中度风险，"
+    {"name": "风险控制", "role": "豆包", "persona": "风格风险优先：首先评估回撤与集中度风险，"
      "对单一标的占比过高或涨幅过大的持仓提示止盈/分散，宁可错过不可做错。"},
 ]
 
@@ -817,11 +817,20 @@ _LLM_SYSTEM = "你是严谨的A股投研助手。严格基于用户给出的持�
 
 
 def _ensure_default_seats(db):
-    """圆桌表为空时播种 3 个默认席位（幂等）。"""
-    if db.query(RoundtableSeat).count() == 0:
-        for i, s in enumerate(DEFAULT_SEATS):
-            db.add(RoundtableSeat(name=s["name"], persona=s["persona"],
+    """圆桌表为空时播种 3 个默认席位（幂等）；已存在的默认席位若未配置角色则补上示例角色。"""
+    existing = {s.name: s for s in db.query(RoundtableSeat).all()}
+    changed = False
+    for i, s in enumerate(DEFAULT_SEATS):
+        name = s["name"]
+        cur = existing.get(name)
+        if cur is None:
+            db.add(RoundtableSeat(name=name, persona=s["persona"], role=s.get("role", ""),
                                   mode="manual", provider="deepseek", sort=i))
+            changed = True
+        elif not (cur.role or "").strip() and s.get("role"):
+            cur.role = s["role"]
+            changed = True
+    if changed:
         db.commit()
 
 
@@ -842,6 +851,7 @@ def _seat_out(s: RoundtableSeat, db) -> RoundtableSeatOut:
     return RoundtableSeatOut(
         id=s.id, name=s.name or "", persona=s.persona or "",
         mode=s.mode or "manual", provider=s.provider or "", model=s.model or "",
+        role=s.role or "",
         enabled=1 if s.enabled else 0, has_key=bool(conf.get("api_key")),
         sort=s.sort or 0,
         created_at=s.created_at.isoformat() if s.created_at else None,
@@ -910,8 +920,11 @@ def _build_snapshot(u, db) -> dict:
 
 def _snapshot_prompt_text(snap: dict, seat: RoundtableSeat) -> str:
     """把今日快照 + 席位人格 + 输出格式组装成完整提示词（自动/手动通道共用）。"""
-    L = ["# 角色", f"你是「{seat.name or '分析师'}」。{seat.persona or '语气专业、观点明确。'}",
-         "", f"# 今日快照（{snap['date']}）", "## 大盘"]
+    L = ["# 角色", f"你是「{seat.name or '分析师'}」。{seat.persona or '语气专业、观点明确。'}"]
+    if seat.role:
+        L.append(f"你当前扮演的 AI 产品是「{seat.role}」，请以该产品的口吻、表达习惯与视角作答"
+                 f"（例如它是谁、擅长什么、语言风格如何），让用户感觉这是 {seat.role} 给出的独立观点。")
+    L += ["", f"# 今日快照（{snap['date']}）", "## 大盘"]
     for idx in snap.get("indices") or []:
         if idx.get("close") is None:
             L.append(f"- {idx['name']}：数据获取失败")
@@ -978,6 +991,7 @@ def rt_create_seat(body: RoundtableSeatCreate, u: User = Depends(get_current_use
         raise HTTPException(400, "mode 仅支持 manual / auto")
     max_sort = db.query(RoundtableSeat.sort).order_by(RoundtableSeat.sort.desc()).first()
     s = RoundtableSeat(name=body.name.strip() or "新席位", persona=body.persona,
+                       role=body.role or "",
                        mode=body.mode, provider=body.provider or "deepseek",
                        model=body.model, sort=(max_sort[0] + 1) if max_sort else 0)
     db.add(s)
@@ -993,7 +1007,7 @@ def rt_update_seat(sid: int, body: RoundtableSeatUpdate, u: User = Depends(get_c
     s = db.get(RoundtableSeat, sid)
     if not s:
         raise HTTPException(404, "席位不存在")
-    for field in ("name", "persona", "mode", "provider", "model", "enabled", "sort"):
+    for field in ("name", "persona", "mode", "provider", "model", "role", "enabled", "sort"):
         v = getattr(body, field)
         if v is not None:
             if field == "mode" and v not in ("manual", "auto"):

@@ -446,6 +446,11 @@ th { color: var(--muted); font-weight: 600; }
 .rt-badge.mode-auto { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .rt-badge.state-done { color: #3fb950; border-color: rgba(63, 185, 80, .5); }
 .rt-badge.state-pending { color: var(--yellow); border-color: rgba(210, 153, 34, .5); }
+.rt-role {
+  font-size: 11px; padding: 1px 8px; border-radius: 999px; margin-left: 6px;
+  color: var(--accent); border: 1px dashed var(--accent); background: var(--accent-soft);
+  white-space: nowrap; font-weight: 500;
+}
 .rt-seat-actions { display: flex; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
 .rt-seat-body {
   white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.75;
