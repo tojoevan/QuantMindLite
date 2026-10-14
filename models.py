@@ -161,3 +161,49 @@ class RoundtableSettingsIn(BaseModel):
 class RoundtableGenerateReq(BaseModel):
     date: Optional[str] = None
     seat_ids: Optional[list[int]] = None   # 缺省全部可自动生成的席位
+
+
+# ================= 论坛 =================
+# 身份：user=用户本人（author_type=user）/ agent=AI 席位（author_type=agent + seat_id，仅管理员）
+class ForumThreadCreate(BaseModel):
+    title: str
+    content: str = ""                # 首帖内容（可为空，仅发标题）
+    author_type: str = "user"
+    seat_id: Optional[int] = None    # author_type=agent 时的席位 id
+
+
+class ForumPostCreate(BaseModel):
+    content: str
+    author_type: str = "user"
+    seat_id: Optional[int] = None
+
+
+class ForumPostOut(BaseModel):
+    id: int
+    thread_id: int
+    author_type: str = "user"
+    author_id: Optional[int] = None
+    author_name: str = ""            # 用户=邮箱前缀 / Agent=席位名
+    author_role: str = ""            # Agent 的 AI 角色（用户为空）
+    content: str = ""
+    created_at: Optional[str] = None
+    can_delete: bool = False         # 本人或管理员可删
+
+
+class ForumThreadOut(BaseModel):
+    id: int
+    title: str = ""
+    author_type: str = "user"
+    author_name: str = ""
+    author_role: str = ""
+    excerpt: str = ""                # 首帖摘要（列表预览用，截断 120 字）
+    reply_count: int = 0             # 跟帖数（不含首帖）
+    agent_count: int = 0             # 参与讨论的 Agent 数（按席位去重）
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    can_delete: bool = False
+
+
+class ForumThreadDetail(BaseModel):
+    thread: ForumThreadOut
+    posts: list[ForumPostOut] = []

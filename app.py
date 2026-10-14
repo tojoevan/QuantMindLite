@@ -24,13 +24,14 @@ logger = logging.getLogger("quant-web")
 from db import (
     engine, SessionLocal, Project, MarketPrice, Prediction, Feedback,
     User, Session as SessionModel, PasswordResetRequest,
-    RoundtableSeat, RoundtablePost, Setting,
+    RoundtableSeat, RoundtablePost, ForumThread, ForumPost, Setting,
 )
 from models import (
     ProjectCreate, ProjectOut, ProjectUpdate, PricePoint, PredictionCreate, PredictionOut,
     FeedbackCreate, FeedbackOut, ChartData, FetchReq, PriceOut,
     RoundtableSeatCreate, RoundtableSeatUpdate, RoundtableSeatOut,
     RoundtablePostIn, RoundtablePostOut, RoundtableSettingsIn, RoundtableGenerateReq,
+    ForumThreadCreate, ForumPostCreate, ForumPostOut, ForumThreadOut, ForumThreadDetail,
 )
 from predictor import run_strategy, STRATEGY_CATALOG, rolling_predict, forecast_future
 from datasource import fetch_a_hist, fetch_stock_name, fetch_index_quotes
@@ -1341,6 +1342,179 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
         if r.get("ok"):
             _upsert_post(db, date_s, r["seat_id"], r["content"], "auto", r.get("model") or "")
     return {"date": date_s, "results": results}
+
+
+# ---------------- 论坛（主题帖 + 跟帖；用户与 Agent 共同讨论） ----------------
+FM_MAX_TITLE = 200
+FM_MAX_CONTENT = 20000
+FM_EXCERPT_LEN = 120
+
+
+def _forum_identity(u: User, author_type: str, seat_id: Optional[int], db: Session):
+    """解析发帖身份：普通用户只能以本人身份发言；仅管理员可代 Agent 席位发言。"""
+    if (author_type or "user") == "agent":
+        if not u.is_admin:
+            raise HTTPException(403, "仅管理员可以 Agent 身份发言")
+        if not seat_id:
+            raise HTTPException(400, "请选择要以哪个 Agent 席位发言")
+        s = db.get(RoundtableSeat, seat_id)
+        if not s:
+            raise HTTPException(404, "席位不存在")
+        return "agent", s.id
+    return "user", u.id
+
+
+def _forum_author(db: Session, author_type: str, author_id: Optional[int]):
+    """身份 → (显示名, AI 角色)。用户取邮箱前缀；Agent 取席位名与角色。
+
+    读取时实时解析（不存快照），因此席位改名会同步体现在历史发言上；
+    席位/用户被删除时给出兜底显示名，不报错。
+    """
+    if (author_type or "user") == "agent":
+        s = db.get(RoundtableSeat, author_id) if author_id else None
+        if not s:
+            return "已删除席位", ""
+        return ((s.name or "").strip() or "未命名席位"), (s.role or "")
+    usr = db.get(User, author_id) if author_id else None
+    if not usr:
+        return "已注销用户", ""
+    email = (usr.email or "").strip()
+    return (email.split("@")[0] or email or "用户"), ""
+
+
+def _forum_can_delete(u: User, author_type: str, author_id: Optional[int]) -> bool:
+    """本人或管理员可删；Agent 身份的发言只有管理员可删。"""
+    if u.is_admin:
+        return True
+    return (author_type or "user") == "user" and author_id == u.id
+
+
+def _forum_thread_out(db: Session, t: ForumThread, u: User, posts) -> ForumThreadOut:
+    name, role = _forum_author(db, t.author_type, t.author_id)
+    first = posts[0] if posts else None
+    excerpt = (first.content or "").strip().replace("\n", " ") if first else ""
+    if len(excerpt) > FM_EXCERPT_LEN:
+        excerpt = excerpt[:FM_EXCERPT_LEN] + "…"
+    return ForumThreadOut(
+        id=t.id, title=t.title or "", author_type=t.author_type or "user",
+        author_name=name, author_role=role, excerpt=excerpt,
+        reply_count=max(len(posts) - 1, 0),      # 跟帖数不含首帖
+        agent_count=len({p.author_id for p in posts if (p.author_type or "") == "agent"}),
+        created_at=t.created_at.isoformat() if t.created_at else None,
+        updated_at=t.updated_at.isoformat() if t.updated_at else None,
+        can_delete=_forum_can_delete(u, t.author_type, t.author_id),
+    )
+
+
+def _forum_post_out(db: Session, p: ForumPost, u: User) -> ForumPostOut:
+    name, role = _forum_author(db, p.author_type, p.author_id)
+    return ForumPostOut(
+        id=p.id, thread_id=p.thread_id, author_type=p.author_type or "user",
+        author_id=p.author_id, author_name=name, author_role=role,
+        content=p.content or "",
+        created_at=p.created_at.isoformat() if p.created_at else None,
+        can_delete=_forum_can_delete(u, p.author_type, p.author_id),
+    )
+
+
+def _forum_detail(db: Session, t: ForumThread, u: User) -> ForumThreadDetail:
+    posts = (db.query(ForumPost).filter(ForumPost.thread_id == t.id)
+             .order_by(ForumPost.created_at, ForumPost.id).all())
+    return ForumThreadDetail(thread=_forum_thread_out(db, t, u, posts),
+                             posts=[_forum_post_out(db, p, u) for p in posts])
+
+
+@app.get("/api/forum/threads", response_model=list[ForumThreadOut])
+def forum_list_threads(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """主题帖列表（最近活跃倒序）。站点规模小，全量返回并实时聚合计数，不新增计数表。"""
+    threads = (db.query(ForumThread)
+               .order_by(ForumThread.updated_at.desc(), ForumThread.id.desc())
+               .limit(200).all())
+    ids = [t.id for t in threads]
+    grouped = {}
+    if ids:
+        rows = (db.query(ForumPost).filter(ForumPost.thread_id.in_(ids))
+                .order_by(ForumPost.created_at, ForumPost.id).all())
+        for p in rows:
+            grouped.setdefault(p.thread_id, []).append(p)
+    return [_forum_thread_out(db, t, u, grouped.get(t.id, [])) for t in threads]
+
+
+@app.post("/api/forum/threads", response_model=ForumThreadDetail, status_code=201)
+def forum_create_thread(body: ForumThreadCreate, u: User = Depends(get_current_user),
+                        db: Session = Depends(get_db)):
+    """发起新帖：主题 + 首帖一次创建（首帖可为空，仅发标题）。"""
+    title = (body.title or "").strip()
+    if not title:
+        raise HTTPException(400, "标题不能为空")
+    if len(title) > FM_MAX_TITLE:
+        raise HTTPException(400, f"标题过长（上限 {FM_MAX_TITLE} 字）")
+    content = (body.content or "").strip()
+    if len(content) > FM_MAX_CONTENT:
+        raise HTTPException(400, "内容过长（上限 20000 字符）")
+    atype, aid = _forum_identity(u, body.author_type, body.seat_id, db)
+    t = ForumThread(title=title, author_type=atype, author_id=aid)
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    if content:
+        db.add(ForumPost(thread_id=t.id, author_type=atype, author_id=aid, content=content))
+        db.commit()
+    return _forum_detail(db, t, u)
+
+
+@app.get("/api/forum/threads/{tid}", response_model=ForumThreadDetail)
+def forum_thread_detail(tid: int, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    t = db.get(ForumThread, tid)
+    if not t:
+        raise HTTPException(404, "帖子不存在")
+    return _forum_detail(db, t, u)
+
+
+@app.post("/api/forum/threads/{tid}/posts", response_model=ForumPostOut, status_code=201)
+def forum_reply(tid: int, body: ForumPostCreate, u: User = Depends(get_current_user),
+                db: Session = Depends(get_db)):
+    """跟帖：用户以本人身份，管理员可指定 Agent 席位身份发言。"""
+    t = db.get(ForumThread, tid)
+    if not t:
+        raise HTTPException(404, "帖子不存在")
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(400, "内容不能为空")
+    if len(content) > FM_MAX_CONTENT:
+        raise HTTPException(400, "内容过长（上限 20000 字符）")
+    atype, aid = _forum_identity(u, body.author_type, body.seat_id, db)
+    p = ForumPost(thread_id=t.id, author_type=atype, author_id=aid, content=content)
+    db.add(p)
+    t.updated_at = datetime.utcnow()     # 有新跟帖 → 主题活跃时间刷新（列表置顶依据）
+    db.commit()
+    db.refresh(p)
+    return _forum_post_out(db, p, u)
+
+
+@app.delete("/api/forum/threads/{tid}")
+def forum_delete_thread(tid: int, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    t = db.get(ForumThread, tid)
+    if not t:
+        raise HTTPException(404, "帖子不存在")
+    if not _forum_can_delete(u, t.author_type, t.author_id):
+        raise HTTPException(403, "forbidden")
+    db.query(ForumPost).filter(ForumPost.thread_id == tid).delete()
+    db.delete(t)
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/forum/posts/{pid}")
+def forum_delete_post(pid: int, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    p = db.get(ForumPost, pid)
+    if not p:
+        raise HTTPException(404, "回复不存在")
+    if not _forum_can_delete(u, p.author_type, p.author_id):
+        raise HTTPException(403, "forbidden")
+    db.delete(p)
+    db.commit()
+    return {"ok": True}
 
 
 # ---------------- 持仓模型迁移（一次性） ----------------

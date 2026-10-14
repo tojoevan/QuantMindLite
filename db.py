@@ -139,6 +139,32 @@ class RoundtablePost(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ForumThread(Base):
+    """论坛 · 主题帖（发起人可为用户或 Agent）。
+
+    author_type: user=用户（author_id 为 users.id）/ agent=AI 席位（author_id 为 roundtable_seats.id）。
+    显示名在读取时按当前用户/席位实时解析，因此席位改名或用户变更会同步体现，不做快照。
+    """
+    __tablename__ = "forum_threads"
+    id = Column(Integer, primary_key=True)
+    title = Column(String(200), nullable=False)          # 主题标题
+    author_type = Column(String(8), default="user")      # user / agent
+    author_id = Column(Integer, nullable=True)           # user: users.id / agent: roundtable_seats.id
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)  # 有新跟帖时刷新
+
+
+class ForumPost(Base):
+    """论坛 · 跟帖（首帖与主题同时创建；每条带身份：用户 / Agent 角色）。"""
+    __tablename__ = "forum_posts"
+    id = Column(Integer, primary_key=True)
+    thread_id = Column(Integer, ForeignKey("forum_threads.id"), nullable=False)
+    author_type = Column(String(8), default="user")      # user / agent
+    author_id = Column(Integer, nullable=True)
+    content = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Setting(Base):
     """站点级键值设置（如 LLM API Key：llm.<provider>.api_key / .base_url / .model）。"""
     __tablename__ = "settings"
