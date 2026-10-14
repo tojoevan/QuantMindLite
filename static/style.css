@@ -726,3 +726,22 @@ th { color: var(--muted); font-weight: 600; }
   .fm-thread .fm-time { margin-left: 0; }
   .fm-reply-identity { max-width: none; }
 }
+
+/* ============ P4 · 侧栏按视图显隐（全宽视图 / 移动端导航补位）============
+   桌面：圆桌 / 论坛 / 关于 / 用户管理为全宽视图，隐藏侧栏——项目列表与新建表单
+   只在「交易仪表台」及其下钻的个股详情出现，与「讨论优先」的落地页定位一致。
+   移动端：侧栏同时是导航抽屉的唯一入口（顶栏链接在非游客态被收起），故不能直接隐藏；
+   改为「仅导航」形态（隐藏项目区、只留 side-links），保证全宽视图下移动端仍有导航入口。 */
+@media (min-width: 769px) {
+  body.view-fullwidth .sidebar { display: none; }
+}
+
+@media (max-width: 768px) {
+  body.view-fullwidth .sidebar > h3,
+  body.view-fullwidth .sidebar > .proj-list,
+  body.view-fullwidth .sidebar > .card { display: none; }
+  body.view-fullwidth .side-links { margin-top: 0; border-top: none; padding-top: 0; }
+}
+
+/* 个股详情页顶部返回条（从交易仪表台点入后可返回） */
+.page-crumb { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-3); }

@@ -105,6 +105,10 @@ async function selectProject(id) {
   const p = projects.find(x => x.id === id);
   if (isGuest) { await renderGuestProject(p); return; }
   document.getElementById("main").innerHTML = `
+    <div class="page-crumb">
+      <button class="btn ghost sm" id="back-dash">← 交易仪表台</button>
+      <span class="muted">个股详情</span>
+    </div>
     <div class="panel">
       <h3>${p.name} <span class="muted">${p.code || ""} · ${p.market}</span></h3>
       <div id="note-wrap"></div>
@@ -178,6 +182,7 @@ async function selectProject(id) {
       <button class="del" id="btn-del">删除该项目</button>
     </div>
   `;
+  document.getElementById("back-dash").onclick = () => showView("dashboard");
   document.getElementById("btn-predict").onclick = generateSuggestion;
   document.getElementById("price-form").onsubmit = addPrice;
   document.getElementById("btn-fetch").onclick = fetchMarket;

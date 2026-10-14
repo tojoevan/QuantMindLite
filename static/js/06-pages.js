@@ -9,9 +9,18 @@ let prevView = { name: null, arg: null };
 // 默认落地页：登录 → 圆桌；游客 → 交易仪表台
 function navDefault() { return isGuest ? "dashboard" : "roundtable"; }
 
+// 侧栏按视图显隐（P4 · 见方案 §3.4）：只有「交易仪表台」及其下钻的个股详情保留侧栏，
+// 圆桌 / 论坛 / 关于 / 用户管理均为全宽视图（不再常驻项目列表与新建表单）。
+const FULLWIDTH_VIEWS = ["roundtable", "forum", "about", "users"];
+function applyLayout(name) {
+  document.body.classList.toggle("view-fullwidth", FULLWIDTH_VIEWS.includes(name));
+}
+
+// 导航高亮：个股详情属于「交易仪表台」体系，一并高亮仪表台入口
 function markNavActive(name) {
+  const key = name === "project" ? "dashboard" : name;
   document.querySelectorAll("[data-nav]").forEach(a => {
-    a.classList.toggle("active", a.getAttribute("data-nav") === name);
+    a.classList.toggle("active", a.getAttribute("data-nav") === key);
   });
 }
 
@@ -20,18 +29,18 @@ async function showView(name, arg) {
   if (name === "about") prevView = currentView;   // 关于页提供「返回上一视图」
   switch (name) {
     case "dashboard":
-      currentView = { name, arg: null }; markNavActive(name); await renderDashboard(); break;
+      currentView = { name, arg: null }; markNavActive(name); applyLayout(name); await renderDashboard(); break;
     case "roundtable":
-      currentView = { name, arg: null }; markNavActive(name); await renderRoundtable(); break;
+      currentView = { name, arg: null }; markNavActive(name); applyLayout(name); await renderRoundtable(); break;
     case "forum":
-      currentView = { name, arg: null }; markNavActive(name); await renderForum(); break;
+      currentView = { name, arg: null }; markNavActive(name); applyLayout(name); await renderForum(); break;
     case "about":
-      currentView = { name, arg: null }; markNavActive(name); renderAbout(); break;
+      currentView = { name, arg: null }; markNavActive(name); applyLayout(name); renderAbout(); break;
     case "users":
-      if (me && me.is_admin) { currentView = { name, arg: null }; markNavActive(name); await renderUsers(); }
+      if (me && me.is_admin) { currentView = { name, arg: null }; markNavActive(name); applyLayout(name); await renderUsers(); }
       break;
     case "project":
-      currentView = { name, arg: arg ?? null }; markNavActive(name); await selectProject(arg); break;
+      currentView = { name, arg: arg ?? null }; markNavActive(name); applyLayout(name); await selectProject(arg); break;
     default:
       break;
   }
