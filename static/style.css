@@ -745,3 +745,22 @@ th { color: var(--muted); font-weight: 600; }
 
 /* 个股详情页顶部返回条（从交易仪表台点入后可返回） */
 .page-crumb { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-3); }
+
+/* ============ P5 · 建议区「回填实际成交」入口 ============
+   建议区在个股详情页第 2 个面板、反馈表单在第 7 个面板（需滚过两个图表），
+   原先看完建议时看不到回填入口；这里在建议区补一条直达路径 + 未回填提醒。 */
+.sug-actions { margin-left: auto; display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.sug-todo { font-size: var(--fs-xs); color: var(--yellow); }
+/* 跳转落点高亮一次，帮助用户定位滚动后的目标面板 */
+.panel.flash { animation: panel-flash 1.4s ease-out 1; }
+@keyframes panel-flash {
+  0%   { border-color: var(--accent); box-shadow: 0 0 0 0 var(--accent-soft2); }
+  100% { border-color: var(--border); box-shadow: 0 0 0 14px rgba(56,139,253,0); }
+}
+/* 反馈面板顶部：有持仓却无流水时说明持仓来源 */
+.fb-hint { margin-bottom: var(--sp-2); font-size: var(--fs-sm); }
+.fb-hint:empty { display: none; }
+
+@media (max-width: 768px) {
+  .sug-actions { margin-left: 0; width: 100%; }
+}

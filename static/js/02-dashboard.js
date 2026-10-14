@@ -163,6 +163,7 @@ async function selectProject(id) {
     </div>
     <div class="panel">
       <h3>反馈实际操作</h3>
+      <div class="muted fb-hint" id="fb-hint"></div>
       <form id="fb-form" class="inline">
         <input id="fb-date" type="date" value="${today()}" />
         <select id="fb-action"><option value="BUY">买入</option><option value="SELL">卖出</option><option value="HOLD">持有</option></select>
@@ -198,21 +199,60 @@ async function selectProject(id) {
 }
 
 // 渲染「最新操作建议」（登录与游客共用）
+// 登录态额外给「回填实际成交」入口：建议区在页面顶部、反馈表单在第 7 个面板（要滚过两个图表），
+// 原先看完建议时看不见回填入口，这里补一条直达路径 + 未回填提醒。
 function fillSuggestion(data) {
   const sug = document.getElementById("suggestion");
   if (!sug) return;
-  if (data.predictions.length) {
-    const s = data.predictions[data.predictions.length - 1];
-    sug.innerHTML = `
-      <span class="signal ${s.signal}">${s.signal}</span>
+  const preds = data.predictions || [];
+  const fbs = data.feedbacks || [];
+  const s = preds.length ? preds[preds.length - 1] : null;
+  // 回填入口登录态常显：即便该项目还没生成过建议，也要能手动补录成交
+  const todo = (s && !fbs.some(f => f.date >= s.date))
+    ? `<span class="sug-todo">${s.date} 的建议尚未回填</span>` : "";
+  const action = isGuest ? "" : `
+      <div class="sug-actions">
+        ${todo}
+        <button class="btn primary sm" id="sug-backfill">回填实际成交</button>
+      </div>`;
+  const body = s
+    ? `<span class="signal ${s.signal}">${s.signal}</span>
       <div>
         <div>预测价：${s.predicted_price ?? "—"}（区间 ${s.predicted_low ?? "—"} ~ ${s.predicted_high ?? "—"}）</div>
         <div class="muted">置信度 ${s.confidence} · 模型 ${s.model}</div>
         <div class="muted">${s.note || ""}</div>
-      </div>`;
-  } else {
-    sug.innerHTML = `<span class="muted">尚未生成</span>`;
+      </div>`
+    : `<span class="muted">尚未生成</span>`;
+  sug.innerHTML = body + action;
+  const btn = document.getElementById("sug-backfill");
+  if (btn) btn.onclick = backfillFeedback;
+}
+
+// 反馈数量的本地记忆键（按项目区分：不同标的的数量差异大）
+function qtyMemoKey(pid) { return "qw_last_qty_" + pid; }
+
+// 建议区「回填实际成交」→ 滚动到反馈表单并预填参考成交价。
+// 不覆盖日期：成交日由用户决定（可能是今天，也可能是补记），表单已默认今天。
+function backfillFeedback() {
+  const form = document.getElementById("fb-form");
+  if (!form) return;
+  const panel = form.closest(".panel") || form;
+  const data = lastChartData || {};
+  const mps = data.market_prices || [];
+  const lastMp = mps[mps.length - 1];
+  const priceEl = document.getElementById("fb-price");
+  const qtyEl = document.getElementById("fb-qty");
+  if (priceEl && !priceEl.value && lastMp) priceEl.value = lastMp.close;   // 参考价：最新收盘
+  if (qtyEl && (!qtyEl.value || qtyEl.value === "0")) {
+    const memo = localStorage.getItem(qtyMemoKey(currentId));
+    if (memo) qtyEl.value = memo;
   }
+  panel.scrollIntoView({ behavior: "smooth", block: "center" });
+  panel.classList.remove("flash");
+  void panel.offsetWidth;   // 强制重排，保证高亮动画可重复触发
+  panel.classList.add("flash");
+  setTimeout(() => panel.classList.remove("flash"), 1500);
+  if (priceEl) setTimeout(() => priceEl.focus({ preventScroll: true }), 450);
 }
 
 // 渲染实际行情表（最近 limit 条，倒序）
@@ -243,6 +283,18 @@ async function refreshProjectView() {
     const mv = data.position.market_value ?? 0;
     const up = data.position.unrealized ?? 0;
     pos.innerHTML = `持仓 <b>${data.position.shares}</b> 股 · 成本 <b>${data.position.avg}</b> · 市值 <b>${mv}</b> · 浮动盈亏 <span class="${up >= 0 ? "pos" : "neg"}">${up}</span> · 累计实现盈亏 <span class="${data.position.realized >= 0 ? "pos" : "neg"}">${data.position.realized}</span>`;
+  }
+  // 反馈表单：成交价以最新收盘价作 placeholder 参考；有持仓却无流水时点明持仓来源
+  const lastMp = data.market_prices[data.market_prices.length - 1];
+  const priceEl = document.getElementById("fb-price");
+  if (priceEl) priceEl.placeholder = lastMp ? `成交价（最新收盘 ${lastMp.close}）` : "成交价";
+  const fbHint = document.getElementById("fb-hint");
+  if (fbHint) {
+    const hasPos = (data.position.shares || 0) > 0;
+    const noFb = (data.feedbacks || []).length === 0;
+    fbHint.textContent = (hasPos && noFb)
+      ? `当前持仓 ${data.position.shares} 股来自「保存仓位」手动设置；回填买卖成交后，持仓与盈亏曲线将按流水自动维护。`
+      : "";
   }
   // 反馈表
   const tb = document.querySelector("#fb-table tbody");
@@ -590,16 +642,20 @@ async function fetchMarket() {
 
 async function submitFeedback(e) {
   e.preventDefault();
+  const qtyEl = document.getElementById("fb-qty");
+  const qty = parseFloat(qtyEl.value) || 0;
   try {
     await API("POST", `/api/projects/${currentId}/feedback`, {
       date: document.getElementById("fb-date").value,
       action: document.getElementById("fb-action").value,
       price: parseFloat(document.getElementById("fb-price").value),
-      qty: parseFloat(document.getElementById("fb-qty").value) || 0,
+      qty,
       note: document.getElementById("fb-note").value
     });
+    if (qty > 0) localStorage.setItem(qtyMemoKey(currentId), String(qty));   // 记住数量，便于连续录入
     document.getElementById("fb-form").reset();
     document.getElementById("fb-date").value = today();
+    if (qty > 0) qtyEl.value = qty;   // reset 后回填本次数量，减少重复输入
     await refreshProjectView();
     await loadProjects();   // 同步侧栏
     showToast("反馈已提交，持仓已更新");
