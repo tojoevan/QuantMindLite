@@ -181,8 +181,8 @@ class NewsFeed(Base):
     enabled = Column(Integer, default=1)                # 0 / 1
     sort = Column(Integer, default=0)                   # 展示顺序
     last_fetched = Column(DateTime, nullable=True)      # 最近一次抓取时间（UTC）
-    last_status = Column(String(16), default="")        # ok / error
-    last_error = Column(Text, default="")               # 失败原因（截断存）
+    last_status = Column(String(16), default="")        # ok / empty / error
+    last_error = Column(Text, default="")               # 失败原因或空源说明（截断存）
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

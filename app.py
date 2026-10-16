@@ -40,6 +40,7 @@ from models import (
     RoundtablePostIn, RoundtablePostOut, RoundtableSettingsIn, RoundtableGenerateReq,
     ForumThreadCreate, ForumPostCreate, ForumPostOut, ForumThreadOut, ForumThreadDetail,
     NewsFeedCreate, NewsFeedUpdate, NewsFeedOut, NewsItemOut, NewsFetchReq, NewsSettingsIn,
+    NewsOpmlIn,
 )
 from predictor import run_strategy, STRATEGY_CATALOG, rolling_predict, forecast_future
 from datasource import (
@@ -1777,6 +1778,10 @@ NEWS_DEFAULT_FEEDS = [
     },
 ]
 
+# OPML 导入的体积上限。OPML 只是地址清单，正常几 KB；给 2 MB 足够覆盖超大订阅列表，
+# 又挡住误传其他 XML（比如把整个 Feed 原文当 OPML 传上来）。
+_OPML_MAX_BYTES = 2 * 1024 * 1024
+
 
 def _ensure_default_feeds(db) -> None:
     """空库时播种默认订阅源（幂等；已有任何源就跳过，不覆盖用户增删）。"""
@@ -1833,16 +1838,23 @@ def _news_items_payload(db, range_s="today", category="", q="", star_only=False,
             .limit(max(1, min(limit, 1000))).all())
     items = [newsfetch.item_out(it, fd.title or "") for it, fd in rows]
 
-    # 分类 chips：按当前时间窗内的条目实时聚合（不维护计数表）
-    cat_rows = (db.query(NewsItem.category, func.count(NewsItem.id))
-                .join(NewsFeed, NewsItem.feed_id == NewsFeed.id)
-                .filter(NewsFeed.enabled == 1, NewsItem.category != "")
-                .group_by(NewsItem.category).order_by(func.count(NewsItem.id).desc()).all())
-    cats = [{"name": c, "count": n} for c, n in cat_rows]
-    all_cats = (db.query(NewsItem.category).filter(NewsItem.category != "").distinct().all())
-    for (c,) in all_cats:
-        if c and not any(x["name"] == c for x in cats):
-            cats.append({"name": c, "count": 0})
+    # 分类 chips：**条目自身分类**与**源的人工分类**都算。
+    # 源级分类必须算进来，否则「导入 OPML 时整组打的分类」（如给财经源统一打「财经」）
+    # 在筛选条上根本看不见 —— 但下面的 category 过滤条件其实已经认它（见上方的 OR），
+    # 会出现「筛得中、却点不到」的割裂。两个来源合并计数：一条同时带条目分类与源分类的
+    # 条目会各计一次，这与「按分类筛选时两种都匹配」的语义一致。
+    cat_counts = Counter()
+    for c, n in (db.query(NewsItem.category, func.count(NewsItem.id))
+                 .join(NewsFeed, NewsItem.feed_id == NewsFeed.id)
+                 .filter(NewsFeed.enabled == 1, NewsItem.category != "")
+                 .group_by(NewsItem.category).all()):
+        cat_counts[c] += n
+    for c, n in (db.query(NewsFeed.category, func.count(NewsItem.id))
+                 .join(NewsItem, NewsItem.feed_id == NewsFeed.id)
+                 .filter(NewsFeed.enabled == 1, NewsFeed.category != "")
+                 .group_by(NewsFeed.category).all()):
+        cat_counts[c] += n
+    cats = [{"name": c, "count": n} for c, n in cat_counts.most_common()]
 
     today_start = _news_range_start("today")
     today_n = (db.query(func.count(NewsItem.id))
@@ -1851,6 +1863,8 @@ def _news_items_payload(db, range_s="today", category="", q="", star_only=False,
     feed_n = db.query(func.count(NewsFeed.id)).filter(NewsFeed.enabled == 1).scalar() or 0
     err_n = db.query(func.count(NewsFeed.id)).filter(NewsFeed.enabled == 1,
                                                      NewsFeed.last_status == "error").scalar() or 0
+    empty_n = db.query(func.count(NewsFeed.id)).filter(NewsFeed.enabled == 1,
+                                                       NewsFeed.last_status == "empty").scalar() or 0
     last = (db.query(func.max(NewsFeed.last_fetched)).scalar())
     conf = newsfetch.relay_conf(db)
     return {
@@ -1860,6 +1874,7 @@ def _news_items_payload(db, range_s="today", category="", q="", star_only=False,
             "today": int(today_n),
             "feeds": int(feed_n),
             "feed_errors": int(err_n),
+            "feed_empties": int(empty_n),
             "last_fetched": last.isoformat() + "Z" if last else None,
             "relay_ready": bool(conf.get("url") and conf.get("key")),
         },
@@ -1919,6 +1934,78 @@ def news_add_feed(body: NewsFeedCreate, u: User = Depends(get_current_user),
     db.commit()
     db.refresh(f)
     return _news_feed_out(db, f)
+
+
+@app.post("/api/news/feeds/import-opml")
+def news_import_opml(body: NewsOpmlIn, u: User = Depends(get_current_user),
+                     db: Session = Depends(get_db)):
+    """从 OPML 批量导入订阅源，并**当场实抓一次**（导入即体检）。
+
+    为什么必须实抓：OPML 只是一个地址清单，它对「这个源还活着吗」一无所知。
+    典型教训 —— 新浪财经的 OPML 里 9 个源全部 HTTP 200，但 channel 里
+    pubDate 冻结在 2018-09-23、不含任何 <item>。不实抓就会把 9 个僵尸源
+    连同白名单、调度一起配好，然后永远收不到内容。
+    """
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    raw = (body.content or "").strip()
+    if not raw:
+        raise HTTPException(400, "OPML 内容为空")
+    if len(raw.encode("utf-8")) > _OPML_MAX_BYTES:
+        raise HTTPException(400, f"OPML 内容过大（上限 {_OPML_MAX_BYTES // 1024 // 1024} MB）")
+    try:
+        items = newsfetch.parse_opml(raw.encode("utf-8"))
+    except Exception as e:
+        raise HTTPException(400, f"OPML 解析失败：{type(e).__name__}: {e}")
+    if not items:
+        raise HTTPException(400, "OPML 里没有找到订阅源（需要一个带 xmlUrl 属性的 <outline>）")
+
+    cat = (body.category or "").strip()[:32]
+    have = {u_ for (u_,) in db.query(NewsFeed.url).all()}
+    sort_next = db.query(func.max(NewsFeed.sort)).scalar() or 0
+    skipped, created = [], []
+    for it in items:
+        url = it["url"]
+        if not re.match(r"^https?://", url):
+            skipped.append({**it, "reason": "地址不是 http(s)"})
+            continue
+        if url in have:
+            skipped.append({**it, "reason": "已存在"})
+            continue
+        have.add(url)
+        sort_next += 1
+        f = NewsFeed(url=url, title=it["title"], category=cat, sort=sort_next)
+        db.add(f)
+        created.append(f)
+    db.commit()
+    for f in created:
+        db.refresh(f)
+
+    conf = newsfetch.relay_conf(db)
+    can_fetch = bool(conf.get("url") and conf.get("key"))
+    fetched = []
+    if body.fetch and created:
+        if not can_fetch:
+            fetched = [{"url": f.url, "title": f.title or "", "status": "untested",
+                        "ok": False, "message": "未配置中继，已跳过导入后的实抓"}
+                       for f in created]
+        else:
+            for f in created:
+                r = newsfetch.refresh_feed(db, f, limit=30)
+                row = {"url": f.url, "title": f.title or f.url, "status": r.get("status", ""),
+                       "ok": bool(r.get("ok")), "added": r.get("added", 0),
+                       "parsed": r.get("parsed", 0),
+                       "message": r.get("error") or ""}
+                fetched.append(row)
+
+    return {
+        "parsed": len(items),
+        "added": len(created),
+        "skipped": skipped,
+        "feeds": [_news_feed_out(db, f) for f in created],
+        "fetched": fetched,
+        "fetched_ok": can_fetch,
+    }
 
 
 @app.patch("/api/news/feeds/{fid}", response_model=NewsFeedOut)

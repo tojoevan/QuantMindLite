@@ -902,6 +902,55 @@ th { color: var(--muted); font-weight: 600; }
 .nm-add { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-3); }
 .nm-add input { flex: 1 1 200px; min-width: 0; }
 
+/* 源状态徽标：ok=正常 / warn=空源（可访问但 0 条）/ bad=抓取失败。
+   「空源」单列一档，是因为它最容易被当成正常 —— 新浪财经 RSS 就是这样：
+   HTTP 200、Content-Type text/xml，但一个 <item> 都没有，
+   记成「成功」会骗人，记成「失败」又不准确。 */
+.nm-badge {
+  display: inline-block; padding: 0 6px; font-size: var(--fs-xs); font-weight: 500;
+  border: var(--bd-w) solid currentColor; border-radius: var(--radius-pill);
+  white-space: nowrap; vertical-align: middle; color: var(--muted);
+}
+.nm-badge.ok   { color: var(--green); }
+.nm-badge.warn { color: var(--yellow); }
+.nm-badge.bad  { color: var(--red); }
+
+/* --- OPML 批量导入 --- */
+/* 虚线框：与「已配置项」区分，表示这是操作入口 */
+.nm-opml {
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  margin-top: var(--sp-3); padding: var(--sp-3);
+  border: var(--bd-w) dashed var(--border-strong); border-radius: var(--radius-md);
+}
+.nm-opml-head { font-size: var(--fs-sm); line-height: 1.6; }
+.nm-opml-head .muted { margin-left: var(--sp-2); }
+.nm-opml-bar { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.nm-opml-bar input[name="category"] { flex: 1 1 160px; min-width: 0; }
+.nm-opml-bar input[type="file"] { font-size: var(--fs-xs); color: var(--muted); }
+.nm-opml textarea { width: 100%; resize: vertical; line-height: 1.5; }
+.nm-opml textarea, .nm-opml input, .nm-add input {
+  background: var(--input-bg); border: var(--bd-w) solid var(--border);
+  color: var(--text); border-radius: var(--radius-md);
+  padding: 8px 10px; font-size: var(--fs-sm);
+}
+.nm-opml textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--fs-xs); }
+.nm-opml textarea:focus, .nm-opml input:focus, .nm-add input:focus {
+  outline: none; border-color: var(--accent);
+}
+
+/* 导入结果：逐条列出抓取结果，把空源/失败直接摆到台面上 */
+.nm-opml-result {
+  margin-top: var(--sp-2); padding: var(--sp-3); font-size: var(--fs-sm);
+  border: var(--bd-w) solid var(--border); border-radius: var(--radius-md);
+  background: var(--subtle-bg);
+}
+.nm-opml-sum { line-height: 1.7; }
+.nm-opml-warn { color: var(--yellow); }
+.nm-opml-list { margin: var(--sp-2) 0 0; padding-left: 18px; }
+.nm-opml-list li { line-height: 1.7; }
+.nm-opml-name { margin: 0 4px; }
+.nm-opml-skip { margin-top: var(--sp-2); line-height: 1.6; }
+
 @media (max-width: 768px) {
   .news-item { padding: 10px 2px; }
   .news-idx { display: none; }

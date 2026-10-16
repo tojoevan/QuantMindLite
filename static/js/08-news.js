@@ -18,6 +18,9 @@ var newsState = {
   categories: [],
   stats: {},
   panel: "",          // "" | "manage"
+  // 最近一次 OPML 导入的报告。存进 state 而不是直接写 DOM —— 导入后要刷新上方
+  // 订阅源表格（newsOpenManage 会整块重绘），报告放 state 里才能一起活下来。
+  opmlReport: null,
 };
 
 const NEWS_RANGES = [
@@ -272,6 +275,7 @@ function newsPaintFoot() {
   parts.push(`今日 ${s.today || 0} 条`);
   if (s.last_fetched) parts.push(`最近抓取 ${newsFmtAgo(s.last_fetched)}`);
   if (s.feed_errors) parts.push(`<span class="news-foot-warn">${s.feed_errors} 个源抓取失败</span>`);
+  if (s.feed_empties) parts.push(`<span class="news-foot-warn">${s.feed_empties} 个源无内容</span>`);
   if (!isGuest && s.relay_ready === false) parts.push(`<span class="news-foot-warn">中继未配置</span>`);
   foot.innerHTML = parts.join('<span class="nf-sep"></span>');
 }
@@ -294,9 +298,11 @@ async function newsFetchNow() {
   if (btn) { btn.disabled = true; btn.textContent = "抓取中…"; }
   try {
     const r = await API("POST", "/api/news/fetch", { limit: 60 });
-    const bad = (r.results || []).filter(x => !x.ok);
+    const rs = r.results || [];
+    const empt = rs.filter(x => x.empty).length;
+    const fail = rs.filter(x => !x.ok && !x.empty).length;
     showToast(`抓取完成：${r.feeds} 个源，新增 ${r.added} 条，更新 ${r.updated} 条` +
-      (bad.length ? `；${bad.length} 个失败` : ""));
+      (empt ? `；${empt} 个空源无内容` : "") + (fail ? `；${fail} 个失败` : ""));
     await newsReload();
     if (newsState.panel === "manage") newsOpenManage();
   } catch (e) {
@@ -311,6 +317,34 @@ function newsToggleManage() {
   newsState.panel = newsState.panel === "manage" ? "" : "manage";
   if (newsState.panel === "manage") newsOpenManage();
   else document.getElementById("news-manage-panel").classList.add("hidden");
+}
+
+// OPML 导入结果渲染。重点是把「加进来了但没内容」的源摆到台面上 ——
+// OPML 只是一份地址清单，对源是否还活着一无所知（新浪财经那份 OPML 里 9 个源全是空的）。
+function newsOpmlReport(r) {
+  if (r && r.error) {
+    return `<div class="nm-opml-result"><div class="nm-opml-sum nm-opml-warn">导入失败：${escapeHtml(r.error)}</div></div>`;
+  }
+  const list = r.fetched || [];
+  const tag = (x) => x.ok
+    ? `<span class="nm-badge ok">已抓到 ${x.added} 条</span>`
+    : (x.status === "empty" ? `<span class="nm-badge warn">空源</span>`
+      : (x.status === "untested" ? `<span class="nm-badge">未实抓</span>`
+        : `<span class="nm-badge bad">失败</span>`));
+  const rows = list.map(x => `<li>${tag(x)}
+      <span class="nm-opml-name">${escapeHtml(x.title || x.url)}</span>
+      ${x.message ? `<span class="muted">${escapeHtml(x.message)}</span>` : ""}</li>`).join("");
+  const skipped = (r.skipped || []).length
+    ? `<div class="muted nm-opml-skip">跳过 ${r.skipped.length} 个：` +
+      r.skipped.map(s => `${escapeHtml(s.title || s.url)}（${escapeHtml(s.reason)}）`).join("、") + `</div>`
+    : "";
+  const okN = list.filter(x => x.ok).length;
+  const emptyN = list.filter(x => x.status === "empty").length;
+  return `<div class="nm-opml-result">
+    <div class="nm-opml-sum">解析 ${r.parsed} 个源，新增 ${r.added} 个` +
+    (okN ? `，${okN} 个有内容` : "") +
+    (emptyN ? `，<span class="nm-opml-warn">${emptyN} 个是空源（可访问但没有任何条目）</span>` : "") +
+    `</div>${rows ? `<ul class="nm-opml-list">${rows}</ul>` : ""}${skipped}</div>`;
 }
 
 async function newsOpenManage() {
@@ -334,8 +368,10 @@ async function newsOpenManage() {
       <td>${f.item_count}</td>
       <td>${f.enabled ? `<span class="nm-ok">启用</span>` : `<span class="muted">停用</span>`}</td>
       <td>${f.last_status === "error"
-        ? `<span class="nm-err" title="${escapeHtml(f.last_error)}">失败</span>`
-        : (f.last_fetched ? escapeHtml(newsFmtAgo(f.last_fetched)) : `<span class="muted">未抓取</span>`)}</td>
+        ? `<span class="nm-badge bad" title="${escapeHtml(f.last_error)}">失败</span>`
+        : (f.last_status === "empty"
+          ? `<span class="nm-badge warn" title="${escapeHtml(f.last_error || "源可访问但不含任何条目")}">空源</span>`
+          : (f.last_fetched ? escapeHtml(newsFmtAgo(f.last_fetched)) : `<span class="muted">未抓取</span>`))}</td>
       <td class="nm-actions">
         <button class="btn-mini ghost" data-ffetch="${f.id}">抓取</button>
         <button class="btn-mini ghost" data-ftoggle="${f.id}" data-on="${f.enabled ? 1 : 0}">${f.enabled ? "停用" : "启用"}</button>
@@ -357,6 +393,17 @@ async function newsOpenManage() {
       <input name="category" placeholder="分类（如 AI 动态 / 科技 / 政策）" />
       <button class="btn primary sm" type="submit">＋ 添加订阅源</button>
     </form>
+    <form id="nm-opml" class="nm-opml">
+      <div class="nm-opml-head"><b>批量导入 OPML</b>
+        <span class="muted">订阅清单文件（RSS 阅读器导出）；导入后会立刻实抓一次，当场标出没有内容的源</span></div>
+      <textarea name="content" rows="3" placeholder="把 OPML 内容粘贴到这里，或用下面「选择文件」"></textarea>
+      <div class="nm-opml-bar">
+        <input type="file" id="nm-opml-file" accept=".opml,.xml,text/xml,application/xml" />
+        <input name="category" placeholder="统一分类（可选，如 财经）" />
+        <button class="btn ghost sm" type="submit">⇪ 解析并导入</button>
+      </div>
+    </form>
+    <div id="nm-opml-report">${newsState.opmlReport ? newsOpmlReport(newsState.opmlReport) : ""}</div>
     <h4 class="nm-h4">中继设置 <span class="muted">本机只有 IPv6 出站，不走中继将无法访问绝大多数资讯源</span></h4>
     <form id="nm-relay" class="nm-add">
       <input name="relay_url" placeholder="中继地址（如 https://relay.kapibala.icu）" value="${escapeHtml(settings.relay_url || "")}" />
@@ -370,7 +417,11 @@ async function newsOpenManage() {
       try {
         const r = await API("POST", "/api/news/fetch", { feed_id: parseInt(b.getAttribute("data-ffetch"), 10) });
         const one = (r.results || [])[0] || {};
-        showToast(one.ok ? `抓取完成：新增 ${one.added} 条，更新 ${one.updated} 条` : ("抓取失败：" + (one.error || "未知原因")));
+        showToast(one.ok
+          ? `抓取完成：新增 ${one.added} 条，更新 ${one.updated} 条`
+          : (one.empty
+            ? ("空源：" + (one.error || "源可访问但不含任何条目"))
+            : ("抓取失败：" + (one.error || "未知原因"))));
       } catch (e) { showToast("抓取失败：" + e.message); }
       await newsReload(true);
       newsOpenManage();
@@ -411,6 +462,45 @@ async function newsOpenManage() {
       await newsReload(true);
       newsOpenManage();
     } catch (err) { showToast("添加失败：" + err.message); }
+  };
+  const opmlFile = box.querySelector("#nm-opml-file");
+  if (opmlFile) opmlFile.onchange = () => {
+    const file = (opmlFile.files || [])[0];
+    if (!file) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      const ta = box.querySelector('#nm-opml textarea[name="content"]');
+      if (ta) ta.value = String(rd.result || "");
+      showToast(`已读取 ${file.name}（${Math.max(1, Math.round(file.size / 1024))} KB），点「解析并导入」提交`);
+    };
+    rd.onerror = () => showToast("读取文件失败");
+    rd.readAsText(file, "utf-8");
+  };
+  box.querySelector("#nm-opml").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const content = f.content.value.trim();
+    if (!content) { showToast("请先粘贴 OPML 内容，或用「选择文件」"); return; }
+    const btn = f.querySelector('button[type="submit"]');
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = "导入中…";
+    try {
+      const r = await API("POST", "/api/news/feeds/import-opml", {
+        content: content, category: f.category.value.trim(), fetch: true,
+      });
+      newsState.opmlReport = r;
+      const emptyN = (r.fetched || []).filter(x => x.status === "empty").length;
+      showToast(`解析 ${r.parsed} 个源，新增 ${r.added} 个` +
+        (emptyN ? `；其中 ${emptyN} 个是空源` : ""));
+    } catch (err) {
+      // 错误也塞进 state：下面 newsOpenManage 会整块重绘，直接写 DOM 会被冲掉
+      newsState.opmlReport = { error: err.message };
+      showToast("导入失败：" + err.message);
+    } finally {
+      btn.disabled = false; btn.textContent = label;
+    }
+    await newsReload(true);
+    newsOpenManage();
   };
   box.querySelector("#nm-relay").onsubmit = async (e) => {
     e.preventDefault();

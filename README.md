@@ -36,6 +36,7 @@
 | 🕒 图表时间范围 | 支持「全部 / 30 / 60 / 90 / 180 / 365 天」切换，默认 30 天。 |
 | 🌗 浅 / 深色主题 | 右上角一键切换并记忆，图表配色随主题重绘，无闪烁。 |
 | 🔄 行情限频拉取 | 游客模式每天仅实际调用一次数据源；当日数据已存在则提示无需重复获取。写入按品种分：场内覆盖式重写、场外合并写入（见 §4）。 |
+| 📰 资讯工作台（首页） | RSS / Atom 订阅驱动的资讯流：日期分组、区间与分类筛选、搜索、收藏；订阅源可增删启停、单个抓取，并支持 **OPML 批量导入**。抓取统一走 Cloudflare 中继（见 §8）。 |
 
 ---
 
@@ -226,6 +227,38 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 > 2026-10-17 用假 Key 实测：`zhipu` / `qwen` / `doubao` / `siliconflow` / `openrouter` 返回
 > 401 鉴权错（链路正常，只差 Key）；`deepseek` / `moonshot` 因无 AAAA 直接失败；
 > `openai` 网络可达但被**按地区拒绝**（403 `unsupported_country_region_territory`），中国大陆 IP 实际不可用。
+
+**资讯工作台**
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/news/items` | 资讯流（区间 / 分类 / 搜索 / 只看收藏），返回条目、分类 chips 与统计 |
+| GET | `/api/guest/news/items` | 游客只读的同一份资讯流（不暴露订阅源地址与中继配置） |
+| GET / POST | `/api/news/feeds` | 订阅源列表 / 新增单个源 |
+| PATCH / DELETE | `/api/news/feeds/{fid}` | 改名分类、启停 / 删除（删除会**连带删除**该源已入库条目） |
+| POST | `/api/news/feeds/import-opml` | 管理员：批量导入 OPML（详见下） |
+| POST | `/api/news/fetch` | 管理员：抓取入库；带 `feed_id` 则只抓该源 |
+| GET / PUT | `/api/news/settings` | 管理员：中继地址与密钥（密钥只回 `has_key`，永不回显） |
+
+> **OPML 导入**：请求体 `{content, category?, fetch?}`，`content` 是 OPML **原文**
+> （前端读文件或粘贴后上传）。刻意**不支持**「把地址交给服务端去取」——本机只有 IPv6
+> 出站，而 OPML 所在主机未必在中继白名单里。导入后默认**立即实抓一次**并逐条回报结果：
+> OPML 只是一份地址清单，它对「这些源还活不活」一无所知。
+
+> **源状态三档**：`ok` 正常 / `empty` **空源**（可访问但 0 条目）/ `error` 抓取失败。
+> 「空源」必须单列一档：HTTP 200 却不含任何 `<item>` 的僵尸源并不罕见
+> （典型样本：新浪财经 RSS，`rss.sina.com.cn/*` 全部源自 2018-09-23 起冻结，只剩一个空壳），
+> 记成「成功」会让人以为一切正常。
+
+> ⚠️ **新增订阅源前，先确认域名在中继白名单里** —— `rss-relay/wrangler.toml` 的
+> `ALLOW_HOSTS`（逗号分隔、按域名后缀匹配，写 `wallstreetcn.com` 即放行其子域），
+> 改完须 `wrangler deploy` 才生效，否则取回的是 `403 host not allowed`。
+> 白名单只解决「本机连不上」，**不解决「源是空的」**——两者是独立的坑。
+>
+> 当前白名单：`aihot.news`、`chinanews.com.cn`、`wallstreetcn.com`、`jiemian.com`、`eastmoney.com`。
+> 其中华尔街见闻的 RSS 末尾被其 CDN 追加了一段统计 `<script>`（源站把 Content-Type 标成
+> `text/html` 触发 Cloudflare HTML 改写），严格 XML 解析会抛 `junk after document element`；
+> `newsfetch._xml_root` 对这一种错法做了截断容错。
 
 ---
 

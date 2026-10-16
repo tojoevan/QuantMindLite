@@ -217,6 +217,17 @@ class NewsFeedCreate(BaseModel):
     category: str = ""
 
 
+class NewsOpmlIn(BaseModel):
+    """OPML 导入：由前端读取文件/粘贴后把**原文**发上来。
+
+    刻意不走「传 OPML 地址让服务端去取」——本机只有 IPv6 出站，任何 OPML 地址都得
+    先进中继白名单才能取；而浏览器侧读文件不受此限，绕开了白名单与网络两重耦合。
+    """
+    content: str
+    category: str = ""
+    fetch: bool = True          # 导入后立即实抓一次，当场暴露僵尸源
+
+
 class NewsFeedUpdate(BaseModel):
     title: Optional[str] = None
     category: Optional[str] = None

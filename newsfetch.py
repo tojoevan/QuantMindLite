@@ -77,6 +77,36 @@ def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+# 各格式的根元素闭合标签。用于下面「文档元素之后有杂质」的容错截断。
+_ROOT_CLOSERS = (b"</rss>", b"</feed>", b"</rdf:RDF>", b"</opml>")
+
+
+def _xml_root(raw: bytes):
+    """解析出 XML 根元素，对「文档元素之后还有内容」这一种错误做容错。
+
+    为什么要容错：部分源经过 CDN 后，正文末尾会被追加一段统计脚本。
+    实测样本 —— 华尔街见闻 `dedicated.wallstreetcn.com/rss.xml`：
+    源站把这份 RSS 的 Content-Type 标成 `text/html`，经 Cloudflare 时触发了
+    「HTML 改写」，在 `</rss>` 之后插入了 `beacon.min.js` 的 <script>。
+    浏览器容忍，XML 解析器不容忍，`ET.fromstring` 直接抛
+    `ParseError: junk after document element` —— 于是源明明有 62 条内容却一条都拿不到。
+
+    只在这一种错法上兜底，其余解析错误原样抛出，不掩盖真正的问题。
+    截断依据：根标签只有固定的几种，而追加进来的杂质里不会出现它们，
+    所以最后一个 `</rss>` 就是根元素的结束位置。
+    """
+    try:
+        return ET.fromstring(raw)
+    except ET.ParseError as e:
+        if "junk after document element" not in str(e):
+            raise
+        for closer in _ROOT_CLOSERS:
+            i = raw.rfind(closer)
+            if i != -1:
+                return ET.fromstring(raw[:i + len(closer)])
+        raise
+
+
 def _first(el, name: str):
     """按「去命名空间后的标签名」找第一个直接子节点（RSS 与 Atom 通用）。"""
     if el is None:
@@ -175,7 +205,7 @@ def source_name_of(author: str, link: str = "") -> str:
 
 def parse_feed(raw: bytes):
     """解析 RSS 2.0 / Atom，返回 (meta, entries)。条目字段已归一化。"""
-    root = ET.fromstring(raw)
+    root = _xml_root(raw)
     kind = _local(root.tag)
     entries = []
     meta = {"title": "", "site_url": ""}
@@ -236,6 +266,33 @@ def parse_feed(raw: bytes):
     # 抽掉解析不到任何内容的条目（有些源会喂占位项）
     entries = [e for e in entries if e["title"] or e["link"]]
     return meta, entries
+
+
+def parse_opml(raw: bytes):
+    """解析 OPML，抽出全部订阅源。
+
+    只认带 `xmlUrl` 的 `<outline>`（OPML 里分组节点没有这个属性，自然被跳过），
+    嵌套分组也能取到（用 iter 而非只扫一层）。属性名按规范是 `xmlUrl`，
+    但部分生成器写成全小写，两种都接。
+
+    返回 `[{"title": …, "url": …}]`，顺序即文档顺序，已去重。
+    """
+    root = _xml_root(raw)
+    if _local(root.tag).lower() != "opml":
+        raise ValueError(f"不是 OPML 文件（根节点是 {_local(root.tag)}）")
+    out, seen = [], set()
+    for el in root.iter():
+        if _local(el.tag).lower() != "outline":
+            continue
+        url = (el.get("xmlUrl") or el.get("xmlurl") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append({
+            "title": (el.get("title") or el.get("text") or "").strip()[:200],
+            "url": url[:600],
+        })
+    return out
 
 
 def _norm(title, link, guid, raw_desc, published, author, category) -> dict:
@@ -304,11 +361,20 @@ def refresh_feed(db, feed: NewsFeed, limit: int = 60) -> dict:
             updated += 1
 
     feed.last_fetched = now
-    feed.last_status = "ok"
-    feed.last_error = ""
+    if entries:
+        feed.last_status = "ok"
+        feed.last_error = ""
+    else:
+        # 解析成功但一条内容都没有 = **僵尸源**，不能记 ok。
+        # 典型样本：新浪财经 RSS（rss.sina.com.cn/*）—— HTTP 200、Content-Type text/xml、
+        # 但 channel 里 pubDate 冻结在 2018-09-23 且不含任何 <item>。
+        # 只看状态码会以为「抓取成功」，于是白名单、订阅、调度全都配对了却永远没内容。
+        feed.last_status = "empty"
+        feed.last_error = "源可访问但不含任何条目（疑似已停止更新的僵尸源）"
     db.commit()
-    return {"feed_id": feed.id, "ok": True, "added": added, "updated": updated,
-            "parsed": len(entries)}
+    return {"feed_id": feed.id, "ok": bool(entries), "empty": not entries,
+            "status": feed.last_status, "error": feed.last_error,
+            "added": added, "updated": updated, "parsed": len(entries)}
 
 
 def refresh_all(db, feed_id=None, limit: int = 60) -> dict:
@@ -322,6 +388,7 @@ def refresh_all(db, feed_id=None, limit: int = 60) -> dict:
     return {
         "feeds": len(results),
         "ok": sum(1 for r in results if r.get("ok")),
+        "empty": sum(1 for r in results if r.get("empty")),
         "added": sum(r.get("added", 0) for r in results),
         "updated": sum(r.get("updated", 0) for r in results),
         "results": results,
