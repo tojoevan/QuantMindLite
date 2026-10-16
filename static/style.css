@@ -481,6 +481,27 @@ th { color: var(--muted); font-weight: 600; }
 }
 .rt-seat-body.empty { color: var(--muted); }
 .rt-seat-meta { color: var(--muted); font-size: 12px; }
+/* 席位卡折叠：标题行最左侧的箭头即开关；折叠后只留标题行（名称 / 角色 / 状态徽标），
+   席位多时可一次扫完。折叠状态存 localStorage，生成/改名触发的重渲染不会把它冲掉。
+   箭头用 CSS 三角而不是 ▸/▾ 字形：不受字体回退影响，任何 DPI 都清晰。 */
+.rt-seat-caret {
+  font: inherit; width: 19px; height: 19px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  margin-right: 6px; border: 1px solid var(--border); border-radius: 5px;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.rt-seat-caret::before {
+  content: ""; width: 0; height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  transform: rotate(90deg);                 /* 展开态：箭头朝下 */
+  transition: transform .15s ease;
+}
+.rt-seat.collapsed .rt-seat-caret::before { transform: rotate(0deg); }   /* 折叠态：箭头朝右 */
+.rt-seat-caret:hover { color: var(--text); border-color: var(--border-strong); background: var(--subtle-bg); }
+.rt-seat.collapsed { padding: 10px 14px; gap: 0; }
+.rt-seat.collapsed .rt-seat-body,
+.rt-seat.collapsed .rt-seat-meta { display: none; }
 
 .rt-modal {
   position: fixed; inset: 0; background: rgba(0, 0, 0, .6); z-index: 120;

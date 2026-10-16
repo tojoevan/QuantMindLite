@@ -86,6 +86,8 @@ async function renderRoundtable() {
       </div>
       <div class="panel">
         <h3>AI 席位 <span class="muted">接入方式：LLM Key 自动（后端直调）· 手动回填（复制提示词外部咨询）· MCP（待接）；每日观点自动在论坛建档存档</span>
+          <button class="btn-mini ghost" id="rt-seat-collapse" title="折叠所有席位卡，只看标题与状态">全部折叠</button>
+          <button class="btn-mini ghost" id="rt-seat-expand" title="展开所有席位卡，阅读完整观点">全部展开</button>
           ${rtState.admin ? `<button class="btn-mini ghost" id="rt-add-seat-toggle" style="margin-left:8px">+ 新增席位</button>` : ""}
         </h3>
         <div class="rt-seats" id="rt-seats"><span class="muted">加载中…</span></div>
@@ -128,6 +130,8 @@ async function renderRoundtable() {
     const hidden = body.classList.toggle("hidden");
     btn.textContent = hidden ? "展开" : "收起";
   };
+  document.getElementById("rt-seat-collapse").onclick = () => rtFoldAll(true);
+  document.getElementById("rt-seat-expand").onclick = () => rtFoldAll(false);
   const addSeatToggle = document.getElementById("rt-add-seat-toggle");
   if (addSeatToggle) addSeatToggle.onclick = () => document.getElementById("rt-add-seat-panel").classList.toggle("hidden");
   const addSeatCancel = document.getElementById("rt-add-seat-cancel");
@@ -311,18 +315,65 @@ function rtRenderHistory() {
   }
 }
 
+// ---- 席位卡折叠 ----
+// 折叠状态按「席位 id」存 localStorage：生成后刷新、改名后刷新都会重渲染卡片，
+// 状态只存 DOM 的话每次刷新都会被打回全部展开。列表很长时「全部折叠」看到概览尤其需要它。
+const RT_FOLD_KEY = "qw_rt_folded";
+
+function rtFoldSet() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RT_FOLD_KEY) || "[]");
+    return new Set((Array.isArray(raw) ? raw : []).map(String));
+  } catch (e) { return new Set(); }
+}
+
+function rtFoldSave(set) {
+  try { localStorage.setItem(RT_FOLD_KEY, JSON.stringify([...set])); } catch (e) { /* 无痕模式写不了就只当次生效 */ }
+}
+
+// 只改一张卡片的 DOM（不碰存储），供单个/批量两条路径复用。
+// 箭头朝向由 .rt-seat.collapsed 驱动（CSS 三角），这里只维护 title 与 aria。
+function rtApplyFold(card, folded) {
+  card.classList.toggle("collapsed", folded);
+  const caret = card.querySelector(".rt-seat-caret");
+  if (caret) {
+    caret.title = folded ? "展开该席位观点" : "折叠该席位观点";
+    caret.setAttribute("aria-expanded", folded ? "false" : "true");
+  }
+}
+
+function rtFoldSeat(sid, folded) {
+  const card = document.querySelector(`#rt-seats .rt-seat[data-seat-id="${sid}"]`);
+  if (!card) return;
+  const set = rtFoldSet();
+  if (folded) set.add(String(sid)); else set.delete(String(sid));
+  rtFoldSave(set);
+  rtApplyFold(card, folded);
+}
+
+function rtFoldAll(folded) {
+  const cards = document.querySelectorAll("#rt-seats .rt-seat");
+  if (!cards.length) { showToast("暂无席位卡片"); return; }
+  rtFoldSave(folded ? new Set([...cards].map(c => c.getAttribute("data-seat-id"))) : new Set());
+  cards.forEach(c => rtApplyFold(c, folded));
+  showToast(folded ? `已折叠全部 ${cards.length} 个席位` : "已展开全部席位");
+}
+
 function rtRenderSeats() {
   const wrap = document.getElementById("rt-seats");
   if (!wrap) return;
   const seats = (rtState.seats || []).filter(s => s.enabled);
   if (!seats.length) { wrap.innerHTML = `<span class="muted">暂无可用席位，请在「席位管理」中添加。</span>`; return; }
+  const folded = rtFoldSet();
   wrap.innerHTML = "";
   seats.forEach(s => {
     const post = rtState.posts[s.id];
     const isAuto = s.mode === "auto";     // 仅 auto 走后端直调 LLM；manual / mcp 均走手动通道
     const modeInfo = rtModeInfo(s.mode);  // 接入方式标注
+    const isFolded = folded.has(String(s.id));
     const card = document.createElement("div");
-    card.className = "rt-seat";
+    card.className = "rt-seat" + (isFolded ? " collapsed" : "");
+    card.setAttribute("data-seat-id", s.id);
     const stateBadge = post
       ? `<span class="rt-badge state-done">${post.source === "auto" ? "已生成" : "已录入"}</span>`
       : `<span class="rt-badge state-pending">待生成</span>`;
@@ -354,6 +405,8 @@ function rtRenderSeats() {
     card.innerHTML = `
       <div class="rt-seat-head">
         <div class="rt-seat-title">
+          <button class="rt-seat-caret" type="button" aria-expanded="${isFolded ? "false" : "true"}"
+            title="${isFolded ? "展开该席位观点" : "折叠该席位观点"}"></button>
           ${nameHtml}
           <span class="rt-badge ${modeInfo.cls}">${modeInfo.label}</span>
           ${roleHtml}
@@ -364,6 +417,8 @@ function rtRenderSeats() {
       <div class="rt-seat-body ${post ? "" : "empty"}">${post ? escapeHtml(post.content) : "尚未生成：点击右上角按钮开始"}</div>
       ${meta ? `<div class="rt-seat-meta">${meta}</div>` : ""}`;
     wrap.appendChild(card);
+    const caretBtn = card.querySelector(".rt-seat-caret");
+    if (caretBtn) caretBtn.onclick = () => rtFoldSeat(s.id, !card.classList.contains("collapsed"));
     if (rtState.admin) {
       const nameEl = card.querySelector("[data-edit-name]");
       if (nameEl) nameEl.onclick = () => rtInlineEditSeat(s.id, "name", nameEl, s.name);
@@ -523,6 +578,9 @@ function rtShowTextModal(title, text, hint, editable, onSave) {
 
 // ---- 自动通道：调用 LLM 生成 ----
 async function rtGenerate(seatIds) {
+  // 折叠状态下卡片头部的「生成」按钮仍可点，但结果会藏在折叠区里 —— 先把要生成的席位展开。
+  // 「生成今日讨论」传 null（全部），刻意不展开：那是用户自己选择只看概览，状态徽标已足够提示。
+  if (seatIds && seatIds.length) seatIds.forEach(id => rtFoldSeat(id, false));
   const btnAll = document.getElementById("rt-generate-all");
   const targetBtn = seatIds && seatIds.length === 1
     ? document.querySelector(`[data-gen="${seatIds[0]}"]`) : null;
