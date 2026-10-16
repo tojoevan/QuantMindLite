@@ -37,6 +37,7 @@
 | 🌗 浅 / 深色主题 | 右上角一键切换并记忆，图表配色随主题重绘，无闪烁。 |
 | 🔄 行情限频拉取 | 游客模式每天仅实际调用一次数据源；当日数据已存在则提示无需重复获取。写入按品种分：场内覆盖式重写、场外合并写入（见 §4）。 |
 | 📰 资讯工作台（首页） | RSS / Atom 订阅驱动的资讯流：日期分组、区间与分类筛选、搜索、收藏；订阅源可增删启停、单个抓取，并支持 **OPML 批量导入**。抓取统一走 Cloudflare 中继（见 §8）。 |
+| 🗣 圆桌讨论 | 多 AI 席位（手动回填提示词 / LLM Key 自动）各自给出每日观点；**观点保存时自动在论坛建档一条存档帖**，方便后期回看历史与修订过程（见 §8）。 |
 
 ---
 
@@ -94,6 +95,7 @@ quant-web/
 ├── datasource.py     # 行情多源回退抓取（前复权）
 ├── requirements.txt  # 依赖：fastapi / uvicorn / sqlalchemy / pydantic / akshare
 ├── deploy.sh         # 部署 / 运维工具：本地验证 → 线上备份 → 同步 → 重启 → 健康检查（失败自动回退）
+├── scripts/          # 运维脚本：db_backup.sh / fetch_fund_nav.py（基金补数）/ sync_roundtable_forum.py（圆桌观点回填论坛存档）
 └── static/
     ├── index.html    # 单页应用骨架（顶栏：关于 / 用户管理 / GitHub / 主题切换）
     ├── app.js        # 前端逻辑：登录、项目、图表、游客、主题
@@ -213,9 +215,34 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| GET / POST | `/api/roundtable/seats` | 席位列表 / 新增（管理员） |
+| PATCH / DELETE | `/api/roundtable/seats/{sid}` | 改席位（名称 / 人格 / 通道 / 角色 / 启停）/ 删除（连带其历史观点） |
+| GET | `/api/roundtable/snapshot` | 今日快照（大盘指数 + 当前持仓） |
+| GET | `/api/roundtable/history` | 历史标的与仓位操作记录 |
+| GET | `/api/roundtable/prompt?seat_id=` | 生成该席位今日提示词（手动通道复制用） |
+| GET / POST | `/api/roundtable/posts` | 当日各席位观点 / **手动粘贴回填**（覆盖当日该席位观点） |
 | GET | `/api/roundtable/settings` | 管理员：LLM 服务商配置状态（含 `reachable` 本机可达性） |
 | PUT | `/api/roundtable/settings` | 管理员：保存某服务商配置。`api_key: ""` = 清 Key；`delete: true` = 删自定义服务商（内置项拒绝） |
 | POST | `/api/roundtable/generate` | 管理员：对 `mode=auto` 的席位并发调 LLM 生成今日观点 |
+
+> **观点 → 论坛存档（2026-10-17 起）**：圆桌的两个写入口（`POST /api/roundtable/posts`
+> 手动粘贴、`POST /api/roundtable/generate` 自动生成）在保存观点后，会**自动**把这条观点
+> 同步成一条论坛存档帖，方便后期回看历史信息。规则：
+>
+> - 每个「**席位 × 日期**」固定一个主题帖，标题 `【圆桌】YYYY-MM-DD · 席位名`，
+>   作者身份为 `author_type=agent` 的该席位（显示名 / AI 角色实时解析，席位改名即同步）；
+> - 内容与帖内最后一层**相同 → 不写**（反复点「生成」不会把论坛刷满）；
+> - 内容**有变化 → 在同一帖内追加一层跟帖**并标注 `（第 N 次更新 · 北京时间）`，
+>   保留修订过程；圆桌侧本身的语义不变（仍是「每席位每天一条、覆盖更新」）；
+> - 存档帖被手动删除后再提交，会自动**重建**并改写关联（`roundtable_posts.thread_id`）；
+> - 存档失败**不回滚观点**（观点已入库，只记 warning），圆桌写入口照常返回 200；
+> - 接口返回体带 `thread_id`，席位卡片据此出现「论坛存档」按钮，一键跳到对应主题帖。
+>
+> 历史观点回填（幂等，只补 `thread_id` 为空的观点）：
+> ```bash
+> /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/sync_roundtable_forum.py --dry-run
+> /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/sync_roundtable_forum.py
+> ```
 
 > **服务商清单的唯一数据源**是 `app.py → PROVIDER_DEFAULTS`（内置 8 家），由
 > `GET /api/roundtable/settings` 一并下发（前端不再硬编码）。除内置项，还可用

@@ -69,7 +69,7 @@ async function renderRoundtable() {
         </div>
       </div>
       <div class="panel">
-        <h3>AI 席位 <span class="muted">接入方式：LLM Key 自动（后端直调）· 手动回填（复制提示词外部咨询）· MCP（待接）</span>
+        <h3>AI 席位 <span class="muted">接入方式：LLM Key 自动（后端直调）· 手动回填（复制提示词外部咨询）· MCP（待接）；每日观点自动在论坛建档存档</span>
           ${rtState.admin ? `<button class="btn-mini ghost" id="rt-add-seat-toggle" style="margin-left:8px">+ 新增席位</button>` : ""}
         </h3>
         <div class="rt-seats" id="rt-seats"><span class="muted">加载中…</span></div>
@@ -302,6 +302,8 @@ function rtRenderSeats() {
       actions = `<button class="btn-mini" data-copy="${s.id}">复制提示词</button>`
         + `<button class="btn-mini ghost" data-paste="${s.id}">粘贴反馈</button>`;
     }
+    // 该席位当日观点已同步到论坛 → 给一个直达存档帖的入口（后期回看历史用）
+    if (post && post.thread_id) actions += `<button class="btn-mini ghost" data-thread="${post.thread_id}">论坛存档</button>`;
     const meta = post
       ? `${post.source === "auto" ? `模型 ${escapeHtml(post.model || "—")} · ` : ""}更新于 ${escapeHtml((post.updated_at || "").replace("T", " ").slice(0, 19))}`
       : "";
@@ -342,6 +344,15 @@ function rtRenderSeats() {
   wrap.querySelectorAll("[data-copy]").forEach(b => b.onclick = () => rtCopyPrompt(parseInt(b.getAttribute("data-copy"), 10)));
   wrap.querySelectorAll("[data-paste]").forEach(b => b.onclick = () => rtOpenPaste(parseInt(b.getAttribute("data-paste"), 10)));
   wrap.querySelectorAll("[data-gen]").forEach(b => b.onclick = () => rtGenerate([parseInt(b.getAttribute("data-gen"), 10)]));
+  wrap.querySelectorAll("[data-thread]").forEach(b => b.onclick = () => rtOpenForumThread(parseInt(b.getAttribute("data-thread"), 10)));
+}
+
+// 跳到该观点的论坛存档帖：先走 showView("forum") 再定位帖子——
+// 保证顶栏高亮与 URL 同步（直接把 main 换成详情会让导航与实际页面不一致）。
+async function rtOpenForumThread(tid) {
+  if (!tid) return;
+  await showView("forum");
+  await fmOpenThread(tid);
 }
 
 // 卡片上内联编辑席位字段（name=AI 名称 / role=AI 角色），回车或失焦保存，Esc 取消
@@ -422,7 +433,7 @@ async function rtCopyPrompt(seatId) {
 function rtOpenPaste(seatId) {
   const s = rtState.seats.find(x => x.id === seatId);
   rtShowTextModal(`粘贴反馈 · ${s ? s.name : ""}`, "",
-    "将外部 AI（如 ChatGPT / Claude 网页版）对该席位提示词的回复完整粘贴到下方，保存后展示在席位卡片中（再次粘贴可覆盖）。",
+    "将外部 AI（如 ChatGPT / Claude 网页版）对该席位提示词的回复完整粘贴到下方，保存后展示在席位卡片中（再次粘贴可覆盖），同时自动在论坛建档一条存档帖，方便后期回看历史。",
     true, async () => {
       const ta = document.getElementById("rt-modal-text");
       const content = (ta && ta.value || "").trim();
@@ -465,7 +476,7 @@ function rtShowTextModal(title, text, hint, editable, onSave) {
         const ok = await onSave();
         if (ok !== false) {
           root.remove();
-          showToast("已保存到席位");
+          showToast("已保存到席位，并同步到论坛存档");
           await rtRefreshPosts();
         } else {
           btn.disabled = false; btn.textContent = "保存反馈";
@@ -494,8 +505,8 @@ async function rtGenerate(seatIds) {
     } else {
       const okCount = results.filter(x => x.ok).length;
       const fails = results.filter(x => !x.ok);
-      if (okCount && !fails.length) showToast(`已生成 ${okCount} 条观点`);
-      else if (okCount) showToast(`生成 ${okCount} 条，失败 ${fails.length} 条：${fails[0].error || ""}`);
+      if (okCount && !fails.length) showToast(`已生成 ${okCount} 条观点，并同步到论坛存档`);
+      else if (okCount) showToast(`生成 ${okCount} 条（已同步论坛），失败 ${fails.length} 条：${fails[0].error || ""}`);
       else showToast("生成失败：" + (fails[0] ? fails[0].error : "未知错误"));
     }
     await rtRefreshPosts();

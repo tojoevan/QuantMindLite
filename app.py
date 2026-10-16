@@ -72,6 +72,9 @@ GUEST_STOCK_CODE = "000002.SZ"
 _CN_TZ_OFFSET = timedelta(hours=8)
 def _cn_today():
     return (datetime.utcnow() + _CN_TZ_OFFSET).strftime("%Y-%m-%d")
+def _cn_now():
+    """北京时间 YYYY-MM-DD HH:MM（给用户看的时刻一律用北京时间，库内仍存 UTC）"""
+    return (datetime.utcnow() + _CN_TZ_OFFSET).strftime("%Y-%m-%d %H:%M")
 
 
 # ---------- 密码哈希（pbkdf2，无第三方依赖） ----------
@@ -1425,13 +1428,18 @@ def rt_posts(date: Optional[str] = None, u: User = Depends(get_current_user), db
     return [RoundtablePostOut(
         seat_id=p.seat_id, seat_name=name or "", date=p.date, content=p.content or "",
         source=p.source or "manual", model=p.model or "",
+        thread_id=p.thread_id,
         updated_at=p.updated_at.isoformat() if p.updated_at else None,
     ) for p, name in rows]
 
 
 @app.post("/api/roundtable/posts", response_model=RoundtablePostOut, status_code=201)
 def rt_submit_post(body: RoundtablePostIn, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """手动通道：把外部 AI 的回复粘贴回填到对应席位（覆盖当日该席位观点）。"""
+    """手动通道：把外部 AI 的回复粘贴回填到对应席位（覆盖当日该席位观点）。
+
+    同时把这条观点同步进论坛存档（同一「席位 × 日期」一个主题帖，见
+    `_sync_roundtable_forum`）——观点本身已入库，存档失败只记日志、不改接口结果。
+    """
     if not u.is_admin:
         raise HTTPException(403, "forbidden")
     s = db.get(RoundtableSeat, body.seat_id)
@@ -1444,9 +1452,17 @@ def rt_submit_post(body: RoundtablePostIn, u: User = Depends(get_current_user), 
         raise HTTPException(400, "内容过长（上限 20000 字符）")
     date_s = body.date or _cn_today()
     post = _upsert_post(db, date_s, body.seat_id, content, "manual", "")
+    thread_id, archived = None, False
+    try:
+        thread_id, archived = _sync_roundtable_forum(db, post, s, content)
+        db.commit()
+    except Exception as e:                      # 存档失败不影响已保存的观点
+        db.rollback()
+        logger.warning("圆桌观点同步论坛失败（seat=%s date=%s）：%s", s.id, date_s, e)
+        thread_id = None
     return RoundtablePostOut(
-        seat_id=post.seat_id, seat_name=s.name or "", date=post.date, content=post.content or "",
-        source=post.source or "manual", model=post.model or "",
+        seat_id=body.seat_id, seat_name=s.name or "", date=date_s, content=content,
+        source="manual", model="", thread_id=thread_id,
         updated_at=post.updated_at.isoformat() if post.updated_at else None,
     )
 
@@ -1588,10 +1604,25 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
     with ThreadPoolExecutor(max_workers=min(3, len(seats))) as ex:
         for r in ex.map(_one, [s.id for s in seats]):
             results.append(r)
-    # 主线程统一写库
+    # 主线程统一写库；每条观点入库后同步进论坛存档（同一「席位 × 日期」一个主题帖）
+    seat_by_id = {s.id: s for s in seats}
     for r in results:
-        if r.get("ok"):
-            _upsert_post(db, date_s, r["seat_id"], r["content"], "auto", r.get("model") or "")
+        if not r.get("ok"):
+            continue
+        seat = seat_by_id.get(r["seat_id"])
+        if seat is None:                        # 理论上不会发生，防御性跳过
+            continue
+        post = _upsert_post(db, date_s, r["seat_id"], r["content"], "auto", r.get("model") or "")
+        thread_id, archived = None, False
+        try:
+            thread_id, archived = _sync_roundtable_forum(db, post, seat, r["content"])
+            db.commit()
+        except Exception as e:                  # 存档失败不回滚观点本身（已提交）
+            db.rollback()
+            logger.warning("圆桌自动观点同步论坛失败（seat=%s date=%s）：%s", r["seat_id"], date_s, e)
+            thread_id = None
+        r["thread_id"] = thread_id
+        r["archived"] = archived                # True=新增一层存档；False=内容未变、未重复写
     return {"date": date_s, "results": results}
 
 
@@ -1599,6 +1630,51 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
 FM_MAX_TITLE = 200
 FM_MAX_CONTENT = 20000
 FM_EXCERPT_LEN = 120
+
+# ---- 圆桌观点 → 论坛存档（方便后期回看历史信息）----
+# 由圆桌的两个写入口调用：rt_submit_post（手动粘贴回填）、rt_generate（LLM 自动生成）。
+# 存档语义**刻意与圆桌不同**：圆桌是「每个席位每天一条、重复提交覆盖」，
+# 而论坛帖要能回看修订过程，所以同一「席位 × 日期」固定一个主题帖，
+# 内容有变化时在该帖内**追加一层跟帖**（并标注第几次更新），内容没变则不写。
+FM_ROUNDTABLE_TITLE = "【圆桌】{date} · {seat}"
+
+
+def _roundtable_thread_title(date_s: str, seat_name: str) -> str:
+    return FM_ROUNDTABLE_TITLE.format(date=date_s or "", seat=(seat_name or "").strip() or "未命名席位")[:FM_MAX_TITLE]
+
+
+def _sync_roundtable_forum(db, post: RoundtablePost, seat: RoundtableSeat, content: str):
+    """把一条圆桌观点同步进论坛，返回 (thread_id, 是否新增了一层)。
+
+    调用方负责 commit / 异常回滚——本函数只做「改动 session」，不自己提交，
+    这样圆桌侧可以「写库成功即同步」，同步失败也不至于把已保存的观点弄丢。
+    边界情形：
+      - 首次（thread_id 为空）→ 建主题帖 + 首帖；
+      - 已有帖但被用户删掉 → 视为首次，重建并改写 thread_id；
+      - 席位改名 → 标题回写为当前席位名（显示名实时解析，标题不做快照）；
+      - 内容与帖内最后一层完全一致 → 不写，避免重复点「生成」把论坛刷满。
+    """
+    title = _roundtable_thread_title(post.date, seat.name)
+    t = db.get(ForumThread, post.thread_id) if post.thread_id else None
+    if t is None:
+        t = ForumThread(title=title, author_type="agent", author_id=seat.id)
+        db.add(t)
+        db.flush()                      # 先拿 theme id，再写首帖
+        db.add(ForumPost(thread_id=t.id, author_type="agent", author_id=seat.id,
+                         content=content))
+        post.thread_id = t.id
+        return t.id, True
+    if (t.title or "") != title:
+        t.title = title
+    last = (db.query(ForumPost).filter(ForumPost.thread_id == t.id)
+            .order_by(ForumPost.id.desc()).first())
+    if last and (last.content or "").strip() == (content or "").strip():
+        return t.id, False
+    n = db.query(func.count(ForumPost.id)).filter(ForumPost.thread_id == t.id).scalar() or 0
+    db.add(ForumPost(thread_id=t.id, author_type="agent", author_id=seat.id,
+                     content=f"（第 {n + 1} 次更新 · {_cn_now()}）\n{content}"))
+    t.updated_at = datetime.utcnow()    # 有新一层 → 主题活跃时间刷新（论坛列表置顶依据）
+    return t.id, True
 
 
 def _forum_identity(u: User, author_type: str, seat_id: Optional[int], db: Session):

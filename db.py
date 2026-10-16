@@ -8,7 +8,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "quantweb.db")
+# 允许用环境变量指向别的库文件（离线脚本/副本试跑用；线上不设该变量 → 仍是项目内 quantweb.db）
+DB_PATH = os.environ.get("QUANTWEB_DB") or os.path.join(BASE_DIR, "quantweb.db")
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False}
@@ -135,6 +136,7 @@ class RoundtablePost(Base):
     content = Column(Text, default="")                  # 观点内容（结构化纯文本）
     source = Column(String(8), default="manual")        # manual=人工粘贴 / auto=LLM 生成
     model = Column(String(64), default="")              # auto 时记录实际模型名
+    thread_id = Column(Integer, nullable=True)          # 同步到论坛的存档主题帖（forum_threads.id），写入时自动创建
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -247,6 +249,17 @@ _for_add_rt = {
 }
 for _cname, _ddl in _for_add_rt.items():
     if _cname not in _cols_rt:
+        with engine.connect() as _conn:
+            _conn.execute(text(_ddl))
+            _conn.commit()
+
+# roundtable_posts 补列（thread_id：观点 → 论坛存档帖的关联）
+_cols_rtp = [c["name"] for c in _insp.get_columns("roundtable_posts")]
+_for_add_rtp = {
+    "thread_id": "ALTER TABLE roundtable_posts ADD COLUMN thread_id INTEGER",
+}
+for _cname, _ddl in _for_add_rtp.items():
+    if _cname not in _cols_rtp:
         with engine.connect() as _conn:
             _conn.execute(text(_ddl))
             _conn.commit()

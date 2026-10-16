@@ -148,6 +148,7 @@ class RoundtablePostOut(BaseModel):
     content: str = ""
     source: str = "manual"           # manual / auto
     model: str = ""
+    thread_id: Optional[int] = None  # 同步到论坛的存档主题帖 id（无则为 None）
     updated_at: Optional[str] = None
 
 
