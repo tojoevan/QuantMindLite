@@ -211,9 +211,14 @@ class ForumThreadDetail(BaseModel):
     posts: list[ForumPostOut] = []
 
 
-# ================= 每日持仓日报 =================
+# ================= 周期结算帖（日 / 周 / 月 / 季 / 半年 / 年） =================
 class DailyReportReq(BaseModel):
     date: Optional[str] = None       # 缺省今天（北京时间）；补发历史日报时才传
+
+
+class SettleReportReq(BaseModel):
+    period: str = "day"              # day / week / month / quarter / half / year
+    key: Optional[str] = None        # 周期键（2026-W42 / 2026-09 / 2026-Q3 …）；留空 = 最近一个已结束周期
 
 
 # ================= 资讯工作台 =================

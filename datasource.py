@@ -653,3 +653,50 @@ def fetch_index_quotes():
                 logger.warning("指数 %s 东财兜底失败：%s", symbol, e)
         out.append(item)
     return out
+
+
+# ---------------- 指数历史日线（周期结算帖的「大盘区间涨跌」用） ----------------
+# 与个股走**同一个腾讯主机链**：proxy.finance.qq.com 有 AAAA，是本 VPS 唯一可达的 K 线口，
+# 参数换成指数代码即可（param=sh000001,day,,,400,qfq）。
+# 2026-10-17 实测：400 根日线 0.39s 命中；同日的对照结论——
+#   腾讯 qt.gtimg.cn（实时快照）✓ / 新浪 quotes.sina.cn（日线）✓ 也可达，
+#   但腾讯 web.ifzq.gtimg.cn（K 线备用口）✗ 无 AAAA、东财 push2his ✗ 被按来源拦截。
+INDEX_HIST_BARS = 400        # 覆盖「年结算」所需（一年约 243 个交易日）
+_INDEX_HIST_TTL = 1800       # 秒。一次运行里可能连发多个周期，没必要重复拉
+_index_hist_cache = {"ts": 0.0, "bars": 0, "data": None}
+
+
+def fetch_index_hist(bars: int = INDEX_HIST_BARS, ttl: int = _INDEX_HIST_TTL) -> dict:
+    """三大指数日线收盘，返回 {symbol: {"name":..., "rows": [(date, close), ...]}}，日期升序。
+
+    只服务**周期结算帖**的「大盘区间涨跌」；实时快照仍走 fetch_index_quotes()。
+    单个指数失败只记 warning、该指数 rows=[]，调用方跳过它，不阻断整篇结算。
+    `ttl=0` 可强制刷新（测试用）。
+    """
+    c = _index_hist_cache
+    if (c["data"] is not None and c["bars"] == bars
+            and (time.time() - c["ts"]) < ttl):
+        return c["data"]
+
+    host, path = _TENCENT_KLINE[0]           # proxy.finance.qq.com（有 AAAA）
+    out = {}
+    for symbol, (name, _secid) in INDEX_SYMBOLS.items():
+        rows = []
+        try:
+            j = json.loads(_urlopen(
+                f"https://{host}{path}?param={symbol},day,,,{int(bars)},qfq"))
+            node = ((j or {}).get("data") or {}).get(symbol) or {}
+            for k in (node.get("qfqday") or node.get("day") or []):
+                try:
+                    d, close = str(k[0]), float(k[2])   # [日期, 开, 收, 高, 低, 量] → 索引 2 为收盘
+                except Exception:
+                    continue
+                if close > 0:
+                    rows.append((d, close))
+            rows.sort(key=lambda x: x[0])
+        except Exception as e:
+            logger.warning("指数 %s 历史日线获取失败：%s", symbol, e)
+        out[symbol] = {"name": name, "rows": rows}
+    if all(v["rows"] for v in out.values()):     # 只缓存全成功的，避免把一次网络抖动固化半小时
+        c.update(ts=time.time(), bars=bars, data=out)
+    return out

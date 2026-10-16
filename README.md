@@ -38,7 +38,8 @@
 | 🔄 行情限频拉取 | 游客模式每天仅实际调用一次数据源；当日数据已存在则提示无需重复获取。写入按品种分：场内覆盖式重写、场外合并写入（见 §4）。 |
 | 📰 资讯工作台（首页） | RSS / Atom 订阅驱动的资讯流：日期分组、区间与分类筛选、搜索、收藏；订阅源可增删启停、单个抓取，并支持 **OPML 批量导入**。抓取统一走 Cloudflare 中继（见 §8）。 |
 | 🗣 圆桌讨论 | 多 AI 席位（手动回填提示词 / LLM Key 自动）各自给出每日观点；**观点保存时自动在论坛建档一条存档帖**，方便后期回看历史与修订过程（见 §8）。 |
-| 📮 每日持仓日报 | 每交易日 22:00 自动把「总览 / 大盘指数 / 持仓明细 / 近期操作」总结成一篇帖子发到论坛（署名「系统日报」，`author_type=system`）；仪表台页头可手动补发。每天固定一帖，内容没变不重复写（见 §8）。 |
+| 📮 周期结算帖 | **日 / 周 / 月 / 季 / 半年 / 年**六个周期各自自动把「区间结算 / 大盘指数 / 持仓明细 / 区间操作」算成一篇帖子发到论坛（署名「系统日报」，`author_type=system`）；仪表台页头可选周期手动补发。同周期固定一帖，内容没变不重复写（见 §8）。 |
+| 📊 账户三指标 | 交易仪表台 KPI 与圆桌页同时展示**总市值 / 浮动盈亏 / 累计实现盈亏**，由 `app._account_totals` 统一计算，两处数字必然一致。 |
 
 ---
 
@@ -96,7 +97,7 @@ quant-web/
 ├── datasource.py     # 行情多源回退抓取（前复权）
 ├── requirements.txt  # 依赖：fastapi / uvicorn / sqlalchemy / pydantic / akshare
 ├── deploy.sh         # 部署 / 运维工具：本地验证 → 线上备份 → 同步 → 重启 → 健康检查（失败自动回退）
-├── scripts/          # 运维脚本：db_backup.sh / fetch_fund_nav.py（基金补数）/ sync_roundtable_forum.py（圆桌观点回填论坛存档）/ daily_report.py（每日持仓日报）
+├── scripts/          # 运维脚本：db_backup.sh / fetch_fund_nav.py（基金补数）/ sync_roundtable_forum.py（圆桌观点回填论坛存档）/ settle_report.py（周期结算帖：日/周/月/季/半年/年）
 └── static/
     ├── index.html    # 单页应用骨架（顶栏：关于 / 用户管理 / GitHub / 主题切换）
     ├── app.js        # 前端逻辑：登录、项目、图表、游客、主题
@@ -218,7 +219,7 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 | --- | --- | --- |
 | GET / POST | `/api/roundtable/seats` | 席位列表 / 新增（管理员） |
 | PATCH / DELETE | `/api/roundtable/seats/{sid}` | 改席位（名称 / 人格 / 通道 / 角色 / 启停）/ 删除（连带其历史观点） |
-| GET | `/api/roundtable/snapshot` | 今日快照（大盘指数 + 当前持仓） |
+| GET | `/api/roundtable/snapshot` | 今日快照（大盘指数 + 当前持仓 + `totals` 账户三指标，与仪表台 KPI 同源） |
 | GET | `/api/roundtable/history` | 历史标的与仓位操作记录 |
 | GET | `/api/roundtable/prompt?seat_id=` | 生成该席位今日提示词（手动通道复制用） |
 | GET / POST | `/api/roundtable/posts` | 当日各席位观点 / **手动粘贴回填**（覆盖当日该席位观点） |
@@ -245,37 +246,56 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 > /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/sync_roundtable_forum.py
 > ```
 
-**每日持仓日报**
+**周期结算帖（日 / 周 / 月 / 季 / 半年 / 年）**
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/report/daily` | 管理员：生成当日持仓日报并发布到论坛；返回 `created` / `unchanged` / `skipped` 三态与 `thread_id` |
+| POST | `/api/report/settle` | 管理员：按周期生成结算帖并发布到论坛；body `{period, key?}`，返回 `created` / `unchanged` / `skipped` 三态与 `thread_id` |
+| POST | `/api/report/daily` | 兼容入口，等价于 `period=day` |
 
-> **日报 → 论坛（2026-10-17 起）**：把「仓位、收益变化 + 大盘指数」算成一篇帖子发到论坛，
+> **结算 → 论坛（2026-10-17 起）**：把「仓位、收益变化 + 大盘指数」算成一篇帖子发到论坛，
 > 方便日后回看。与圆桌存档帖的分工：圆桌存档是**搬运**（席位观点原样落到论坛），
-> 日报是**算出来的新内容**；与交易仪表台的分工：仪表台看「此刻持仓」，日报看「较上一期变了多少」。
+> 结算是**算出来的新内容**；与交易仪表台的分工：仪表台看「此刻持仓」，结算是「较上一期变了多少」。
 >
+> - **六个周期**：`day` / `week` / `month` / `quarter` / `half` / `year`，各自一个主题帖，
+>   标题 `【日报】2026-10-16 · 持仓与收益`、`【周报】2026-W41（10-05 ~ 10-11）· 持仓与收益`、
+>   `【月报】2026-09 · 持仓与收益`、`【季报】2026-Q3 · 持仓与收益`、`【半年报】2026-H1 · 持仓与收益`、
+>   `【年报】2025 · 持仓与收益`。
+> - **周期键（`pkey`）**：`day=2026-10-17` / `week=2026-W42`（ISO 周，周一~周日）/ `month=2026-10` /
+>   `quarter=2026-Q4` / `half=2026-H2` / `year=2026`。**键本身即「同周期只认一个帖」的唯一依据**，
+>   周报的窗口按 ISO 周算出（`W42 = 2026-10-12 ~ 10-18`），跨年周沿用 ISO 归属年，不会切错。
+> - **发的是「最近一个已结束的周期」**：`day` 是特例（当天发即当天语义）；其余五个周期一律取**上一个**
+>   走完的周期。这样定时任务即便被误跑、或手动补发时，也绝不会把半截数据当成完整周期发出去。
 > - **身份**：`author_type=system`（署名「系统日报」+「自动」徽章），不占用任何 AI 席位，
 >   也不计入论坛的「Agent 参与数」；只有管理员能删。
-> - **节奏**：定时任务每交易日 22:00（北京时间）自动发布 —— 之所以不是收盘就发，是因为
->   持仓 13/16 是场外基金，净值要到 19:00–22:00 才由基金公司陆续披露（QDII 更是 T+1/T+2）。
-> - **幂等**：`daily_reports` 表以日期为主键，**每天固定一个主题帖**（标题 `【日报】YYYY-MM-DD · 持仓与收益`）。
->   正文与帖内最后一层一致 → **不写**；有变化 → 在**同一帖追加一层**并标注 `（第 N 次更新 · 北京时间）`。
->   帖子被删后再发布会自动重建。所以定时任务重跑、当天补数后再跑都不会刷屏，同时保留修订痕迹。
+> - **节奏**：定时任务在每交易日 / 每周日 / 每月 1 日的 22:00（北京时间）自动发布 —— 之所以不是收盘就发，
+>   是因为持仓 13/16 是场外基金，净值要到 19:00–22:00 才由基金公司陆续披露（QDII 更是 T+1/T+2）。
+> - **幂等**：`settle_reports` 表以 `(period, pkey)` 唯一约束锚定主题帖。正文与帖内最后一层一致 →
+>   **不写**；有变化 → 在**同一帖追加一层**并标注 `（第 N 次更新 · 北京时间）`。帖子被删后再发布
+>   会自动重建。所以定时任务重跑、当天补数后再跑都不会刷屏，同时保留修订痕迹。
+>   判重前会先剥掉 `（第 N 次更新 · …）` 前缀再比，否则每跑一次都会多追加一层。
 > - **收益口径**：`equity = 已实现盈亏 + 持仓浮盈`，与项目页盈亏曲线**同源**
 >   （唯一实现 `app._pnl_curve`，两处共用，避免数字对不上）。买入不计入收益、卖出把浮盈转为已实现，
->   因此「本期变化」**不含新增投入的本金**；各标的最新行情日期不一致时基准标「按各标的最新一期行情」。
-> - **无持仓时不发布**（返回 `skipped`），避免每天刷一条空帖。
-> - 手动补发 / 重发：仪表台页头「发布日报到论坛」按钮，或下面的脚本。
+>   因此「区间变化」**不含期间新增投入的本金**；各标的最新行情日期不一致时基准标「按各标的最新一期行情」。
+> - **账户三指标口径唯一**：总市值 / 浮动盈亏 / 累计实现盈亏由 `app._account_totals` 统一计算，
+>   交易仪表台 KPI、圆桌快照 `totals`、结算帖正文三处共用同一份实现，数字必然一致。
+> - **期末持仓要回放**：历史窗口展示的是**当时的仓位**，不是当前仓位 —— 由 `_holding_initial()`
+>   反推建仓起点、`_replay_raw()` 只回放到窗口末。窗口结束后又调过仓也不会把今天的仓位算进昨天的报表。
+> - **无持仓且窗口内无操作时不发布**（返回 `skipped`），避免刷空帖。
+> - 手动补发 / 重发：仪表台页头「结算周期下拉 + 发布结算到论坛」按钮，或下面的脚本。
 
-> 日报脚本（定时任务与人工共用；`--no-fetch` 离线调试、`--date` 补发指定日期）：
+> 结算脚本（定时任务与人工共用；`--periods` 选周期、`--key` 补发指定周期、`--no-fetch` 离线调试、`--date` 回溯）：
 > ```bash
-> /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/daily_report.py --dry-run --no-fetch
-> /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/daily_report.py            # 先补行情再发布
-> /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/daily_report.py --date 2026-10-16
+> /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/settle_report.py --dry-run --no-fetch
+> /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/settle_report.py                  # 日结（默认），先补行情再发布
+> /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/settle_report.py --periods week,month,quarter,half,year
+> /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/settle_report.py --periods day --date 2026-10-16
+> /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/settle_report.py --periods week --key 2026-W40
 > ```
 > 补数**直接复用网页端 `app.fetch_prices`**（同一函数），窗口口径、覆盖式/合并式写入语义、
-> 缩水守卫、`last_fetch_date` 限频全部一致 —— 不另造一套拉取实现。单只失败只记 warn，不阻断日报。
+> 缩水守卫、`last_fetch_date` 限频全部一致 —— 不另造一套拉取实现；多周期共用**一次**补数。
+> 单只失败只记 warn，不阻断结算。脚本用 `fcntl.flock`（默认 `/tmp/quant-settle.lock`，等 300 秒）互斥：
+> 每月 1 日若恰逢周一~五，日结与月结任务会在同一分钟启动，靠这把锁避免抢 SQLite 写锁。
 
 > **服务商清单的唯一数据源**是 `app.py → PROVIDER_DEFAULTS`（内置 19 家），由
 > `GET /api/roundtable/settings` 一并下发（前端不再硬编码），每项带 `group`
@@ -366,7 +386,9 @@ bash deploy.sh rollback [TS]         # 回退到指定备份（默认最近一�
 
 | 时间 | 任务 | 说明 |
 | --- | --- | --- |
-| `0 14 * * 1-5` | `/opt/quant-web/.venv/bin/python /opt/quant-web/scripts/daily_report.py` | 每**交易日 22:00**（北京时间）自动发布「每日持仓日报」到论坛。先补最新行情（复用 `app.fetch_prices`），再生成并发布；每天固定一帖、内容没变不重写、无持仓则跳过。日志 `/var/log/quant-daily-report.log`。 |
+| `0 14 * * 1-5` | `/opt/quant-web/.venv/bin/python /opt/quant-web/scripts/settle_report.py --periods day` | 每**交易日 22:00**（北京时间）自动发布「日报」到论坛。先补最新行情（复用 `app.fetch_prices`），再生成并发布；同日固定一帖、内容没变不重写、无持仓且无操作则跳过。 |
+| `0 14 * * 0` | `/opt/quant-web/.venv/bin/python /opt/quant-web/scripts/settle_report.py --periods week` | 每**周日 22:00**（北京时间）发布「周报」，结算**上一个已走完的 ISO 周**。 |
+| `0 14 1 * *` | `/opt/quant-web/.venv/bin/python /opt/quant-web/scripts/settle_report.py --periods month,quarter,half,year` | 每**月 1 日 22:00**（北京时间）发布「月报 / 季报 / 半年报 / 年报」，各自结算上一个已走完的周期；非季末/半年末/年末月份只是判重后不重复写。四条任务共写日志 `/var/log/quant-settle.log`。 |
 | `30 13 * * 1-5` | `/usr/bin/python3 /opt/quant-web/scripts/fetch_fund_nav.py` | 交易日收盘后自动补**场外基金**净值。窗口 365 自然日、与主系统 `fund` 口径一致；复用 `datasource.fetch_hist`（不再自带第二套取数实现）；**合并写入**不删历史，并回写 `projects.last_fetch_date` 以免网页端当天重复拉取。日志 `/var/log/quant-fundnav.log`。 |
 | `0 12 * * *` | `/opt/quant-web/scripts/db_backup.sh` | 线上库热备（`sqlite3 .backup` + `integrity_check`）。日志 `/var/log/quant-db-backup.log`。 |
 

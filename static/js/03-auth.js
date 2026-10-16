@@ -9,6 +9,12 @@ function boot() {
 }
 
 function enterApp() {
+  // 进入登录态即退出游客态。必须在此复位：游客点顶栏「圆桌/论坛」时走的是
+  // showAuth("login") 直达门禁（不经 exitGuestToLogin），若不复位，登录成功后
+  // renderRoundtable/renderForum 的 isGuest 判空会再次弹登录页，形成死循环，
+  // 只能靠刷新页面恢复。
+  isGuest = false;
+  document.body.classList.remove("guest-mode");
   hideAuth();
   renderUserChip();
   renderNavForRole();

@@ -604,6 +604,16 @@ th { color: var(--muted); font-weight: 600; }
 .btn.danger:hover { border-color: var(--red); background: rgba(248,81,73,.08); }
 .btn.sm { font-size: var(--fs-sm); padding: 6px 12px; }
 
+/* 页头里的结算周期下拉：视觉对齐 .btn.ghost.sm，但**不用 .btn 类**——
+   .btn 的 inline-flex 会吃掉原生下拉箭头，选周期时会不知道这是个下拉框。 */
+.sel-sm {
+  font: inherit; font-size: var(--fs-sm); font-weight: 600; line-height: 1;
+  padding: 6px 8px; border-radius: var(--radius-md); cursor: pointer;
+  border: var(--bd-w) solid var(--border); background: transparent; color: var(--muted);
+}
+.sel-sm:hover { color: var(--text); background: var(--subtle-bg); border-color: var(--border-strong); }
+.sel-sm option { background: var(--panel); color: var(--text); }
+
 /* —— 输入 —— */
 .input {
   font: inherit; font-size: var(--fs-md); width: 100%;

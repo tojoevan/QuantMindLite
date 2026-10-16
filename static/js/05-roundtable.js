@@ -67,6 +67,11 @@ async function renderRoundtable() {
       <div class="panel hidden" id="rt-manage-panel"><h3>席位管理 <span class="muted">增删席位、编辑人格与通道</span></h3><div id="rt-manage-body"><span class="muted">加载中…</span></div></div>
       <div class="panel hidden" id="rt-settings-panel"><h3>AI 设置 <span class="muted">API Key 仅存服务器本地数据库，页面不回显</span></h3><div id="rt-settings-body"><span class="muted">加载中…</span></div></div>
       <div class="panel"><h3>今日大盘</h3><div class="rt-indices" id="rt-indices"><span class="muted">加载中…</span></div></div>
+      <div class="kpi-grid" id="rt-kpi">
+        <div class="kpi"><div class="kpi-label">总市值</div><div class="kpi-value" id="rt-kpi-mv">—</div></div>
+        <div class="kpi"><div class="kpi-label">浮动盈亏</div><div class="kpi-value" id="rt-kpi-un">—</div></div>
+        <div class="kpi"><div class="kpi-label">累计实现盈亏</div><div class="kpi-value" id="rt-kpi-real">—</div></div>
+      </div>
       <div class="panel"><h3>持仓总览 <span class="muted" id="rt-holdings-count"></span></h3>
         <div class="table-wrap"><table id="rt-holdings"><thead><tr><th>标的</th><th>最新价</th><th>市值(元)</th><th>收益率</th><th>今日</th><th>系统建议</th></tr></thead><tbody></tbody></table></div>
       </div>
@@ -177,11 +182,27 @@ async function rtLoadAll() {
 function rtRenderAll() {
   const d = document.getElementById("rt-date");
   if (d) d.textContent = rtState.date || "";
+  rtRenderTotals();
   rtRenderIndices();
   rtRenderHoldings();
   rtRenderHistory();
   rtRenderSeats();
   if (rtState.admin) { rtRenderManage(); rtRenderSettings(); }
+}
+
+// 账户三指标（总市值 / 浮动盈亏 / 累计实现盈亏）——取自后端快照 totals，
+// 与交易仪表台 KPI、结算帖同源（app._account_totals 是唯一定义），页面不另算。
+function rtRenderTotals() {
+  const t = (rtState.snap && rtState.snap.totals) || null;
+  const set = (id, val, cls) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = (val == null) ? "—" : fmtMoney(val);
+    el.className = "kpi-value" + (cls ? " " + cls : "");
+  };
+  set("rt-kpi-mv", t ? t.market_value : null, "");
+  set("rt-kpi-un", t ? t.unrealized : null, t ? signCls(t.unrealized) : "");
+  set("rt-kpi-real", t ? t.realized : null, t ? signCls(t.realized) : "");
 }
 
 function rtChgCls(v) { return v == null ? "flat" : (v > 0 ? "pos" : (v < 0 ? "neg" : "flat")); }

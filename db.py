@@ -167,14 +167,24 @@ class ForumPost(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class DailyReport(Base):
-    """每日持仓/收益日报 → 论坛帖的锚点。
+class SettleReport(Base):
+    """周期结算帖（日 / 周 / 月 / 季 / 半年 / 年）→ 论坛帖的锚点。
 
-    存在理由：日报由定时任务每天自动发布，重复执行（手动重跑 / 当天补数后又跑一次）
-    必须落到**同一个主题帖**，否则论坛会被同日多帖刷满。date 作主键天然保证「每天一篇」。
+    存在理由：结算帖由定时任务自动发布，重复执行（手动重跑 / 当天补数后又跑一次）
+    必须落到**同一个主题帖**，否则论坛会被同周期多帖刷满。
+    (period, pkey) 唯一约束天然保证「每个周期一篇」。
+
+    period: day / week / month / quarter / half / year
+    pkey:   2026-10-17 / 2026-W42 / 2026-10 / 2026-Q4 / 2026-H2 / 2026
+
+    本表取代了早期的 daily_reports（只有日粒度）—— 旧表数据在文件尾部
+    由 _migrate_daily_reports() 幂等搬进来，旧表本身保留不动。
     """
-    __tablename__ = "daily_reports"
-    date = Column(String(10), primary_key=True)         # YYYY-MM-DD（北京时间）
+    __tablename__ = "settle_reports"
+    __table_args__ = (UniqueConstraint("period", "pkey", name="uq_settle_period_key"),)
+    id = Column(Integer, primary_key=True)
+    period = Column(String(16), nullable=False)         # day / week / month / quarter / half / year
+    pkey = Column(String(32), nullable=False)           # 周期键，见类文档
     thread_id = Column(Integer, nullable=True)          # 对应论坛主题帖（forum_threads.id）
     updates = Column(Integer, default=0)                # 已写入层数（含首帖）
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -277,6 +287,39 @@ for _cname, _ddl in _for_add_rtp.items():
         with engine.connect() as _conn:
             _conn.execute(text(_ddl))
             _conn.commit()
+
+
+# ---- 迁移：早期 daily_reports（只有日粒度）→ settle_reports(period='day') ----
+# 为什么必须搬：settle_reports 是「同周期只认一个帖」的唯一依据，不搬的话
+# 已发过的日报会**再发一遍**（同一天多帖）。
+# 幂等：靠 (period, pkey) 唯一约束 INSERT OR IGNORE，重复启动无副作用。
+# 旧表**保留不动**（不删不改），确认无误后可人工清理。
+def _migrate_daily_reports() -> int:
+    _now = datetime.utcnow().isoformat(sep=" ", timespec="microseconds")
+    with engine.connect() as conn:
+        legacy = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='daily_reports'"
+        )).fetchone()
+        if not legacy:
+            return 0
+        rows = conn.execute(text(
+            "SELECT date, thread_id, updates FROM daily_reports")).fetchall()
+        moved = 0
+        for d, tid, upd in rows:
+            r = conn.execute(text(
+                "INSERT OR IGNORE INTO settle_reports"
+                "(period, pkey, thread_id, updates, created_at, updated_at) "
+                "VALUES ('day', :k, :t, :u, :now, :now)"
+            ), {"k": d, "t": tid, "u": int(upd or 0), "now": _now})
+            moved += r.rowcount or 0
+        conn.commit()
+        return moved
+
+
+try:
+    _MIGRATED_DAILY = _migrate_daily_reports()
+except Exception:            # 迁移失败不阻断启动：settle_reports 缺记录只会导致同一天多帖，不会丢数据
+    _MIGRATED_DAILY = 0
 
 
 def get_db():

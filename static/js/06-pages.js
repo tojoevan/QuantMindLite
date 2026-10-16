@@ -208,9 +208,18 @@ async function renderDashboard() {
   }).join("") || `<tr><td colspan="7" class="muted">暂无交易记录</td></tr>`;
 
   const newBtn = isGuest ? "" : `<button class="btn primary sm" id="dash-new">＋ 新建标的</button>`;
-  // 发布日报：与定时任务（每交易日 22:00）同一个后端接口，幂等，可随时手动补发/重发
+  // 发布结算帖：与定时任务同一个后端接口，幂等，可随时手动补发/重发。
+  // 周期可选 —— 周/月/季/半年/年一律结算「最近一个**已结束**的周期」（如 10 月里发月结 = 9 月）。
   const reportBtn = (!isGuest && me && me.is_admin)
-    ? `<button class="btn ghost sm" id="dash-report">发布日报到论坛</button>` : "";
+    ? `<select class="sel-sm" id="dash-report-period" title="结算周期（自动任务已覆盖，这里用于手动补发）">
+         <option value="day">日报</option>
+         <option value="week">周报</option>
+         <option value="month">月报</option>
+         <option value="quarter">季报</option>
+         <option value="half">半年报</option>
+         <option value="year">年报</option>
+       </select>
+       <button class="btn ghost sm" id="dash-report">发布结算到论坛</button>` : "";
   main.innerHTML = `
     <div class="page">
       ${banner}
@@ -264,20 +273,25 @@ async function renderDashboard() {
   });
 }
 
-// ===== 每日持仓日报：手动发布（后端同一个接口，幂等）=====
-// 定时任务每交易日 22:00 自动发；这里用于随时补发 / 数据补全后重发。
-// 响应三态：skipped（无持仓）/ unchanged（内容没变，不刷屏）/ created|updated（已入论坛）。
+// ===== 周期结算帖：手动发布（后端同一个接口，幂等）=====
+// 定时任务已覆盖日/周/月/季/半年/年（见 scripts/settle_report.py 与 README「定时任务」）；
+// 这里用于随时补发、数据补全后重发，或提前看一眼某个周期结算长什么样。
+// 响应三态：skipped（窗口内无持仓也无操作）/ unchanged（内容没变，不刷屏）/ created|updated（已入论坛）。
 async function publishDailyReport(btn) {
-  const label = btn ? btn.textContent : "";
+  const sel = document.getElementById("dash-report-period");
+  const period = (sel && sel.value) || "day";
+  const label = (sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text : "日报");
+  const old = btn ? btn.textContent : "";
   if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
+  if (sel) sel.disabled = true;
   try {
-    const r = await API("POST", "/api/report/daily", {});
+    const r = await API("POST", "/api/report/settle", { period });
     if (r && r.skipped) {
-      showToast(r.message || "当前无持仓，未发布");
+      showToast(r.message || `${label}窗口内无数据，未发布`);
       return;
     }
-    showToast(r && r.created ? "日报已发布到论坛"
-      : (r && r.unchanged ? "今日日报内容未变化，未重复发布" : "日报已更新到论坛"));
+    showToast(r && r.created ? `${label}已发布到论坛`
+      : (r && r.unchanged ? `${label}内容未变化，未重复发布` : `${label}已更新到论坛`));
     if (r && r.thread_id) {
       await showView("forum");
       if (typeof fmOpenThread === "function") await fmOpenThread(r.thread_id);
@@ -285,7 +299,8 @@ async function publishDailyReport(btn) {
   } catch (e) {
     showToast("发布失败：" + (e.message || e));
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = label; }
+    if (btn) { btn.disabled = false; btn.textContent = old; }
+    if (sel) sel.disabled = false;
   }
 }
 
