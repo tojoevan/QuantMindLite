@@ -41,7 +41,7 @@ const RT_MODES = {
   mcp:    { label: "MCP 待接", cls: "mode-mcp" },
 };
 function rtModeInfo(m) { return RT_MODES[m] || RT_MODES.manual; }
-let rtState = { date: null, snap: null, seats: [], posts: {}, settings: null, history: null, admin: false };
+let rtState = { date: null, snap: null, seats: [], styles: [], posts: {}, settings: null, history: null, admin: false };
 const rtAdmin = () => !!(me && me.is_admin);
 
 // P7：首页已改为「资讯工作台」，圆桌是二级页。
@@ -61,10 +61,12 @@ async function renderRoundtable() {
         <div class="rt-head-actions">
           <button class="btn-mini" id="rt-generate-all">生成今日讨论</button>
           <button class="btn-mini ghost" id="rt-manage-toggle">席位管理</button>
+          <button class="btn-mini ghost" id="rt-style-toggle">风格模板</button>
           <button class="btn-mini ghost" id="rt-settings-toggle">AI 设置</button>
         </div>
       </div>
-      <div class="panel hidden" id="rt-manage-panel"><h3>席位管理 <span class="muted">增删席位、编辑人格与通道</span></h3><div id="rt-manage-body"><span class="muted">加载中…</span></div></div>
+      <div class="panel hidden" id="rt-manage-panel"><h3>席位管理 <span class="muted">增删席位、选风格模板与接入通道</span></h3><div id="rt-manage-body"><span class="muted">加载中…</span></div></div>
+      <div class="panel hidden" id="rt-style-panel"><h3>风格模板 <span class="muted">人格 / 风格提示词的复用模板 · 席位选用后，改模板即对所有引用它的席位生效</span></h3><div id="rt-style-body"><span class="muted">加载中…</span></div></div>
       <div class="panel hidden" id="rt-settings-panel"><h3>AI 设置 <span class="muted">API Key 仅存服务器本地数据库，页面不回显</span></h3><div id="rt-settings-body"><span class="muted">加载中…</span></div></div>
       <div class="panel"><h3>今日大盘</h3><div class="rt-indices" id="rt-indices"><span class="muted">加载中…</span></div></div>
       <div class="kpi-grid" id="rt-kpi">
@@ -107,7 +109,10 @@ async function renderRoundtable() {
               </label>
             </div>
             <div class="row">
-              <label class="rt-field grow">人格 / 风格提示词<textarea name="persona" rows="2" placeholder="该席位的分析风格与偏好…"></textarea></label>
+              <label class="rt-field" style="width:180px">风格模板
+                <select name="style_id"></select>
+              </label>
+              <label class="rt-field grow" data-persona-wrap>风格提示词<textarea name="persona" rows="2" placeholder="该席位的分析风格与偏好（选「自定义」时生效）…"></textarea><span class="rt-inline-note hidden" data-style-note></span></label>
               <button class="btn-mini" type="submit">添加</button>
               <button class="btn-mini ghost" type="button" id="rt-add-seat-cancel">取消</button>
             </div>
@@ -119,6 +124,10 @@ async function renderRoundtable() {
   document.getElementById("rt-manage-toggle").onclick = () => {
     if (!rtState.admin) { showToast("仅管理员可管理席位"); return; }
     document.getElementById("rt-manage-panel").classList.toggle("hidden");
+  };
+  document.getElementById("rt-style-toggle").onclick = () => {
+    if (!rtState.admin) { showToast("仅管理员可管理风格模板"); return; }
+    document.getElementById("rt-style-panel").classList.toggle("hidden");
   };
   document.getElementById("rt-settings-toggle").onclick = () => {
     if (!rtState.admin) { showToast("仅管理员可修改 AI 设置"); return; }
@@ -137,25 +146,34 @@ async function renderRoundtable() {
   const addSeatCancel = document.getElementById("rt-add-seat-cancel");
   if (addSeatCancel) addSeatCancel.onclick = () => { document.getElementById("rt-add-seat-panel").classList.add("hidden"); };
   const addSeatForm = document.getElementById("rt-seat-quick-add");
-  if (addSeatForm) addSeatForm.onsubmit = async (e) => {
-    e.preventDefault();
-    const f = e.target;
-    const q = (n) => f.querySelector(`[name="${n}"]`);
-    try {
-      await API("POST", "/api/roundtable/seats", {
-        name: q("name").value.trim() || "新席位",
-        role: q("role").value.trim(),
-        persona: q("persona").value,
-        mode: q("mode").value,   // 接入方式：manual 手动回填 / auto LLM Key 自动 / mcp MCP（待接）
-        provider: "deepseek",
-        model: "",
-      });
-      f.reset();
-      document.getElementById("rt-add-seat-panel").classList.add("hidden");
-      showToast("席位已添加");
-      await rtReloadSeats();
-    } catch (err) { showToast("添加失败：" + err.message); }
-  };
+  if (addSeatForm) {
+    // 风格下拉的选项要等 rtState.styles 加载完才填得上，故在此单独同步一次
+    const qStyle = addSeatForm.querySelector('[name="style_id"]');
+    qStyle.innerHTML = rtStyleOptions(null);
+    qStyle.onchange = () => rtSyncStyleRow(addSeatForm);
+    rtSyncStyleRow(addSeatForm);
+    addSeatForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const q = (n) => f.querySelector(`[name="${n}"]`);
+      try {
+        await API("POST", "/api/roundtable/seats", {
+          name: q("name").value.trim() || "新席位",
+          role: q("role").value.trim(),
+          persona: q("persona").value,
+          style_id: Number(q("style_id").value) || 0,   // 0 = 自定义
+          mode: q("mode").value,   // 接入方式：manual 手动回填 / auto LLM Key 自动 / mcp MCP（待接）
+          provider: "deepseek",
+          model: "",
+        });
+        f.reset();
+        rtSyncStyleRow(f);
+        document.getElementById("rt-add-seat-panel").classList.add("hidden");
+        showToast("席位已添加");
+        await rtReloadSeats();
+      } catch (err) { showToast("添加失败：" + err.message); }
+    };
+  }
   await rtLoadAll();
 }
 
@@ -174,7 +192,12 @@ async function rtLoadAll() {
     rtState.posts = {};
     (posts || []).forEach(p => { rtState.posts[p.seat_id] = p; });
     if (rtState.admin) {
-      rtState.settings = await API("GET", "/api/roundtable/settings").catch(() => null);
+      const [settings, styles] = await Promise.all([
+        API("GET", "/api/roundtable/settings").catch(() => null),
+        API("GET", "/api/roundtable/styles").catch(() => []),
+      ]);
+      rtState.settings = settings;
+      rtState.styles = styles || [];
     }
   } catch (e) {
     showToast("圆桌数据加载失败：" + e.message);
@@ -191,7 +214,19 @@ function rtRenderAll() {
   rtRenderHoldings();
   rtRenderHistory();
   rtRenderSeats();
-  if (rtState.admin) { rtRenderManage(); rtRenderSettings(); }
+  if (rtState.admin) {
+    rtRenderManage();
+    rtRenderStyles();
+    rtRenderSettings();
+    // 席位面板里那个「+ 新增席位」快捷表单在主模板里、渲染时风格还没加载，
+    // 这里补填一次选项（保留用户已选的值，避免重渲染把它打回「自定义」）。
+    const qs = document.querySelector('#rt-seat-quick-add [name="style_id"]');
+    if (qs) {
+      const cur = qs.value;
+      qs.innerHTML = rtStyleOptions(cur || null);
+      rtSyncStyleRow(qs.closest("form"));
+    }
+  }
 }
 
 // 账户三指标（总市值 / 浮动盈亏 / 累计实现盈亏）——取自后端快照 totals，
@@ -393,9 +428,15 @@ function rtRenderSeats() {
     } else if (post) {
       actions += `<button class="btn-mini ghost" data-archive="${s.id}" title="该观点的论坛存档未建成，点此补建">补建存档</button>`;
     }
-    const meta = post
+    // 风格来源也放这一行：用了模板就标模板名（改模板全局生效），自己写了正文的标「自定义」。
+    // 风格已独立成模板管理项，卡片上不显示的话，光看卡片不知道这个席位在用哪套风格。
+    const styleTag = s.style_name
+      ? `风格 ${escapeHtml(s.style_name)}`
+      : (s.persona ? "自定义风格" : "");
+    const runMeta = post
       ? `${post.source === "auto" ? `模型 ${escapeHtml(post.model || "—")} · ` : ""}更新于 ${escapeHtml((post.updated_at || "").replace("T", " ").slice(0, 19))}`
       : "";
+    const meta = [styleTag, runMeta].filter(Boolean).join(" · ");
     // 管理员可在卡片上直接手工修改 AI 名称 / AI 角色
     const nameHtml = rtState.admin
       ? `<span class="rt-seat-name rt-editable" data-edit-name="${s.id}" title="点击修改 AI 名称">${escapeHtml(s.name)}</span>`
@@ -655,10 +696,13 @@ function rtRenderManage() {
             <option value="mcp" ${s.mode === "mcp" ? "selected" : ""}>MCP（待接）</option>
           </select>
         </label>
-        <label class="rt-field grow">人格 / 风格提示词<textarea rows="2" data-f="persona">${escapeHtml(s.persona)}</textarea></label>
+        <label class="rt-field" style="width:190px">风格模板
+          <select data-f="style_id">${rtStyleOptions(s.style_id)}</select>
+        </label>
         <label class="rt-field" style="width:120px">AI 角色<input type="text" data-f="role" value="${escapeHtml(s.role)}" list="rt-role-list" placeholder="豆包/元宝…"></label>
       </div>
       <div class="row">
+        <label class="rt-field grow" data-persona-wrap>风格提示词<textarea rows="2" data-f="persona" placeholder="该席位的分析风格与偏好（选「自定义」时生效）…">${escapeHtml(s.persona)}</textarea><span class="rt-inline-note hidden" data-style-note></span></label>
         <label class="rt-field" style="width:150px">提供方
           <select data-f="provider">
             ${Object.entries(rtProviders()).map(([p, m]) => `<option value="${p}" ${s.provider === p ? "selected" : ""}>${escapeHtml(m.label || p)}</option>`).join("")}
@@ -681,10 +725,13 @@ function rtRenderManage() {
         <label class="rt-field" style="width:130px">接入方式
           <select name="mode"><option value="manual">手动回填</option><option value="auto">LLM Key 自动</option><option value="mcp">MCP（待接）</option></select>
         </label>
-        <label class="rt-field grow">人格 / 风格提示词<textarea name="persona" rows="2" placeholder="该席位的分析风格与偏好…"></textarea></label>
+        <label class="rt-field" style="width:190px">风格模板
+          <select name="style_id">${rtStyleOptions(null)}</select>
+        </label>
         <label class="rt-field" style="width:120px">AI 角色<input type="text" name="role" list="rt-role-list" placeholder="豆包/元宝…"></label>
       </div>
       <div class="row">
+        <label class="rt-field grow" data-persona-wrap>风格提示词<textarea name="persona" rows="2" placeholder="该席位的分析风格与偏好（选「自定义」时生效）…"></textarea><span class="rt-inline-note hidden" data-style-note></span></label>
         <label class="rt-field" style="width:150px">提供方
           <select name="provider">${Object.entries(rtProviders()).map(([p, m]) => `<option value="${p}">${escapeHtml(m.label || p)}</option>`).join("")}</select>
         </label>
@@ -692,13 +739,19 @@ function rtRenderManage() {
         <button class="btn-mini" type="submit">添加席位</button>
       </div>
     </form>`;
+  // 风格模板下拉一改，就切换「自定义提示词」输入区的显隐与说明
+  body.querySelectorAll('[data-f="style_id"], [name="style_id"]').forEach(sel => {
+    sel.onchange = () => rtSyncStyleRow(sel.closest(".rt-manage-row"));
+  });
+  body.querySelectorAll(".rt-manage-row").forEach(r => rtSyncStyleRow(r));
   body.querySelectorAll("[data-save]").forEach(b => b.onclick = async () => {
     const row = b.closest(".rt-manage-row");
     const id = parseInt(b.getAttribute("data-save"), 10);
     const q = (f) => row.querySelector(`[data-f="${f}"]`);
     const payload = {
       name: q("name").value.trim() || "未命名席位",
-      persona: q("persona").value,
+      persona: q("persona").value,                       // 仅「自定义」时生效；选模板时原样留着，切回来还在
+      style_id: Number(q("style_id").value) || 0,        // 0 = 改回自定义（后端据此清除模板引用）
       mode: q("mode").value,
       provider: q("provider").value,
       model: q("model").value.trim(),
@@ -728,14 +781,124 @@ function rtRenderManage() {
       await API("POST", "/api/roundtable/seats", {
         name: q("name").value.trim() || "新席位",
         persona: q("persona").value,
+        style_id: Number(q("style_id").value) || 0,   // 0 = 自定义
         mode: q("mode").value,
         provider: q("provider").value,
         model: q("model").value.trim(),
         role: q("role").value.trim(),
       });
       f.reset();
+      rtSyncStyleRow(f);
       showToast("席位已添加");
       await rtReloadSeats();
+    } catch (err) { showToast("添加失败：" + err.message); }
+  };
+}
+
+// ---- 风格模板（人格 / 风格提示词作为独立管理项，与席位管理、AI 设置并列）----
+
+/** 风格模板下拉的 <option> 列表；sel 为当前选中的模板 id（空/0 = 自定义）。 */
+function rtStyleOptions(sel) {
+  const styles = rtState.styles || [];
+  const cur = Number(sel) || 0;
+  return `<option value="">自定义（不套用模板）</option>`
+    + styles.map(st => `<option value="${st.id}" ${cur === st.id ? "selected" : ""}>${escapeHtml(st.name)}</option>`).join("");
+}
+
+/** 按当前选中的模板切换「自定义提示词」与「模板说明」的显隐。行内没有这些元素时安全返回。 */
+function rtSyncStyleRow(row) {
+  if (!row) return;
+  const sel = row.querySelector('[data-f="style_id"], [name="style_id"]');
+  if (!sel) return;
+  const wrap = row.querySelector("[data-persona-wrap]");
+  const ta = wrap ? wrap.querySelector("textarea") : null;
+  const note = row.querySelector("[data-style-note]");
+  const st = (rtState.styles || []).find(x => String(x.id) === sel.value);
+  // ⚠️ 只切换槽位**内部**的两个元素，不要隐藏槽位本身：否则模板态下整行少一个 flex 项，
+  // 剩余项重新分配宽度，会把右边的「启用」勾选框挤到换行（本机 1440px 下会看到「启 用」竖排）。
+  if (ta) ta.classList.toggle("hidden", !!st);
+  if (note) {
+    note.textContent = st ? `由模板「${st.name}」提供 · 改模板即对本席位生效` : "";
+    note.classList.toggle("hidden", !st);
+  }
+}
+
+async function rtReloadStyles() {
+  rtState.styles = await API("GET", "/api/roundtable/styles").catch(() => rtState.styles || []);
+  rtRenderStyles();
+  rtRenderManage();   // 席位行里的模板下拉与「N 个席位在用」要跟着更新
+}
+
+function rtRenderStyles() {
+  const body = document.getElementById("rt-style-body");
+  if (!body) return;
+  const styles = rtState.styles || [];
+  const rows = styles.map(st => `
+    <div class="rt-manage-row">
+      <div class="row">
+        <label class="rt-field" style="width:150px">模板名<input type="text" data-f="name" value="${escapeHtml(st.name)}"></label>
+        <label class="rt-field grow">一句话定位<input type="text" data-f="summary" value="${escapeHtml(st.summary)}" placeholder="列表里显示的风格摘要"></label>
+        <span class="rt-badge ${st.builtin ? "mode-manual" : "mode-auto"}">${st.builtin ? "内置" : "自定义"}</span>
+        <span class="rt-inline-note">${st.used_by ? `${st.used_by} 个席位在用` : "未被席位引用"}</span>
+      </div>
+      <div class="row">
+        <label class="rt-field grow">提示词正文<textarea rows="2" data-f="persona" placeholder="该风格的分析视角、偏好与表达方式…">${escapeHtml(st.persona)}</textarea></label>
+        <button class="btn-mini" data-save-style="${st.id}">保存</button>
+        ${st.builtin ? "" : `<button class="btn-mini danger" data-del-style="${st.id}">删除</button>`}
+      </div>
+    </div>`).join("");
+  body.innerHTML = `
+    <h4>模板列表 <span class="muted">内置 ${styles.filter(s => s.builtin).length} 套 · 自定义 ${styles.filter(s => !s.builtin).length} 套</span></h4>
+    ${rows || '<div class="muted">暂无模板</div>'}
+    <h4>新增自定义模板</h4>
+    <form id="rt-style-add" class="rt-manage-row">
+      <div class="row">
+        <label class="rt-field" style="width:150px">模板名<input type="text" name="name" required placeholder="如：红利低波"></label>
+        <label class="rt-field grow">一句话定位<input type="text" name="summary" placeholder="列表里显示的风格摘要"></label>
+      </div>
+      <div class="row">
+        <label class="rt-field grow">提示词正文<textarea name="persona" rows="2" placeholder="该风格的分析视角、偏好与表达方式…"></textarea></label>
+        <button class="btn-mini" type="submit">添加模板</button>
+      </div>
+    </form>
+    <p class="rt-inline-note">内置模板不可删除（可改名、改正文）；席位仍在引用的模板要先改掉席位才能删。</p>`;
+  body.querySelectorAll("[data-save-style]").forEach(b => b.onclick = async () => {
+    const row = b.closest(".rt-manage-row");
+    const id = parseInt(b.getAttribute("data-save-style"), 10);
+    const q = (f) => row.querySelector(`[data-f="${f}"]`);
+    try {
+      await API("PATCH", `/api/roundtable/styles/${id}`, {
+        name: q("name").value.trim(),
+        summary: q("summary").value,
+        persona: q("persona").value,
+      });
+      showToast("模板已保存（引用它的席位即刻生效）");
+      await rtReloadStyles();
+      await rtReloadSeats();   // 席位卡上的「风格 X」要同步
+    } catch (e) { showToast("保存失败：" + e.message); }
+  });
+  body.querySelectorAll("[data-del-style]").forEach(b => b.onclick = async () => {
+    const id = parseInt(b.getAttribute("data-del-style"), 10);
+    if (!confirm("确认删除该风格模板？")) return;
+    try {
+      await API("DELETE", `/api/roundtable/styles/${id}`);
+      showToast("模板已删除");
+      await rtReloadStyles();
+    } catch (e) { showToast("删除失败：" + e.message); }
+  });
+  document.getElementById("rt-style-add").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const q = (n) => f.querySelector(`[name="${n}"]`);
+    try {
+      await API("POST", "/api/roundtable/styles", {
+        name: q("name").value.trim(),
+        summary: q("summary").value,
+        persona: q("persona").value,
+      });
+      f.reset();
+      showToast("模板已添加");
+      await rtReloadStyles();
     } catch (err) { showToast("添加失败：" + err.message); }
   };
 }

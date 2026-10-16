@@ -107,6 +107,27 @@ class PasswordResetRequest(Base):
     handled_at = Column(DateTime, nullable=True)
 
 
+class RoundtableStyle(Base):
+    """圆桌讨论 · 风格模板（人格 / 风格提示词的可复用模板）。
+
+    与席位**解耦**：席位用 style_id 引用模板，改模板 → 所有引用它的席位即时生效；
+    席位上的 persona 退化为「自定义」分支（style_id 为空时才使用，兼容历史数据）。
+    生效值的解析唯一落在 app._resolve_persona()，别在别处另写一份。
+
+    builtin_key：内置模板的**稳定标识**（如 value / trend），自定义模板为空串。
+    内置模板靠它判断幂等播种——用户改了模板名也不会被重新播种出一份重复的。
+    """
+    __tablename__ = "roundtable_styles"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(64), nullable=False)           # 模板名，如「价值投资」
+    summary = Column(String(200), default="")           # 一句话定位（列表里显示，不必展开正文）
+    persona = Column(Text, default="")                  # 提示词正文
+    builtin = Column(Integer, default=0)                # 1=内置（不可删除，可改名改内容）
+    builtin_key = Column(String(32), default="")        # 内置标识；自定义为空
+    sort = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class RoundtableSeat(Base):
     """圆桌讨论 · AI 席位（长期配置，可增删）。
 
@@ -116,7 +137,8 @@ class RoundtableSeat(Base):
     __tablename__ = "roundtable_seats"
     id = Column(Integer, primary_key=True)
     name = Column(String(64), nullable=False)           # 席位名，如「稳健配置」
-    persona = Column(Text, default="")                  # 人格 / 风格提示词
+    persona = Column(Text, default="")                  # 人格 / 风格提示词（仅 style_id 为空时生效）
+    style_id = Column(Integer, nullable=True)           # 引用的风格模板 id；NULL=自定义（用上面的 persona）
     mode = Column(String(8), default="manual")          # 接入方式：manual / auto / mcp（mcp 本期仅标注，行为同 manual）
     provider = Column(String(32), default="deepseek")   # LLM 提供方（auto 席位用）
     model = Column(String(64), default="")              # 模型名（留空用提供方默认）
@@ -266,10 +288,12 @@ for _cname, _ddl in _for_add.items():
             _conn.execute(text(_ddl))
             _conn.commit()
 
-# roundtable_seats 补列（role）
+# roundtable_seats 补列（role / style_id）
 _cols_rt = [c["name"] for c in _insp.get_columns("roundtable_seats")]
 _for_add_rt = {
     "role": "ALTER TABLE roundtable_seats ADD COLUMN role VARCHAR(64) DEFAULT ''",
+    # 风格模板引用：NULL = 自定义（沿用席位自身 persona，历史数据即此状态）
+    "style_id": "ALTER TABLE roundtable_seats ADD COLUMN style_id INTEGER",
 }
 for _cname, _ddl in _for_add_rt.items():
     if _cname not in _cols_rt:

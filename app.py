@@ -30,7 +30,7 @@ logger = logging.getLogger("quant-web")
 from db import (
     engine, SessionLocal, Project, MarketPrice, Prediction, Feedback,
     User, Session as SessionModel, PasswordResetRequest,
-    RoundtableSeat, RoundtablePost, ForumThread, ForumPost, Setting,
+    RoundtableSeat, RoundtablePost, RoundtableStyle, ForumThread, ForumPost, Setting,
     NewsFeed, NewsItem, SettleReport,
 )
 from models import (
@@ -39,6 +39,7 @@ from models import (
     RoundtableSeatCreate, RoundtableSeatUpdate, RoundtableSeatOut,
     RoundtablePostIn, RoundtablePostOut, RoundtableSettingsIn, RoundtableGenerateReq,
     RoundtableArchiveReq,
+    RoundtableStyleCreate, RoundtableStyleUpdate, RoundtableStyleOut,
     ForumThreadCreate, ForumPostCreate, ForumPostOut, ForumThreadOut, ForumThreadDetail,
     NewsFeedCreate, NewsFeedUpdate, NewsFeedOut, NewsItemOut, NewsFetchReq, NewsSettingsIn,
     NewsOpmlIn, DailyReportReq, SettleReportReq,
@@ -1064,16 +1065,50 @@ def guest_consensus(pid: int, strategies: str = "momentum,meanreversion,breakout
 # ================= 圆桌讨论（多 AI 席位 · 双通道） =================
 # 默认席位：首次访问圆桌接口时自动播种（后续可在页面「席位管理」增删改）
 DEFAULT_SEATS = [
-    {"name": "稳健配置", "role": "元宝", "persona": "风格稳健保守：重视仓位控制与安全边际，偏好低频操作，"
-     "对高估值与高波动标的保持谨慎，建议以持有观察为主、设定明确止损线。"},
-    {"name": "趋势跟踪", "role": "DeepSeek", "persona": "风格趋势跟踪：尊重价格与量能的方向，顺势而为，"
-     "对突破关键位/均线的标的给予跟进建议，弱化主观判断、强调纪律执行。"},
-    {"name": "风险控制", "role": "豆包", "persona": "风格风险优先：首先评估回撤与集中度风险，"
-     "对单一标的占比过高或涨幅过大的持仓提示止盈/分散，宁可错过不可做错。"},
+    {"name": "稳健配置", "role": "元宝", "style": "balanced"},
+    {"name": "趋势跟踪", "role": "DeepSeek", "style": "trend"},
+    {"name": "风险控制", "role": "豆包", "style": "risk"},
 ]
 
-# LLM 提供方默认配置（OpenAI 兼容协议；用户可在「AI 设置」覆盖）
-# LLM 提供方清单 —— **单一数据源**，前端不再硬编码 provider 表，一律由
+# 风格模板（人格 / 风格提示词的**可复用模板**，与席位解耦）。
+# 
+# - `key` 是内置模板的**稳定标识**，幂等播种只认它：用户把模板改名后，
+#   下次启动**不会**再播种出一份重复的。key 不要改，name/summary/persona 随便改。
+# - 前三个（balanced / trend / risk）的 persona 与历史上 DEFAULT_SEATS 写死的文本
+#   **逐字一致**，这样既有的默认席位可以被无损迁移到模板（生效提示词一字不变）。
+# - 席位若不用模板，走「自定义」分支（style_id 为空 + 自身 persona）。
+DEFAULT_STYLES = [
+    {"key": "balanced", "name": "稳健配置", "summary": "仓位控制与安全边际优先，低频操作",
+     "persona": "风格稳健保守：重视仓位控制与安全边际，偏好低频操作，"
+                "对高估值与高波动标的保持谨慎，建议以持有观察为主、设定明确止损线。"},
+    {"key": "trend", "name": "趋势跟踪", "summary": "顺势而为，弱化主观、强调纪律",
+     "persona": "风格趋势跟踪：尊重价格与量能的方向，顺势而为，"
+                "对突破关键位/均线的标的给予跟进建议，弱化主观判断、强调纪律执行。"},
+    {"key": "risk", "name": "风控优先", "summary": "先看回撤与集中度，宁可错过不可做错",
+     "persona": "风格风险优先：首先评估回撤与集中度风险，"
+                "对单一标的占比过高或涨幅过大的持仓提示止盈/分散，宁可错过不可做错。"},
+    {"key": "value", "name": "价值投资", "summary": "看内在价值与安全边际，赚估值修复的钱",
+     "persona": "风格价值投资：以内在价值与安全边际为核心，关注估值分位、盈利质量与现金流，"
+                "对价格显著低于价值的标的给出逢低关注建议，不为短期波动与题材买单。"},
+    {"key": "growth", "name": "成长赛道", "summary": "看景气度与空间，容忍高估值",
+     "persona": "风格成长投资：重点判断行业景气度与成长空间，愿意为确定性成长支付溢价，"
+                "关注营收/利润增速与产业趋势，对景气拐点向下或逻辑被证伪的持仓果断降级。"},
+    {"key": "macro", "name": "宏观自上而下", "summary": "从利率、流动性与政策推出资产配置",
+     "persona": "风格宏观自上而下：先判断利率、流动性与政策取向，再落到大类资产与行业配置，"
+                "强调持仓与宏观环境的匹配度，对逆风环境下的高贝塔持仓给出减配建议。"},
+    {"key": "contrarian", "name": "逆向博弈", "summary": "在情绪极端处做反向思考",
+     "persona": "风格逆向博弈：关注市场情绪与拥挤度，在一致性预期极强时提示反向风险，"
+                "对超跌但有基本面支撑的标的给出左侧关注建议，避免追高与情绪化操作。"},
+    {"key": "quant", "name": "量化纪律", "summary": "按信号与规则执行，不做主观判断",
+     "persona": "风格量化纪律：一切以可复现的信号与规则为准，不做主观判断与故事化推理，"
+                "明确给出信号方向、触发条件与失效条件，信号不成立时明确建议观望。"},
+]
+
+# 「风格模板首次迁移」标记（落在 settings 表）：席位→模板的无损迁移**只能做一次**，
+# 详见 _ensure_default_seats 的说明。
+STYLE_INIT_FLAG = "rt.style_init_migrated"
+
+# LLM 提供方默认配置（OpenAI 兼容协议；用户可在「AI 设置」覆盖）# LLM 提供方清单 —— **单一数据源**，前端不再硬编码 provider 表，一律由
 # /api/roundtable/settings 下发。除下列内置项外，设置页还支持任意**自定义服务商**
 # （名称 + base_url + model + key）：协议都走 OpenAI 兼容的 /chat/completions，
 # 所以后端不做白名单限制，只校验名称合法性。
@@ -1241,20 +1276,90 @@ RT_MODES = ("manual", "auto", "mcp")
 RT_MODE_HINT = "mode 仅支持 manual / auto / mcp"
 
 
+def _ensure_default_styles(db):
+    """按 `builtin_key` 幂等播种内置风格模板：只补缺失的，**不覆盖**用户改过的内容。
+
+    所以用户重命名 / 改写内置模板都是安全的，不会被下一次启动打回原样
+    （幂等认的是 key 而不是 name —— 认 name 的话改名后会再播种一份重复的）。
+    """
+    have = {s.builtin_key for s in db.query(RoundtableStyle)
+            .filter(RoundtableStyle.builtin_key != "").all()}
+    changed = False
+    for i, s in enumerate(DEFAULT_STYLES):
+        if s["key"] in have:
+            continue
+        db.add(RoundtableStyle(name=s["name"], summary=s.get("summary", ""),
+                               persona=s.get("persona", ""), builtin=1,
+                               builtin_key=s["key"], sort=i))
+        changed = True
+    if changed:
+        db.commit()
+
+
+def _resolve_persona(seat, db) -> str:
+    """席位**生效**的风格提示词 —— 模板与席位解耦的唯一解析点。
+
+    选了模板 → 用模板正文（改模板，所有引用它的席位即时生效）；
+    未选     → 用席位自身的 persona（「自定义」/ 历史数据）。
+
+    任何要拼提示词的地方都必须走这里，不要直接读 seat.persona。
+    """
+    sid = getattr(seat, "style_id", None)
+    if sid:
+        st = db.get(RoundtableStyle, sid)
+        if st and (st.persona or "").strip():
+            return st.persona
+    return seat.persona or ""
+
+
+def _style_id_by_key(db, key: str):
+    if not key:
+        return None
+    st = (db.query(RoundtableStyle)
+          .filter(RoundtableStyle.builtin_key == key).first())
+    return st.id if st else None
+
+
 def _ensure_default_seats(db):
-    """圆桌表为空时播种 3 个默认席位（幂等）；已存在的默认席位若未配置角色则补上示例角色。"""
+    """播种内置风格模板 + 3 个默认席位（幂等）。
+
+    顺带做一次**一次性**的无损迁移：历史席位的 persona 与内置模板文本**逐字相同**时，
+    把 style_id 指向该模板（生效提示词一字不变），让它从此享受「改模板全局生效」。
+
+    ⚠️ 迁移只在**首次**执行（`Setting` 打标记 `rt.style_init_migrated`），不能每次都跑：
+    席位切回「自定义」时其 persona 是**原样保留**的（这是刻意的，切回来原文还在），
+    所以「选了模板 → 切回自定义」的席位，正文恰好还是模板原文 —— 若每次都迁移，
+    下一次任意圆桌请求就会把它悄悄迁回模板，把用户刚才的选择顶掉。
+    """
+    _ensure_default_styles(db)
     existing = {s.name: s for s in db.query(RoundtableSeat).all()}
     changed = False
     for i, s in enumerate(DEFAULT_SEATS):
         name = s["name"]
         cur = existing.get(name)
         if cur is None:
-            db.add(RoundtableSeat(name=name, persona=s["persona"], role=s.get("role", ""),
-                                  mode="manual", provider="deepseek", sort=i))
+            db.add(RoundtableSeat(name=name, persona="", style_id=_style_id_by_key(db, s.get("style")),
+                                  role=s.get("role", ""), mode="manual",
+                                  provider="deepseek", sort=i))
             changed = True
         elif not (cur.role or "").strip() and s.get("role"):
             cur.role = s["role"]
             changed = True
+
+    if db.get(Setting, STYLE_INIT_FLAG) is None:
+        by_text = {}   # persona 正文 → 模板 id（供无损迁移比对）
+        for st in db.query(RoundtableStyle).all():
+            if (st.persona or "").strip():
+                by_text.setdefault(st.persona.strip(), st.id)
+        for cur in existing.values():
+            if not cur.style_id and (cur.persona or "").strip():
+                tid = by_text.get((cur.persona or "").strip())
+                if tid:
+                    cur.style_id = tid
+                    changed = True
+        db.add(Setting(key=STYLE_INIT_FLAG, value="1"))
+        changed = True
+
     if changed:
         db.commit()
 
@@ -1275,8 +1380,15 @@ def _get_llm_conf(db, provider: str) -> dict:
 
 def _seat_out(s: RoundtableSeat, db) -> RoundtableSeatOut:
     conf = _get_llm_conf(db, s.provider or "deepseek")
+    # 只回传席位**自身**的 persona（自定义分支用），模板正文不回传——
+    # 前端要的是「这个席位选了哪个模板」，正文改了模板自己会生效，不必经席位同步。
+    style_name = ""
+    if s.style_id:
+        st = db.get(RoundtableStyle, s.style_id)
+        style_name = (st.name or "") if st else ""
     return RoundtableSeatOut(
         id=s.id, name=s.name or "", persona=s.persona or "",
+        style_id=s.style_id, style_name=style_name,
         mode=s.mode or "manual", provider=s.provider or "", model=s.model or "",
         role=s.role or "",
         enabled=1 if s.enabled else 0, has_key=bool(conf.get("api_key")),
@@ -1349,9 +1461,15 @@ def _build_snapshot(u, db) -> dict:
     }
 
 
-def _snapshot_prompt_text(snap: dict, seat: RoundtableSeat) -> str:
-    """把今日快照 + 席位人格 + 输出格式组装成完整提示词（自动/手动通道共用）。"""
-    L = ["# 角色", f"你是「{seat.name or '分析师'}」。{seat.persona or '语气专业、观点明确。'}"]
+def _snapshot_prompt_text(snap: dict, seat: RoundtableSeat, persona: Optional[str] = None) -> str:
+    """把今日快照 + 席位人格 + 输出格式组装成完整提示词（自动/手动通道共用）。
+
+    ⚠️ `persona` 必须由调用方用 `_resolve_persona(seat, db)` 解析后传入——席位的风格
+    可能来自风格模板而不是 seat.persona 本身。本函数不碰 db（自动通道在工作线程里拼提示词，
+    而 SQLAlchemy Session 非线程安全）。不传则退回 seat.persona（仅供无 db 的测试用）。
+    """
+    style = persona if persona is not None else (seat.persona or "")
+    L = ["# 角色", f"你是「{seat.name or '分析师'}」。{style or '语气专业、观点明确。'}"]
     if seat.role:
         L.append(f"你当前扮演的 AI 产品是「{seat.role}」，请以该产品的口吻、表达习惯与视角作答"
                  f"（例如它是谁、擅长什么、语言风格如何），让用户感觉这是 {seat.role} 给出的独立观点。")
@@ -1420,9 +1538,10 @@ def rt_create_seat(body: RoundtableSeatCreate, u: User = Depends(get_current_use
         raise HTTPException(403, "forbidden")
     if body.mode not in RT_MODES:
         raise HTTPException(400, RT_MODE_HINT)
+    style_id = _check_style_ref(db, body.style_id)
     max_sort = db.query(RoundtableSeat.sort).order_by(RoundtableSeat.sort.desc()).first()
     s = RoundtableSeat(name=body.name.strip() or "新席位", persona=body.persona,
-                       role=body.role or "",
+                       style_id=style_id, role=body.role or "",
                        mode=body.mode, provider=body.provider or "deepseek",
                        model=body.model, sort=(max_sort[0] + 1) if max_sort else 0)
     db.add(s)
@@ -1438,6 +1557,10 @@ def rt_update_seat(sid: int, body: RoundtableSeatUpdate, u: User = Depends(get_c
     s = db.get(RoundtableSeat, sid)
     if not s:
         raise HTTPException(404, "席位不存在")
+    # style_id 单独处理：允许「改回自定义」（传 0 或负数即清除引用），
+    # 不能用通用的 `is not None` 判断——那样前端就没法把席位切回自定义了。
+    if body.style_id is not None:
+        s.style_id = _check_style_ref(db, body.style_id)
     for field in ("name", "persona", "mode", "provider", "model", "role", "enabled", "sort"):
         v = getattr(body, field)
         if v is not None:
@@ -1458,6 +1581,106 @@ def rt_delete_seat(sid: int, u: User = Depends(get_current_user), db: Session = 
         raise HTTPException(404, "席位不存在")
     db.query(RoundtablePost).filter(RoundtablePost.seat_id == sid).delete()
     db.delete(s)
+    db.commit()
+    return {"ok": True}
+
+
+# ---- 风格模板（人格/风格提示词的可复用模板，与席位管理、AI 设置并列的独立管理项）----
+
+def _check_style_ref(db, style_id):
+    """把请求里的 style_id 归一化成「可写库的值」：<=0 或空 → None（自定义）；不存在 → 400。"""
+    if style_id is None or int(style_id) <= 0:
+        return None
+    if not db.get(RoundtableStyle, int(style_id)):
+        raise HTTPException(400, "风格模板不存在")
+    return int(style_id)
+
+
+def _style_out(st: RoundtableStyle, db) -> RoundtableStyleOut:
+    used = db.query(RoundtableSeat).filter(RoundtableSeat.style_id == st.id).count()
+    return RoundtableStyleOut(
+        id=st.id, name=st.name or "", summary=st.summary or "",
+        persona=st.persona or "", builtin=1 if st.builtin else 0,
+        sort=st.sort or 0, used_by=used,
+        created_at=st.created_at.isoformat() if st.created_at else None,
+    )
+
+
+@app.get("/api/roundtable/styles", response_model=list[RoundtableStyleOut])
+def rt_list_styles(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """风格模板列表。登录即可读（席位卡片要显示所用模板名），写操作限管理员。
+
+    这里刻意调 `_ensure_default_seats` 而不是 `_ensure_default_styles`：席位向模板的
+    无损迁移是在前者里做的，而前端是**并发**拉 seats / styles 的 —— 只播种不迁移的话，
+    styles 先返回时 `used_by` 会全算成 0（“未被席位引用”），让人误以为能删。
+    """
+    _ensure_default_seats(db)
+    rows = db.query(RoundtableStyle).order_by(RoundtableStyle.sort, RoundtableStyle.id).all()
+    return [_style_out(st, db) for st in rows]
+
+
+@app.post("/api/roundtable/styles", response_model=RoundtableStyleOut, status_code=201)
+def rt_create_style(body: RoundtableStyleCreate, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, "模板名不能为空")
+    if db.query(RoundtableStyle).filter(RoundtableStyle.name == name).first():
+        raise HTTPException(400, f"已存在同名模板「{name}」")
+    sort = body.sort
+    if sort is None:
+        mx = db.query(RoundtableStyle.sort).order_by(RoundtableStyle.sort.desc()).first()
+        sort = (mx[0] + 1) if mx else 0
+    st = RoundtableStyle(name=name, summary=body.summary or "",
+                         persona=body.persona or "", builtin=0,
+                         builtin_key="", sort=sort)
+    db.add(st)
+    db.commit()
+    db.refresh(st)
+    return _style_out(st, db)
+
+
+@app.patch("/api/roundtable/styles/{style_id}", response_model=RoundtableStyleOut)
+def rt_update_style(style_id: int, body: RoundtableStyleUpdate,
+                    u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """内置模板可改（名/说明/正文），改了以后所有引用它的席位即时生效。"""
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    st = db.get(RoundtableStyle, style_id)
+    if not st:
+        raise HTTPException(404, "风格模板不存在")
+    if body.name is not None and body.name.strip() != (st.name or ""):
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "模板名不能为空")
+        if db.query(RoundtableStyle).filter(RoundtableStyle.name == name,
+                                            RoundtableStyle.id != style_id).first():
+            raise HTTPException(400, f"已存在同名模板「{name}」")
+        st.name = name
+    for field in ("summary", "persona", "sort"):
+        v = getattr(body, field)
+        if v is not None:
+            setattr(st, field, v)
+    db.commit()
+    db.refresh(st)
+    return _style_out(st, db)
+
+
+@app.delete("/api/roundtable/styles/{style_id}")
+def rt_delete_style(style_id: int, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """删除自定义模板。内置模板不可删；仍被席位引用的不可删（否则席位会静默退化成空风格）。"""
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    st = db.get(RoundtableStyle, style_id)
+    if not st:
+        raise HTTPException(404, "风格模板不存在")
+    if st.builtin:
+        raise HTTPException(400, f"「{st.name}」是内置模板，不能删除（可以改名改正文）")
+    used = db.query(RoundtableSeat).filter(RoundtableSeat.style_id == style_id).count()
+    if used:
+        raise HTTPException(400, f"还有 {used} 个席位在使用「{st.name}」，请先改掉这些席位的风格再删除")
+    db.delete(st)
     db.commit()
     return {"ok": True}
 
@@ -1523,7 +1746,9 @@ def rt_prompt(seat_id: int, u: User = Depends(get_current_user), db: Session = D
         raise HTTPException(404, "席位不存在")
     snap = _build_snapshot(u, db)
     return {"seat_id": s.id, "seat_name": s.name, "date": snap["date"],
-            "prompt": _snapshot_prompt_text(snap, s)}
+            "style_name": (db.get(RoundtableStyle, s.style_id).name
+                           if s.style_id and db.get(RoundtableStyle, s.style_id) else ""),
+            "prompt": _snapshot_prompt_text(snap, s, _resolve_persona(s, db))}
 
 
 @app.get("/api/roundtable/posts", response_model=list[RoundtablePostOut])
@@ -1714,9 +1939,10 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
                 "message": "没有可自动生成的席位（需在席位管理中将席位设为「自动」并配置 API Key）"}
 
     snap = _build_snapshot(u, db)
-    # 线程内只做网络调用（不碰 db session，SQLAlchemy Session 非线程安全），结果回主线程统一写库
+    # 线程内只做网络调用（不碰 db session，SQLAlchemy Session 非线程安全），结果回主线程统一写库。
+    # 风格提示词在这里（主线程、有 db）就解析好——里面可能来自风格模板，工作线程取不到。
     seat_meta = {s.id: {"name": s.name or "", "provider": s.provider or "deepseek",
-                        "model": s.model or "", "persona": s.persona or ""} for s in seats}
+                        "model": s.model or "", "persona": _resolve_persona(s, db)} for s in seats}
     confs = {sid: _get_llm_conf(db, m["provider"]) for sid, m in seat_meta.items()}
 
     def _one(sid: int):

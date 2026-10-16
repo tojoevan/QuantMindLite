@@ -104,6 +104,7 @@ class ChartData(BaseModel):
 class RoundtableSeatCreate(BaseModel):
     name: str
     persona: str = ""
+    style_id: Optional[int] = None   # 引用的风格模板；为空=自定义（用 persona）
     mode: str = "manual"             # 接入方式：manual 手动回填 / auto LLM Key 自动 / mcp（本期仅标注）
     provider: str = "deepseek"
     model: str = ""
@@ -113,6 +114,7 @@ class RoundtableSeatCreate(BaseModel):
 class RoundtableSeatUpdate(BaseModel):
     name: Optional[str] = None
     persona: Optional[str] = None
+    style_id: Optional[int] = None
     mode: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
@@ -124,7 +126,9 @@ class RoundtableSeatUpdate(BaseModel):
 class RoundtableSeatOut(BaseModel):
     id: int
     name: str = ""
-    persona: str = ""
+    persona: str = ""                # 席位**自身**的提示词（仅自定义分支用；不回传模板正文）
+    style_id: Optional[int] = None   # 引用的风格模板 id；None=自定义
+    style_name: str = ""             # 引用模板的名字（便于卡片/列表直接显示，省一次查询）
     mode: str = "manual"
     provider: str = ""
     model: str = ""
@@ -132,6 +136,32 @@ class RoundtableSeatOut(BaseModel):
     enabled: int = 1
     has_key: bool = False            # 该席位 provider 是否已配置 Key（永不回传 Key 本身）
     sort: int = 0
+    created_at: Optional[str] = None
+
+
+class RoundtableStyleCreate(BaseModel):
+    """新增风格模板（自定义）。builtin 只能由内置播种产生，不接受外部传入。"""
+    name: str
+    summary: str = ""
+    persona: str = ""
+    sort: Optional[int] = None
+
+
+class RoundtableStyleUpdate(BaseModel):
+    name: Optional[str] = None
+    summary: Optional[str] = None
+    persona: Optional[str] = None
+    sort: Optional[int] = None
+
+
+class RoundtableStyleOut(BaseModel):
+    id: int
+    name: str = ""
+    summary: str = ""
+    persona: str = ""
+    builtin: int = 0                 # 1=内置（前端不可删除）
+    sort: int = 0
+    used_by: int = 0                 # 引用该模板的席位数（删除前提示用）
     created_at: Optional[str] = None
 
 
