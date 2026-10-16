@@ -587,7 +587,9 @@ async function addPrice(e) {
 // 进入项目时自动拉取最新行情（限频：每天最多实际调用一次数据源；已是最新则跳过）
 async function autoFetch(id) {
   try {
-    const r = await API("POST", `/api/projects/${id}/fetch`, { days: 60, force: false });
+    // 不传 days：窗口交给后端按品种决定（基金 365 天 / 场内默认 60 且不小于已有历史）。
+    // ⚠️ 曾硬编码 { days: 60 } —— 场内品种是覆盖式重写，会把已有历史截短到 120 条。
+    const r = await API("POST", `/api/projects/${id}/fetch`, { force: false });
     // 同步后标的名称可能更新为股票名称
     if (r.name) {
       const proj = projects.find(x => x.id === id);

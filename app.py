@@ -586,6 +586,15 @@ def fetch_prices(pid: int, body: Optional[FetchReq] = None,
     # 场外基金默认多取一年：净值序列短（一天一个点），窗口太小会把历史截没
     default_days = 365 if mk == "fund" else 60
     days = (body.days if body and body.days else default_days)
+    # ⚠️ 场内品种是「覆盖式重写」（前复权价随除权整体变化，必须整段替换，见下方写入分支），
+    # 所以自动拉取（非强制）时窗口**不得小于已有历史条数**，否则会把历史截短：
+    # 例如已有 270 条、自动拉取按默认 60（→120 根）重写后只剩 120 条，且不可逆。
+    # 强制刷新（force=True）不受此限——那是用户明确要求按指定窗口重新拉取。
+    if not force and mk != "fund":
+        have = db.query(func.count(MarketPrice.id)).filter(
+            MarketPrice.project_id == pid).scalar() or 0
+        if have > days:
+            days = have
     try:
         rows, source = fetch_hist(code, mk, days)
     except Exception as e:
