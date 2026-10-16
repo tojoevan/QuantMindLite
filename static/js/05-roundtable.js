@@ -69,10 +69,10 @@ async function renderRoundtable() {
       <div class="panel hidden" id="rt-style-panel"><h3>风格模板 <span class="muted">人格 / 风格提示词的复用模板 · 席位选用后，改模板即对所有引用它的席位生效</span></h3><div id="rt-style-body"><span class="muted">加载中…</span></div></div>
       <div class="panel hidden" id="rt-settings-panel"><h3>AI 设置 <span class="muted">API Key 仅存服务器本地数据库，页面不回显</span></h3><div id="rt-settings-body"><span class="muted">加载中…</span></div></div>
       <div class="panel"><h3>今日大盘</h3><div class="rt-indices" id="rt-indices"><span class="muted">加载中…</span></div></div>
-      <div class="kpi-grid" id="rt-kpi">
-        <div class="kpi"><div class="kpi-label">总市值</div><div class="kpi-value" id="rt-kpi-mv">—</div></div>
-        <div class="kpi"><div class="kpi-label">浮动盈亏</div><div class="kpi-value" id="rt-kpi-un">—</div></div>
-        <div class="kpi"><div class="kpi-label">累计实现盈亏</div><div class="kpi-value" id="rt-kpi-real">—</div></div>
+      <div class="rt-indices rt-metrics" id="rt-kpi">
+        <div class="rt-index"><div class="name">总市值</div><div class="val" id="rt-kpi-mv">—</div></div>
+        <div class="rt-index"><div class="name">浮动盈亏</div><div class="val" id="rt-kpi-un">—</div></div>
+        <div class="rt-index"><div class="name">累计实现盈亏</div><div class="val" id="rt-kpi-real">—</div></div>
       </div>
       <div class="panel"><h3>持仓总览 <span class="muted" id="rt-holdings-count"></span></h3>
         <div class="table-wrap"><table id="rt-holdings"><thead><tr><th>标的</th><th>最新价</th><th>市值(元)</th><th>收益率</th><th>今日</th><th>系统建议</th></tr></thead><tbody></tbody></table></div>
@@ -231,13 +231,15 @@ function rtRenderAll() {
 
 // 账户三指标（总市值 / 浮动盈亏 / 累计实现盈亏）——取自后端快照 totals，
 // 与交易仪表台 KPI、结算帖同源（app._account_totals 是唯一定义），页面不另算。
+// 卡片外观复用「今日大盘」指数卡的 .rt-index（见 renderRoundtable 里的结构），
+// 故这里的文字槽位是 .val 而非 .kpi-value —— 两处改样式走同一套 CSS。
 function rtRenderTotals() {
   const t = (rtState.snap && rtState.snap.totals) || null;
   const set = (id, val, cls) => {
     const el = document.getElementById(id);
     if (!el) return;
     el.textContent = (val == null) ? "—" : fmtMoney(val);
-    el.className = "kpi-value" + (cls ? " " + cls : "");
+    el.className = "val" + (cls ? " " + cls : "");
   };
   set("rt-kpi-mv", t ? t.market_value : null, "");
   set("rt-kpi-un", t ? t.unrealized : null, t ? signCls(t.unrealized) : "");

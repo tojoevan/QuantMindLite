@@ -442,6 +442,9 @@ th { color: var(--muted); font-weight: 600; }
 .rt-index .chg.pos { color: var(--red); }
 .rt-index .chg.neg { color: var(--accent); }
 .rt-index .chg.flat { color: var(--muted); }
+/* 账户三指标（总市值 / 浮动盈亏 / 累计实现盈亏）：与指数卡同一套卡片样式，
+   只是数值本身着色（红涨绿跌）而非副行；间距沿用原指标条的 16px，避免贴住下方面板。 */
+.rt-metrics { margin-bottom: 16px; }
 
 /* 每个 AI 席位独占一行（整行卡片）：原 auto-fit minmax(300px,1fr) 在宽屏会并排三列，
    讨论正文被挤成窄条。改单列后正文获得整行宽度。 */
