@@ -41,7 +41,7 @@ from models import (
 from predictor import run_strategy, STRATEGY_CATALOG, rolling_predict, forecast_future
 from datasource import (
     fetch_hist, fetch_symbol_name, fetch_index_quotes, lookup_symbol,
-    normalize_market, MARKET_LABELS, MARKET_HINTS,
+    normalize_market, MARKET_LABELS, MARKET_HINTS, kline_bars,
 )
 from llm import chat_complete
 import newsfetch
@@ -551,12 +551,87 @@ def list_prices(pid: int, u: User = Depends(get_current_user), db: Session = Dep
     return [PriceOut(date=m.date, close=m.close) for m in mps]
 
 
+# ---------------- 行情拉取的共用语义（写入方式 + 窗口） ----------------
+# 两条入口都复用这套规则：/api/projects/{pid}/fetch（登录）与
+# /api/guest/projects/{pid}/refresh（游客）。**必须一致**——同一条实际线，
+# 两种入口写出的复权基准不同就会出现假跳空。
+def _existing_span(p, db):
+    """存量实际线 (条数, 最早日期)。空则为 (0, None)。"""
+    n, d0 = (db.query(func.count(MarketPrice.id), func.min(MarketPrice.date))
+             .filter(MarketPrice.project_id == p.id).one())
+    return int(n or 0), d0
+
+
+def _resolve_days(p, mk, days, force, db):
+    """决定本次拉取的窗口宽度，返回 `(days, have)`。
+
+    - 场外基金（fund）：写入是**合并式**（只补/改，从不删），窗口大小影响不到存量，原样返回。
+    - 场内品种：写入是**覆盖式重写**（见 _store_rows），窗口一旦小于存量条数就会把历史
+      整段截短且不可逆（2026-10-15 实测事故：270 条被截到 120 条）。因此自动拉取
+      （force=False）时把窗口放到**至少覆盖存量条数**；用户手动强制刷新（force=True）
+      由用户明确指定窗口，不设下限。
+
+      ⚠️ 别把「窗口按存量放大」当成缺陷去优化成「刚好等于存量」：datasource 会把 days
+      换算成 days+20 根 K 线，正这 20 根缓冲让窗口每次朝**更早**的方向多覆盖一点，
+      序列只会缓慢变长；一旦改成刚好等于存量，每次拉取就会把最早的那几根滚掉，
+      变成一种更隐蔽的历史截短。
+
+    返回的 `have`（存量条数）供调用方做兜底守卫：即便按存量放大了窗口，数据源仍可能
+    只回更少的根数（接口条数上限/停牌），此时**跳过写入**好过截断历史。
+    force=True 与 fund 恒返回 have=0（表示不设守卫）。
+    """
+    if force or mk == "fund":
+        return days, 0
+    have, _ = _existing_span(p, db)
+    if kline_bars(days) < have:
+        days = have
+    return days, have
+
+
+def _store_rows(p, mk, rows, db):
+    """把拉取结果写入实际线，返回 `(added, updated, rewritten)`。
+
+    - `fund` 场外基金：**合并写入**。净值接口一次只回一段窗口，先删后写会把窗口外的
+      历史（可能上千条）整段丢掉，故只按 (project_id, date) 补缺/改值。
+    - 场内品种：**覆盖式重写**（先删后写）。前复权价会随除权整体平移，只补新日期会让
+      除权点两侧混着两套复权基准（老日期旧基准、新日期新基准），曲线出现假跳空、
+      策略信号也会失真，所以必须整段替换。存量与本次结果完全一致时跳过写入。
+    """
+    existing = db.query(MarketPrice).filter(MarketPrice.project_id == p.id).all()
+    if mk == "fund":
+        by_date = {m.date: m for m in existing}
+        added = updated = 0
+        for d, c in rows:
+            m = by_date.get(d)
+            if m is None:
+                db.add(MarketPrice(project_id=p.id, date=d, close=c))
+                added += 1
+            elif m.close != c:
+                m.close = c
+                updated += 1
+        return added, updated, 0
+    if {m.date: m.close for m in existing} == {d: c for d, c in rows}:
+        return 0, 0, 0
+    db.query(MarketPrice).filter(MarketPrice.project_id == p.id).delete()
+    for d, c in rows:
+        db.add(MarketPrice(project_id=p.id, date=d, close=c))
+    return len(rows), 0, 1
+
+
+def _shrink_guard_msg(mk, got, have):
+    """覆盖式写入前的兜底提示（got < have 时才用）。"""
+    return (f"{MARKET_LABELS[mk]}数据源本次只返回 {got} 条，少于已有历史 {have} 条；"
+            "已跳过写入以免截断历史（覆盖式写入会整段替换）。请稍后重试，"
+            "或在手动强制刷新时指定更大的窗口。")
+
+
 @app.post("/api/projects/{pid}/fetch")
 def fetch_prices(pid: int, body: Optional[FetchReq] = None,
                  u: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """按**品种**从对应数据源拉取历史序列并写入实际线。
 
     品种路由（见 datasource.py）：股票/场内基金/债券 → 腾讯日线；场外基金 → 东财净值。
+    写入语义按品种分（见 _store_rows）：场内覆盖式重写、场外合并写入。
     - force=False（进入项目时自动拉取）：若今日已拉取过或行情已是最新，则跳过外部
       调用，避免频繁请求数据源；
     - force=True（手动强制刷新）：始终重新拉取。
@@ -586,37 +661,17 @@ def fetch_prices(pid: int, body: Optional[FetchReq] = None,
     # 场外基金默认多取一年：净值序列短（一天一个点），窗口太小会把历史截没
     default_days = 365 if mk == "fund" else 60
     days = (body.days if body and body.days else default_days)
-    # ⚠️ 场内品种是「覆盖式重写」（前复权价随除权整体变化，必须整段替换，见下方写入分支），
-    # 所以自动拉取（非强制）时窗口**不得小于已有历史条数**，否则会把历史截短：
-    # 例如已有 270 条、自动拉取按默认 60（→120 根）重写后只剩 120 条，且不可逆。
-    # 强制刷新（force=True）不受此限——那是用户明确要求按指定窗口重新拉取。
-    if not force and mk != "fund":
-        have = db.query(func.count(MarketPrice.id)).filter(
-            MarketPrice.project_id == pid).scalar() or 0
-        if have > days:
-            days = have
+    # 自动拉取时窗口不得小于已有历史条数（覆盖式写入会截短历史，见 _resolve_days）
+    days, have = _resolve_days(p, mk, days, force, db)
     try:
         rows, source = fetch_hist(code, mk, days)
     except Exception as e:
         raise HTTPException(502, f"{MARKET_LABELS[mk]}拉取失败：{e}")
     if not rows:
         raise HTTPException(502, "未获取到任何行情数据")
-    if mk == "fund":
-        # 场外基金：合并写入。**绝不能用覆盖式**——净值一次只回一段窗口，
-        # 先删后写会把窗口外的历史（可能上千条）整段丢掉。
-        existing = {m.date: m for m in
-                    db.query(MarketPrice).filter(MarketPrice.project_id == pid).all()}
-        for d, c in rows:
-            m = existing.get(d)
-            if m is None:
-                db.add(MarketPrice(project_id=pid, date=d, close=c))
-            elif m.close != c:
-                m.close = c
-    else:
-        # 场内品种：覆盖式重写（前复权价会随除权整体变化，必须整段替换）
-        db.query(MarketPrice).filter(MarketPrice.project_id == pid).delete()
-        for d, c in rows:
-            db.add(MarketPrice(project_id=pid, date=d, close=c))
+    if have and len(rows) < have:
+        raise HTTPException(502, _shrink_guard_msg(mk, len(rows), have))
+    _store_rows(p, mk, rows, db)
     # 同步成功后，自动把项目名更新为标的名称（查询失败则保留原名）
     sym_name = None
     try:
@@ -638,6 +693,7 @@ def fetch_prices(pid: int, body: Optional[FetchReq] = None,
         "market": mk,
         "market_label": MARKET_LABELS[mk],
         "source": source,
+        "rewritten": mk != "fund",
     }
 
 
@@ -841,9 +897,16 @@ def guest_refresh(pid: int, db: Session = Depends(get_db)):
 
     - 若项目最新行情日期已是今天（当天数据已存在）→ 直接提示无需重复拉取；
     - 若今天已拉取过（last_fetch_date==今天）→ 同样提示，避免频繁调用外部源；
-    - 否则拉取并“增量”写入缺失交易日，更新 last_fetch_date 为今天。
+    - 否则拉取并按**品种语义**写入（见 _store_rows：场内覆盖式重写、场外合并写入），
+      更新 last_fetch_date 为今天。
+
+    ⚠️ 2026-10-16 修复：此前这里写的是「只插不存在的交易日」（只增不改）。场内品种是
+    前复权序列，除权后**所有**历史价格会整体平移，只补新日期会让除权点两侧混着两套
+    复权基准（老日期旧基准、新日期新基准）→ 曲线假跳空、策略信号失真。现改为与登录
+    通道 /api/projects/{pid}/fetch 完全相同的写入语义。
     """
     p = _guest_project_guard(pid, db)
+    mk = normalize_market(p.market)
     today_s = _cn_today()
     latest = db.query(MarketPrice.date).filter(MarketPrice.project_id == p.id).order_by(MarketPrice.date.desc()).first()
     latest_date = latest[0] if latest else None
@@ -853,40 +916,42 @@ def guest_refresh(pid: int, db: Session = Depends(get_db)):
     if (p.last_fetch_date or "") == today_s:
         return {"updated": False, "already_today": True, "latest_date": latest_date,
                 "message": f"今日已拉取行情（最新 {latest_date}），无需重复获取"}
+    days, have = _resolve_days(p, mk, 250, False, db)
     try:
-        rows, source = fetch_hist(p.code, normalize_market(p.market), 250)
+        rows, source = fetch_hist(p.code, mk, days)
     except Exception as e:
         return {"updated": False, "already_today": False, "latest_date": latest_date,
                 "error": True, "message": f"行情拉取失败：{e}"}
     if not rows:
         return {"updated": False, "already_today": False, "latest_date": latest_date,
                 "error": True, "message": "未获取到任何行情数据"}
-    # 增量写入：仅插入尚未存在的交易日，避免重复与覆盖历史
-    existing = {d for (d,) in db.query(MarketPrice.date).filter(MarketPrice.project_id == p.id).all()}
-    added = 0
-    for d, c in rows:
-        if d not in existing:
-            db.add(MarketPrice(project_id=p.id, date=d, close=c))
-            added += 1
+    if have and len(rows) < have:
+        return {"updated": False, "already_today": False, "latest_date": latest_date,
+                "error": True, "message": _shrink_guard_msg(mk, len(rows), have)}
+    added, updated_n, rewritten = _store_rows(p, mk, rows, db)
     p.last_fetch_date = today_s
     # 同步成功后，自动把项目名更新为标的名称（查询失败则保留原名）
     stock_name = None
     try:
-        stock_name = fetch_symbol_name(p.code, normalize_market(p.market))
+        stock_name = fetch_symbol_name(p.code, mk)
         if stock_name:
             p.name = stock_name
     except Exception as e:
         logger.warning("游客标的名称查询失败（保留原项目名）：%s", e)
     db.commit()
     new_latest = max(r[0] for r in rows)
-    src_name = source
     name = stock_name or p.name
-    if added == 0:
+    if not (added or updated_n or rewritten):
         return {"updated": False, "already_today": True, "latest_date": new_latest, "name": name,
-                "message": f"行情已是最新（{new_latest}），无需更新，来源：{src_name}"}
+                "message": f"行情已是最新（{new_latest}），无需更新，来源：{source}"}
+    if rewritten:      # 场内：整段重写（前复权基准随除权变化）
+        detail, count = f"已重写 {len(rows)} 个交易日", len(rows)
+    else:              # 场外：合并写入
+        detail = f"新增 {added} 个交易日" + (f"、修正 {updated_n} 个" if updated_n else "")
+        count = added
     return {"updated": True, "already_today": new_latest >= today_s, "latest_date": new_latest,
-            "count": added, "source": src_name, "name": name,
-            "message": f"行情已更新至最新（{new_latest}），新增 {added} 个交易日，来源：{src_name}"}
+            "count": count, "source": source, "name": name, "rewritten": bool(rewritten),
+            "message": f"行情已更新至最新（{new_latest}），{detail}，来源：{source}"}
 
 
 # ---------------- 多策略一致性 ----------------

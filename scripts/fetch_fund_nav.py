@@ -1,60 +1,37 @@
 #!/usr/bin/env python3
-"""基金净值自动获取（独立脚本，不依赖主系统 datasource/app.py）。
+"""场外基金净值每日自动补数（crontab 用，30 13 * * 1-5）。
 
-⚠️ 2026-10-15 起：主系统已支持场外基金（`market='fund'` 走 datasource._fetch_fund_nav，
-经 /api/projects/{id}/fetch 拉取，写入语义为「合并」不删历史），本脚本不再是唯一通道。
-保留原因：crontab `30 13 * * 1-5` 仍在跑，用于**每日自动补净值**（网页端要手动点）。
-两处写入互不冲突（本脚本 upsert，主系统对 fund 也是合并写）。
+⚠️ 2026-10-16 起本脚本**不再自带一套拉取实现**，改为直接复用主系统的
+   `datasource.fetch_hist(code, "fund", days)` —— 与网页端 /api/projects/{id}/fetch
+   走的是同一份代码、同一个窗口口径、同一套写入语义。此前这里有三个不一致：
+     1) 窗口 60 天 vs 主系统 365 天 → 新建基金被 cron 先填时只拿到 60 天
+        （实例：id=11 code=022438 只有 39 条，同期同类基金均为 ~245 条）；
+     2) 不写 projects.last_fetch_date → 网页端当天的自动拉取会重复请求一次；
+     3) 两套分页/重试/解析逻辑并行维护。
 
-遍历 projects 中 market='fund' 的标的，从东方财富基金净值接口
-(https://api.fund.eastmoney.com/f10/lsjz) 拉取历史单位净值(DWJZ)，
-按 (project_id, date) 幂等 upsert 进 market_prices。
+保留原因：网页端要用户手动点才算拉取，交易日 13:30 由 cron 兜底自动补净值。
+写入语义：**合并写（upsert）不删历史** —— 与主系统对 fund 的处理一致
+（净值接口一次只回一段窗口，先删后写会把窗口外历史整段丢掉）。
 
 设计纪律（避免回归 / 不误伤 A 股）：
-- 只动 market='fund' 的项目，绝不触碰 A 股行情；
-- 用唯一索引 + ON CONFLICT DO UPDATE 做 upsert，不清空、不覆盖已有数据；
-- 纯标准库（urllib/sqlite3/json），VPS 系统 python3 即可运行；
+- 只处理 market='fund' 的项目，绝不触碰场内品种行情；
+- 唯一索引 + ON CONFLICT DO UPDATE，幂等，不清空、不覆盖窗口外数据；
 - 单只基金失败不影响其它，退出码汇总（有失败返回 1）。
 """
 import os
 import sys
-import json
-import ssl
-import socket
 import sqlite3
 import argparse
-import urllib.request
-import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-# 本机出站数据走 IPv6（IPv4 不可达，curl -4 失败 / curl -6 成功），直连东财
-# 等域名解析到的 IPv4 地址不可达；强制 getaddrinfo 只返回 IPv6，避免 urllib
-# 选中死链路的 A 地址。
-_orig_getaddrinfo = socket.getaddrinfo
-
-
-def _getaddrinfo_ipv6(host, port, family=0, type=0, proto=0, flags=0):
-    return _orig_getaddrinfo(host, port, socket.AF_INET6, type, proto, flags)
-
-
-socket.getaddrinfo = _getaddrinfo_ipv6
-
-_SSL_CTX = ssl.create_default_context()
-_SSL_CTX.check_hostname = False
-_SSL_CTX.verify_mode = ssl.CERT_NONE
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_APP_DIR = os.path.dirname(_HERE)          # quant-web 根目录（datasource.py 所在处）
+if _APP_DIR not in sys.path:
+    sys.path.insert(0, _APP_DIR)
 
 DEFAULT_DB = "/opt/quant-web/quantweb.db"
-API = "https://api.fund.eastmoney.com/f10/lsjz"
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-    ),
-    "Referer": "https://fundf10.eastmoney.com/",
-}
-# 东财 lsjz 接口对大 pageSize 会返回空，实测每页 20 条稳定；按时间窗口分页。
-PAGE_SIZE = 20
-MAX_PAGES = 300  # 上限保护（约 6000 条，远超单只基金生命周期）
+# 与主系统一致：app.fetch_prices 对 fund 的默认窗口是 365 自然日
+DEFAULT_DAYS = 365
 
 
 def log(msg: str) -> None:
@@ -62,50 +39,15 @@ def log(msg: str) -> None:
     print(f"[{ts}] {msg}", flush=True)
 
 
-def _fetch_page(fund_code: str, page: int, start_date: str, end_date: str) -> list:
-    """拉单页净值列表，失败重试 3 次（东财偶发慢/限速）。"""
-    url = (f"{API}?fundCode={fund_code}&pageIndex={page}&pageSize={PAGE_SIZE}"
-           f"&startDate={start_date}&endDate={end_date}")
-    req = urllib.request.Request(url, headers=HEADERS)
-    last_err = None
-    for attempt in range(1, 4):
-        try:
-            with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
-                raw = resp.read().decode("utf-8", "ignore")
-            j = json.loads(raw)
-            return (j.get("Data") or {}).get("LSJZList") or []
-        except Exception as e:  # 网络/超时/JSON 异常，重试
-            last_err = e
-            time.sleep(1.5 * attempt)
-    raise last_err
-
-
-def fetch_nav(fund_code: str, start_date: str, end_date: str) -> list:
-    """分页拉取窗口内历史单位净值，返回 [(date_str, close_float), ...] 升序。
-    跳过 DWJZ 为空的记录（分红 / 拆分等无净值日期）。"""
-    out = []
-    for page in range(1, MAX_PAGES + 1):
-        lst = _fetch_page(fund_code, page, start_date, end_date)
-        if not lst:
-            break
-        for r in lst:
-            d = (r.get("FSRQ") or "").strip()
-            dwjz = (r.get("DWJZ") or "").strip()
-            if not d:
-                continue
-            try:
-                c = float(dwjz)
-            except ValueError:
-                # 分红 / 拆分等无净值日期，跳过
-                continue
-            if c <= 0:
-                continue
-            out.append((d, c))
-        if len(lst) < PAGE_SIZE:
-            break
-        time.sleep(0.3)  # 页间小延迟，避免被限速
-    out.sort(key=lambda x: x[0])
-    return out
+def load_fetch_hist():
+    """延迟导入主系统的取数函数：导入失败要给出可读原因，而不是裸 traceback。"""
+    try:
+        from datasource import fetch_hist
+    except Exception as e:
+        log(f"ERROR 无法导入主系统 datasource（{_APP_DIR}）：{e}")
+        log("       本脚本依赖主系统同一份取数实现，请先确认 /opt/quant-web 完整。")
+        raise SystemExit(3)
+    return fetch_hist
 
 
 def ensure_index(conn: sqlite3.Connection) -> None:
@@ -116,7 +58,7 @@ def ensure_index(conn: sqlite3.Connection) -> None:
 
 
 def upsert(conn: sqlite3.Connection, project_id: int, rows: list):
-    """幂等写入，返回 (inserted, updated)。"""
+    """幂等合并写入，返回 (inserted, updated)。"""
     before = conn.execute(
         "SELECT count(*) FROM market_prices WHERE project_id=?", (project_id,)
     ).fetchone()[0]
@@ -129,30 +71,37 @@ def upsert(conn: sqlite3.Connection, project_id: int, rows: list):
         "SELECT count(*) FROM market_prices WHERE project_id=?", (project_id,)
     ).fetchone()[0]
     inserted = after - before
-    updated = len(rows) - inserted
-    return inserted, updated
+    return inserted, len(rows) - inserted
+
+
+def _cn_today() -> str:
+    """北京时间今天（与 app._cn_today 一致，VPS 时区不必是 UTC+8）。"""
+    return (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d")
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="基金净值自动获取")
+    ap = argparse.ArgumentParser(description="场外基金净值每日补数（复用主系统取数实现）")
     ap.add_argument("--db", default=os.environ.get("DB_PATH", DEFAULT_DB))
-    ap.add_argument("--days", type=int, default=60,
-                    help="拉取窗口天数（默认60，覆盖最近约3个月，幂等补全/更新；首次全量用 --full）")
+    ap.add_argument("--days", type=int, default=DEFAULT_DAYS,
+                    help=f"拉取窗口自然日数（默认 {DEFAULT_DAYS}，与主系统 fund 口径一致；"
+                         "幂等合并，不会截断历史）")
     ap.add_argument("--full", action="store_true",
-                    help="拉取全部历史（分页到完，首次补全用；可能因东财限速较慢）")
+                    help="拉取全部历史（首次补全/补齐缺口用；可能因东财限速较慢）")
     ap.add_argument("--dry-run", action="store_true",
                     help="只打印将要处理的基金，不写库")
     args = ap.parse_args()
 
-    end_date = datetime.now().strftime("%Y-%m-%d")
     days = 99999 if args.full else args.days
-    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    log(f"净值窗口: {start_date} ~ {end_date}"
-        + ("（全量模式）" if args.full else f"（近 {args.days} 天）"))
+    log(f"净值窗口：近 {days} 天" + ("（全量模式）" if args.full else "")
+        + f" | 数据库 {args.db}")
 
     if not os.path.exists(args.db):
         log(f"ERROR 数据库不存在: {args.db}")
         return 2
+
+    fetch_hist = load_fetch_hist()
+    # 与主系统 _cn_today() 同一口径（北京时间），供网页端自动拉取限频判断
+    last_fetch_mark = _cn_today()
 
     conn = sqlite3.connect(args.db)
     conn.execute("PRAGMA busy_timeout=30000")
@@ -176,15 +125,19 @@ def main() -> int:
     any_fail = False
     for pid, code, name in projects:
         try:
-            rows = fetch_nav(code, start_date, end_date)
+            rows, source = fetch_hist(code, "fund", days)
             if not rows:
                 log(f"WARN id={pid} {code}({name}) 未取到净值")
                 any_fail = True
                 continue
             inserted, updated = upsert(conn, pid, rows)
+            # 与网页端 /api/projects/{id}/fetch 一致：记录「今日已拉取」，
+            # 否则当天用户在网页上打开该基金时还会再请求一次数据源。
+            conn.execute("UPDATE projects SET last_fetch_date=? WHERE id=?",
+                         (last_fetch_mark, pid))
             conn.commit()
             log(f"OK   id={pid} {code}({name}) 取{len(rows)}条 "
-                f"新增{inserted}/更新{updated} 最新={rows[-1]}")
+                f"新增{inserted}/更新{updated} 最新={rows[-1]} 来源={source}")
         except Exception as e:  # 单只失败不影响其它
             conn.rollback()
             log(f"FAIL id={pid} {code}({name}) 错误: {e}")

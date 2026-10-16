@@ -184,12 +184,29 @@ _TENCENT_KLINE = (
     ("web.ifzq.gtimg.cn", "/appstock/app/fqkline/get"),
 )
 
+# 「窗口天数 → 腾讯 K 线根数」的换算参数（成对使用，勿单独改）：
+#   count = max(_KL_BARS_MIN, days + _KL_BARS_MARGIN)
+# 多留 20 根是缓冲（非交易日/停牌日会让天数明显多于根数）；最少 120 根是历史下限。
+_KL_BARS_MIN = 120
+_KL_BARS_MARGIN = 20
+
+
+def kline_bars(days: int) -> int:
+    """窗口天数 → 腾讯返回的 K 线根数（含缓冲与下限）。
+
+    调用方按「已存量条数」定窗口时用它做判断：**窗口必须覆盖存量**，否则
+    覆盖式重写会把历史整段截短（见 app._resolve_days）。
+    注意换算里的 +20 缓冲会顺带把历史往回扩 20 根/次——这是刻意的：
+    宁可序列缓慢变长，也不能让它滚掉最早的那段。
+    """
+    return max(_KL_BARS_MIN, int(days) + _KL_BARS_MARGIN)
+
 
 def _fetch_tencent(tag, digits, days):
     """腾讯日线。qfqday=前复权（股票/ETF），day=不复权（债券无复权数据）。
     返回 [(date, close), ...] 升序。"""
     symbol = _symbol_of(digits, tag)
-    count = max(120, int(days) + 20)
+    count = kline_bars(days)
     errors = []
     for host, path in _TENCENT_KLINE:
         url = f"https://{host}{path}?param={symbol},day,,,{count},qfq"

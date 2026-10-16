@@ -35,7 +35,7 @@
 | 🔓 游客只读模式 | 无需登录即可浏览指定标的（`000002.SZ`）的预测与行情，不可增删 / 编辑。 |
 | 🕒 图表时间范围 | 支持「全部 / 30 / 60 / 90 / 180 / 365 天」切换，默认 30 天。 |
 | 🌗 浅 / 深色主题 | 右上角一键切换并记忆，图表配色随主题重绘，无闪烁。 |
-| 🔄 行情限频拉取 | 游客模式每天仅实际调用一次数据源；当日数据已存在则提示无需重复获取。 |
+| 🔄 行情限频拉取 | 游客模式每天仅实际调用一次数据源；当日数据已存在则提示无需重复获取。写入按品种分：场内覆盖式重写、场外合并写入（见 §4）。 |
 
 ---
 
@@ -145,6 +145,13 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 - 行情每日最多自动拉取一次，避免频繁调用数据源；
 - 不支持增删项目、录入反馈或编辑任何数据。
 
+**行情写入语义（游客与登录两条入口完全一致）** —— 见 `app.py` 的 `_resolve_days` / `_store_rows`：
+
+| 品种 | 写入方式 | 原因 |
+| --- | --- | --- |
+| 场内（股票 / 场内基金 / 债券） | **覆盖式重写**（先删后写） | 前复权价会随除权整体平移，只补新日期会让除权点两侧混着两套复权基准，曲线出现假跳空。窗口自动放宽到至少覆盖存量条数，且数据源返回条数少于存量时**跳过写入**，避免截短历史。 |
+| 场外基金 | **合并写入**（upsert 补缺 / 改值） | 净值接口一次只回一段窗口，先删后写会把窗口外的历史（可能上千条）整段丢掉。 |
+
 ---
 
 ## 七、配置说明
@@ -154,7 +161,7 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 | 游客标的代码 | `app.py` → `GUEST_STOCK_CODE` | `000002.SZ` | 游客模式公开只读的标的。 |
 | 服务端口 | `uvicorn` 启动参数 / `systemd` | `8090` | 可按需修改。 |
 | 数据库路径 | `db.py` → `DB_PATH` | `./quantweb.db` | 独立 SQLite 文件。 |
-| 行情回退顺序 | `datasource.py` | 腾讯 → 新浪 → akshare → 东方财富 | 单源失败自动切换。 |
+| 行情回退顺序 | `datasource.py` | 腾讯（proxy.finance → web.ifzq）→ akshare → 东方财富 | 品种是**第一层路由**：场内走腾讯日线、场外基金走东财净值。A 股的 akshare/东财兜底在本 VPS 必然失败，已由 `QW_DEAD_FALLBACK` 默认短路（换到有 IPv4 的机器设 `=1` 恢复）。详见《A股行情失效复盘.md》。 |
 | 主题记忆 | 浏览器 `localStorage` → `qw_theme` | `dark` | 支持 `light` / `dark`。 |
 
 ---
@@ -199,7 +206,7 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 | GET | `/api/guest/projects/{pid}` | 游客项目详情 |
 | GET | `/api/guest/projects/{pid}/chart` | 游客图表数据 |
 | GET | `/api/guest/projects/{pid}/consensus` | 游客策略共识 |
-| GET | `/api/guest/projects/{pid}/refresh` | 游客行情限频刷新（每日一次） |
+| GET | `/api/guest/projects/{pid}/refresh` | 游客行情限频刷新（每日一次）。⚠️ 是 GET 但**会写库**（写入语义同 `/api/projects/{pid}/fetch`），且免鉴权——仅对 `GUEST_STOCK_CODE` 项目生效。 |
 
 ---
 
@@ -222,15 +229,25 @@ bash deploy.sh rollback [TS]         # 回退到指定备份（默认最近一�
 
 1. **本地验证**：`py_compile` 语法检查 → `import app` → 随机端口拉起 uvicorn 冒烟（校验 `/api/health` 与首页 200），任一失败即终止，不碰线上；
 2. **生产预检**：SSH 连通性 + 部署前 `systemctl is-active` 状态；
-3. **差异比对**：`rsync --dry-run` 打印将要变更的文件；
+3. **差异比对**：md5 清单比对（`scripts/file_manifest.py`，本地/远端各算一份再 diff）打印将要变更的文件；
 4. **备份**：远端把当前版本快照到 `/opt/quant-web-releases/pre-<时间戳>`（排除 `.venv` / `quantweb.db` / `__pycache__` / `._*`，保留最近 5 份）；
-5. **同步 + 装依赖 + 重启**：`rsync` 覆盖源码，`pip install -r requirements.txt`（阿里云镜像优先），`systemctl restart quant-web`；
+5. **同步 + 装依赖 + 重启**：`tar` over `ssh` 覆盖源码（macOS 自带 openrsync 不支持 IPv6 remote 目标语法，故不用 rsync），`pip install -r requirements.txt`（阿里云镜像优先），`systemctl restart quant-web`；
 6. **健康检查 + 自动回退**：轮询 `/api/health` 最多 30 秒，失败则自动解压本次 `pre-` 快照覆盖回运行目录、重启并复检，同时打印 `journalctl` 尾部。
 
-> 备份与回退**只覆盖源码与静态资源，不动数据库**。涉及建表 / 迁移的改动，请先自行备份 `quantweb.db`。
+> 备份与回退**只覆盖源码与静态资源，不动数据库**。涉及建表 / 迁移的改动，请先自行备份 `quantweb.db`（`bash deploy.sh db-backup`）。
 
 > 静态文件（HTML / JS / CSS）免重启，改完即生效；后端改动需 `systemctl restart quant-web`。
 > 资源版本号以 `index.html` 中 `?v=N` 控制，部署后建议浏览器**硬刷新**（Cmd/Ctrl + Shift + R）。
+
+### 定时任务（VPS crontab）
+
+| 时间 | 任务 | 说明 |
+| --- | --- | --- |
+| `30 13 * * 1-5` | `/usr/bin/python3 /opt/quant-web/scripts/fetch_fund_nav.py` | 交易日收盘后自动补**场外基金**净值。窗口 365 自然日、与主系统 `fund` 口径一致；复用 `datasource.fetch_hist`（不再自带第二套取数实现）；**合并写入**不删历史，并回写 `projects.last_fetch_date` 以免网页端当天重复拉取。日志 `/var/log/quant-fundnav.log`。 |
+| `0 12 * * *` | `/opt/quant-web/scripts/db_backup.sh` | 线上库热备（`sqlite3 .backup` + `integrity_check`）。日志 `/var/log/quant-db-backup.log`。 |
+
+> **场内品种（股票 / 场内基金 / 债券）没有定时任务**，只在打开项目页时自动拉取一次（限频每日一次）。
+> 这是已知留白：无人访问则不会更新，且失败无告警。
 
 ### nginx 反向代理（服务默认仅监听 127.0.0.1:8090）
 
