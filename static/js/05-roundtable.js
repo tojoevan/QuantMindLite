@@ -76,8 +76,11 @@ async function renderRoundtable() {
           <div class="rt-index"><div class="name">累计实现盈亏</div><div class="val" id="rt-kpi-real">—</div></div>
         </div>
       </div>
-      <div class="panel"><h3>持仓总览 <span class="muted" id="rt-holdings-count"></span></h3>
-        <div class="table-wrap"><table id="rt-holdings"><thead><tr><th>标的</th><th>最新价</th><th>市值(元)</th><th>收益率</th><th>今日</th><th>系统建议</th></tr></thead><tbody></tbody></table></div>
+      <div class="panel">
+        <h3>持仓总览 <span class="muted" id="rt-holdings-count"></span><button class="btn-mini ghost" id="rt-holdings-toggle">收起</button></h3>
+        <div id="rt-holdings-body">
+          <div class="table-wrap"><table id="rt-holdings"><thead><tr><th>标的</th><th>最新价</th><th>市值(元)</th><th>收益率</th><th>今日</th><th>系统建议</th></tr></thead><tbody></tbody></table></div>
+        </div>
       </div>
       <div class="panel" id="rt-history-panel">
         <h3>历史标的与操作记录 <span class="muted" id="rt-history-count"></span><button class="btn-mini ghost" id="rt-history-toggle">收起</button></h3>
@@ -135,12 +138,8 @@ async function renderRoundtable() {
     if (!rtState.admin) { showToast("仅管理员可修改 AI 设置"); return; }
     document.getElementById("rt-settings-panel").classList.toggle("hidden");
   };
-  document.getElementById("rt-history-toggle").onclick = () => {
-    const body = document.getElementById("rt-history-body");
-    const btn = document.getElementById("rt-history-toggle");
-    const hidden = body.classList.toggle("hidden");
-    btn.textContent = hidden ? "展开" : "收起";
-  };
+  document.getElementById("rt-history-toggle").onclick = () => rtPanelFold("rt-history-body", "rt-history-toggle");
+  document.getElementById("rt-holdings-toggle").onclick = () => rtPanelFold("rt-holdings-body", "rt-holdings-toggle");
   document.getElementById("rt-seat-collapse").onclick = () => rtFoldAll(true);
   document.getElementById("rt-seat-expand").onclick = () => rtFoldAll(false);
   const addSeatToggle = document.getElementById("rt-add-seat-toggle");
@@ -352,6 +351,20 @@ function rtRenderHistory() {
       </tr>`;
     }).join("");
   }
+}
+
+// ---- 面板折叠（历史标的与操作记录 / 持仓总览）----
+// 与「席位卡折叠」刻意不同：那两个是**列表很长时的长期偏好**，按席位 id 存 localStorage；
+// 这里是「临时让位给下方内容」，状态**不持久化**，刷新/切页回来仍是展开 —— 否则用户
+// 第二天进来会以为持仓没了。force 传布尔则指定状态，省略则切换。
+function rtPanelFold(bodyId, btnId, force) {
+  const body = document.getElementById(bodyId);
+  const btn = document.getElementById(btnId);
+  if (!body || !btn) return;
+  const hidden = (typeof force === "boolean")
+    ? body.classList.toggle("hidden", force)
+    : body.classList.toggle("hidden");
+  btn.textContent = hidden ? "展开" : "收起";
 }
 
 // ---- 席位卡折叠 ----
