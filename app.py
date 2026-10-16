@@ -38,6 +38,7 @@ from models import (
     FeedbackCreate, FeedbackOut, ChartData, FetchReq, PriceOut,
     RoundtableSeatCreate, RoundtableSeatUpdate, RoundtableSeatOut,
     RoundtablePostIn, RoundtablePostOut, RoundtableSettingsIn, RoundtableGenerateReq,
+    RoundtableArchiveReq,
     ForumThreadCreate, ForumPostCreate, ForumPostOut, ForumThreadOut, ForumThreadDetail,
     NewsFeedCreate, NewsFeedUpdate, NewsFeedOut, NewsItemOut, NewsFetchReq, NewsSettingsIn,
     NewsOpmlIn, DailyReportReq, SettleReportReq,
@@ -1572,6 +1573,44 @@ def rt_submit_post(body: RoundtablePostIn, u: User = Depends(get_current_user), 
         source="manual", model="", thread_id=thread_id,
         updated_at=post.updated_at.isoformat() if post.updated_at else None,
     )
+
+
+@app.post("/api/roundtable/archive")
+def rt_archive_post(body: RoundtableArchiveReq, u: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    """补建论坛存档：把某席位某日**已录入**的观点重新同步一次。
+
+    存在意义：保存观点时的自动同步是「失败只记日志、不回滚观点」的 ——
+    观点经 `_upsert_post` 独立提交，接口照常返回成功，于是可能出现
+    「观点在库里、论坛却没有存档帖、thread_id 为空」的状态。这种状态下
+    前端连「查看存档」的入口都不显示，用户既看不到也补不了。本接口是
+    唯一的补救入口，与保存时的自动同步**共用 `_sync_roundtable_forum`**，
+    语义完全一致（幂等：已有存档且内容未变 → 不重复写，返回现有 thread_id；
+    原帖被删 → 重建并改写 thread_id）。
+
+    与保存路径的关键差别：这里**失败要如实报错**（500），因为用户是主动
+    来补的，静默返回成功等于把人再次骗过去。
+    """
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    s = db.get(RoundtableSeat, body.seat_id)
+    if not s:
+        raise HTTPException(404, "席位不存在")
+    date_s = body.date or _cn_today()
+    post = (db.query(RoundtablePost)
+            .filter(RoundtablePost.date == date_s, RoundtablePost.seat_id == body.seat_id)
+            .first())
+    if not post:
+        raise HTTPException(404, "该席位在该日期没有观点可存档")
+    try:
+        thread_id, archived = _sync_roundtable_forum(db, post, s, post.content or "")
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning("圆桌观点补建存档失败（seat=%s date=%s）：%s", body.seat_id, date_s, e)
+        raise HTTPException(500, "补建存档失败，请查看服务端日志")
+    return {"seat_id": body.seat_id, "date": date_s,
+            "thread_id": thread_id, "archived": archived}
 
 
 @app.get("/api/roundtable/settings")

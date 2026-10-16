@@ -141,6 +141,12 @@ class RoundtablePostIn(BaseModel):
     date: Optional[str] = None       # 缺省今天（北京时间）
 
 
+class RoundtableArchiveReq(BaseModel):
+    """补建论坛存档：指定席位（可选日期，缺省今天）把已录入的观点重新同步一次。"""
+    seat_id: int
+    date: Optional[str] = None
+
+
 class RoundtablePostOut(BaseModel):
     seat_id: int
     seat_name: str = ""

@@ -385,8 +385,14 @@ function rtRenderSeats() {
       actions = `<button class="btn-mini" data-copy="${s.id}">复制提示词</button>`
         + `<button class="btn-mini ghost" data-paste="${s.id}">粘贴反馈</button>`;
     }
-    // 该席位当日观点已同步到论坛 → 给一个直达存档帖的入口（后期回看历史用）
-    if (post && post.thread_id) actions += `<button class="btn-mini ghost" data-thread="${post.thread_id}">论坛存档</button>`;
+    // 已同步 → 直达存档帖（能看到观点各次修订的完整历史，卡片只留最新一层）；
+    // 未同步 → 给补建入口。命名刻意用「查看」而非「存档」：建档是保存时自动完成的，
+    // 这里只是跳转 / 补救，叫「论坛存档」会让人误以为又要手动存一次。
+    if (post && post.thread_id) {
+      actions += `<button class="btn-mini ghost" data-thread="${post.thread_id}">查看存档</button>`;
+    } else if (post) {
+      actions += `<button class="btn-mini ghost" data-archive="${s.id}" title="该观点的论坛存档未建成，点此补建">补建存档</button>`;
+    }
     const meta = post
       ? `${post.source === "auto" ? `模型 ${escapeHtml(post.model || "—")} · ` : ""}更新于 ${escapeHtml((post.updated_at || "").replace("T", " ").slice(0, 19))}`
       : "";
@@ -432,6 +438,7 @@ function rtRenderSeats() {
   wrap.querySelectorAll("[data-paste]").forEach(b => b.onclick = () => rtOpenPaste(parseInt(b.getAttribute("data-paste"), 10)));
   wrap.querySelectorAll("[data-gen]").forEach(b => b.onclick = () => rtGenerate([parseInt(b.getAttribute("data-gen"), 10)]));
   wrap.querySelectorAll("[data-thread]").forEach(b => b.onclick = () => rtOpenForumThread(parseInt(b.getAttribute("data-thread"), 10)));
+  wrap.querySelectorAll("[data-archive]").forEach(b => b.onclick = () => rtArchiveSeat(parseInt(b.getAttribute("data-archive"), 10)));
 }
 
 // 跳到该观点的论坛存档帖：先走 showView("forum") 再定位帖子——
@@ -440,6 +447,22 @@ async function rtOpenForumThread(tid) {
   if (!tid) return;
   await showView("forum");
   await fmOpenThread(tid);
+}
+
+// 补建论坛存档：保存观点时的自动同步失败是静默的（观点已独立入库、接口仍返回成功），
+// 卡片会因此既不显示「查看存档」、用户也无从察觉。这里手动补齐，与自动同步同一套语义。
+async function rtArchiveSeat(seatId) {
+  const btn = document.querySelector(`[data-archive="${seatId}"]`);
+  const label = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "补建中…"; }
+  try {
+    const r = await API("POST", "/api/roundtable/archive", { seat_id: seatId, date: rtState.date });
+    showToast(r && r.thread_id ? "已补建论坛存档" : "存档已是最新");
+    await rtRefreshPosts();       // 重渲染后按钮会变成「查看存档」，无需手工恢复
+  } catch (e) {
+    showToast("补建存档失败：" + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
 }
 
 // 卡片上内联编辑席位字段（name=AI 名称 / role=AI 角色），回车或失焦保存，Esc 取消
@@ -525,8 +548,10 @@ function rtOpenPaste(seatId) {
       const ta = document.getElementById("rt-modal-text");
       const content = (ta && ta.value || "").trim();
       if (!content) { showToast("内容不能为空"); return false; }
-      await API("POST", "/api/roundtable/posts", { seat_id: seatId, content });
-      return true;
+      const r = await API("POST", "/api/roundtable/posts", { seat_id: seatId, content });
+      // 接口在「存档失败」时仍返回成功（观点已独立落库），届时 thread_id 为空 ——
+      // 把这一点带回弹窗，好让提示如实、并引导用户去卡片上补建。
+      return { archived: !!(r && r.thread_id) };
     });
 }
 
@@ -560,10 +585,15 @@ function rtShowTextModal(title, text, hint, editable, onSave) {
       const btn = document.getElementById("rt-modal-ok");
       btn.disabled = true; btn.textContent = "保存中…";
       try {
-        const ok = await onSave();
-        if (ok !== false) {
+        const res = await onSave();
+        if (res !== false) {
           root.remove();
-          showToast("已保存到席位，并同步到论坛存档");
+          // res 为对象时带 archived 标记：存档失败不该再报「已同步」（观点本身是存好了的）
+          if (res && res.archived === false) {
+            showToast("已保存到席位，但论坛存档未同步 —— 可在卡片上点「补建存档」重试");
+          } else {
+            showToast("已保存到席位，并同步到论坛存档");
+          }
           await rtRefreshPosts();
         } else {
           btn.disabled = false; btn.textContent = "保存反馈";
@@ -595,8 +625,10 @@ async function rtGenerate(seatIds) {
     } else {
       const okCount = results.filter(x => x.ok).length;
       const fails = results.filter(x => !x.ok);
-      if (okCount && !fails.length) showToast(`已生成 ${okCount} 条观点，并同步到论坛存档`);
-      else if (okCount) showToast(`生成 ${okCount} 条（已同步论坛），失败 ${fails.length} 条：${fails[0].error || ""}`);
+      const noArch = results.filter(x => x.ok && !x.thread_id).length;   // 生成了但存档没建成
+      if (okCount && !fails.length && !noArch) showToast(`已生成 ${okCount} 条观点，并同步到论坛存档`);
+      else if (okCount && !fails.length) showToast(`已生成 ${okCount} 条观点，其中 ${noArch} 条论坛存档未同步（可在卡片上「补建存档」）`);
+      else if (okCount) showToast(`生成 ${okCount} 条（其中 ${noArch} 条未同步论坛），失败 ${fails.length} 条：${fails[0].error || ""}`);
       else showToast("生成失败：" + (fails[0] ? fails[0].error : "未知错误"));
     }
     await rtRefreshPosts();
