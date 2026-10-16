@@ -529,6 +529,40 @@ th { color: var(--muted); font-weight: 600; }
 /* 「＋ 自定义服务商」那一行用虚线区分，表示它是操作入口而非已配置项 */
 .rt-settings-add { border-style: dashed; }
 
+/* AI 设置顶部条：说明 + 「＋ 自定义服务商」入口。
+   入口必须固定在顶部——服务商有二十家上下，放列表末尾等于藏起来。 */
+.rt-settings-bar {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 10px;
+}
+.rt-settings-bar .rt-inline-note { flex: 1; min-width: 220px; }
+.rt-settings-bar code {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 0 4px; font-size: 12px;
+}
+
+/* 服务商分组小标题（国内 / 海外 / 本地 / 自定义） */
+.rt-prov-group {
+  margin: 14px 0 8px; font-size: 12px; font-weight: 600; letter-spacing: .04em;
+  color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 6px;
+}
+.rt-prov-group:first-of-type { margin-top: 4px; }
+
+/* 折叠态的一行摘要：名称 + 可达徽标 + 配置状态 + base_url + 展开按钮 */
+.rt-settings-row .rt-prov-head { align-items: center; }
+.rt-prov-name { width: 200px; flex-shrink: 0; font-weight: 600; font-size: 14px; color: var(--text); }
+.rt-prov-state {
+  flex-shrink: 0; font-size: 12px; color: var(--muted);
+  border: 1px solid var(--border); border-radius: var(--radius-pill, 999px); padding: 0 8px;
+}
+.rt-prov-state.on { color: var(--green); border-color: currentColor; }
+.rt-prov-url {
+  flex: 1; min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+}
+.rt-prov-body { display: flex; flex-direction: column; gap: 8px; }
+.rt-prov-body .row { align-items: flex-end; }
+
 @media (max-width: 768px) {
   .rt-head-actions { margin-left: 0; width: 100%; }
   .rt-page h1 { font-size: 20px; }

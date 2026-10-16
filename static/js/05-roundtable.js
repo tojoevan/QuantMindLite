@@ -5,14 +5,25 @@
 // 下表仅用于「后端数据尚未加载」时兜底渲染，字段与后端保持同名；
 // 用户在 AI 设置里自建的自定义服务商不在本表内，只来自后端。
 const RT_PROVIDERS_FALLBACK = {
-  deepseek:    { label: "DeepSeek",   base_url: "https://api.deepseek.com",                         model: "deepseek-chat" },
-  zhipu:       { label: "智谱 GLM",   base_url: "https://open.bigmodel.cn/api/paas/v4",             model: "glm-4-air" },
-  qwen:        { label: "通义千问",   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
-  doubao:      { label: "火山豆包",   base_url: "https://ark.cn-beijing.volces.com/api/v3",          model: "doubao-pro-32k" },
-  siliconflow: { label: "硅基流动",   base_url: "https://api.siliconflow.cn/v1",                    model: "Qwen/Qwen2.5-7B-Instruct" },
-  openai:      { label: "OpenAI",     base_url: "https://api.openai.com/v1",                         model: "gpt-4o-mini" },
-  openrouter:  { label: "OpenRouter", base_url: "https://openrouter.ai/api/v1",                      model: "openai/gpt-4o-mini" },
-  moonshot:    { label: "Kimi",       base_url: "https://api.moonshot.cn/v1",                        model: "moonshot-v1-8k" },
+  zhipu:       { label: "智谱 GLM",   base_url: "https://open.bigmodel.cn/api/paas/v4",             model: "glm-5.3-flash",            group: "国内" },
+  qwen:        { label: "通义千问",   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus",               group: "国内" },
+  doubao:      { label: "火山豆包",   base_url: "https://ark.cn-beijing.volces.com/api/v3",          model: "doubao-seed-2-1-pro-260915", group: "国内" },
+  deepseek:    { label: "DeepSeek",   base_url: "https://api.deepseek.com",                         model: "deepseek-flash",           group: "国内" },
+  moonshot:    { label: "Kimi 月之暗面", base_url: "https://api.moonshot.cn/v1",                     model: "kimi-k3",                 group: "国内" },
+  siliconflow: { label: "硅基流动",   base_url: "https://api.siliconflow.cn/v1",                    model: "Qwen/Qwen2.5-7B-Instruct", group: "国内" },
+  qianfan:     { label: "百度千帆 · 文心", base_url: "https://qianfan.baidubce.com/v2",              model: "ernie-5.0",               group: "国内" },
+  hunyuan:     { label: "腾讯混元",   base_url: "https://api.hunyuan.cloud.tencent.com/v1",          model: "hunyuan-turbo",           group: "国内" },
+  spark:       { label: "讯飞星火",   base_url: "https://spark-api-open.xf-yun.com/v1",              model: "4.0Ultra",                group: "国内" },
+  stepfun:     { label: "阶跃星辰",   base_url: "https://api.stepfun.com/v1",                         model: "step-3.7-flash",          group: "国内" },
+  yi:          { label: "零一万物 Yi", base_url: "https://api.lingyiwanwu.com/v1",                    model: "yi-lightning",            group: "国内" },
+  baichuan:    { label: "百川智能",   base_url: "https://api.baichuan-ai.com/v1",                     model: "Baichuan4-Turbo",         group: "国内" },
+  openai:      { label: "OpenAI",     base_url: "https://api.openai.com/v1",                          model: "gpt-4o-mini",             group: "海外" },
+  openrouter:  { label: "OpenRouter", base_url: "https://openrouter.ai/api/v1",                       model: "openai/gpt-4o-mini",      group: "海外" },
+  gemini:      { label: "Google Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", model: "gemini-3.8-flash", group: "海外" },
+  grok:        { label: "xAI Grok",   base_url: "https://api.x.ai/v1",                                model: "grok-3-mini",             group: "海外" },
+  mistral:     { label: "Mistral",    base_url: "https://api.mistral.ai/v1",                          model: "mistral-large-latest",    group: "海外" },
+  groq:        { label: "Groq",       base_url: "https://api.groq.com/openai/v1",                     model: "llama-3.3-70b-versatile", group: "海外" },
+  ollama:      { label: "Ollama（本地）", base_url: "http://127.0.0.1:11434/v1",                      model: "qwen2.5:7b",              group: "本地 / 自建" },
 };
 
 /** 当前生效的服务商表：后端下发优先，未加载时退回兜底表。 */
@@ -619,11 +630,21 @@ function rtRenderManage() {
 }
 
 // ---- AI 设置（API Key，脱敏保存） ----
+// 面板展开态。服务商有 20 家左右，全部铺开会把面板拉到三四屏，
+// 「＋ 自定义服务商」也会被挤到最下面找不到（2026-10-17 用户反馈「缺少自定义」的实因）。
+// 故：默认只展开「已配置 Key」的，其余折叠成一行；自定义入口固定在面板顶部。
+let rtProvOpen = null;      // Set<provider>；null = 尚未按「已配置」初始化过
+let rtAddFormOpen = false;  // 「＋ 自定义服务商」表单是否展开
+
 function rtRenderSettings() {
   const body = document.getElementById("rt-settings-body");
   if (!body) return;
   const provs = rtProviders();
   const cur = (rtState.settings && rtState.settings.providers) || {};
+
+  if (!rtProvOpen) {
+    rtProvOpen = new Set(Object.keys(provs).filter(p => (cur[p] || {}).configured));
+  }
 
   // 可达性徽标：本服务器只有 IPv6 出口，IPv4-only 的服务商（如 DeepSeek）配了 Key 也调不通。
   // 不把这件事显式标出来，用户只会看到「点了没反应」。
@@ -634,39 +655,76 @@ function rtRenderSettings() {
       : `<span class="rt-reach bad" title="本机连不上该域名：本服务器只有 IPv6 出口，IPv4-only 的服务商（如 DeepSeek）在此不可用，只能换服务商或走中继。">不可达</span>`;
   };
 
-  const rows = Object.entries(provs).map(([p, m]) => {
+  const rowHtml = (p, m) => {
     m = m || {};
     const c = cur[p] || m;
     const custom = m.builtin === false;
+    const open = rtProvOpen.has(p);
+    const configured = !!c.configured;
     return `
-    <div class="rt-settings-row" data-provider="${p}">
-      <div class="row">
-        <span class="rt-seat-name" style="width:190px" title="${escapeHtml(p)}">${escapeHtml(m.label || p)}${custom ? ` <span class="muted">自定义</span>` : ""} ${reachTag(m)}</span>
-        <label class="rt-field grow">base_url<input type="text" data-f="base_url" value="${escapeHtml(c.base_url || m.base_url || "")}"></label>
-        <label class="rt-field grow">model<input type="text" data-f="model" value="${escapeHtml(c.model || m.model || "")}"></label>
+    <div class="rt-settings-row${open ? " open" : ""}" data-provider="${p}">
+      <div class="row rt-prov-head">
+        <span class="rt-prov-name" title="${escapeHtml(p)}">${escapeHtml(m.label || p)}${custom ? ` <span class="muted">自定义</span>` : ""}</span>
+        ${reachTag(m)}
+        <span class="rt-prov-state${configured ? " on" : ""}">${configured ? "已配置" : "未配置"}</span>
+        <span class="rt-prov-url muted" title="${escapeHtml(c.base_url || m.base_url || "")}">${escapeHtml(c.base_url || m.base_url || "")}</span>
+        <button class="btn-mini ghost" data-toggle-prov="${p}">${open ? "收起" : (configured ? "修改" : "配置")}</button>
       </div>
-      <div class="row">
-        <label class="rt-field grow">API Key ${c.configured ? "（已配置 · 留空保存=不修改）" : "（未配置）"}
-          <input type="password" data-f="api_key" autocomplete="new-password" placeholder="${c.configured ? "已配置，输入新值可覆盖" : "sk-..."}">
-        </label>
-        <button class="btn-mini" data-save-settings="${p}">保存</button>
-        ${c.configured ? `<button class="btn-mini danger" data-clear-settings="${p}">清除 Key</button>` : ""}
-        ${custom ? `<button class="btn-mini danger" data-del-settings="${p}">删除</button>` : ""}
+      <div class="rt-prov-body${open ? "" : " hidden"}">
+        <div class="row">
+          <label class="rt-field grow">base_url<input type="text" data-f="base_url" value="${escapeHtml(c.base_url || m.base_url || "")}"></label>
+          <label class="rt-field grow">model<input type="text" data-f="model" value="${escapeHtml(c.model || m.model || "")}"></label>
+        </div>
+        <div class="row">
+          <label class="rt-field grow">API Key ${configured ? "（已配置 · 留空保存=不修改）" : "（未配置）"}
+            <input type="password" data-f="api_key" autocomplete="new-password" placeholder="${configured ? "已配置，输入新值可覆盖" : "sk-..."}">
+          </label>
+          <button class="btn-mini" data-save-settings="${p}">保存</button>
+          ${configured ? `<button class="btn-mini danger" data-clear-settings="${p}">清除 Key</button>` : ""}
+          ${custom ? `<button class="btn-mini danger" data-del-settings="${p}">删除</button>` : ""}
+        </div>
       </div>
     </div>`;
-  }).join("");
+  };
+
+  // 分组：顺序以后端下发的 groups 为准，未知分组按出现顺序补在后面
+  const order = ((rtState.settings && rtState.settings.groups) || ["国内", "海外", "本地 / 自建", "自定义"]).slice();
+  const byGroup = {};
+  Object.entries(provs).forEach(([p, m]) => {
+    const g = (m && m.group) || "自定义";
+    (byGroup[g] = byGroup[g] || []).push([p, m]);
+  });
+  Object.keys(byGroup).forEach(g => { if (order.indexOf(g) < 0) order.push(g); });
+  const rows = order.filter(g => byGroup[g] && byGroup[g].length).map(g => `
+    <div class="rt-prov-group">${escapeHtml(g)}<span class="muted"> ${byGroup[g].length} 家</span></div>
+    ${byGroup[g].map(([p, m]) => rowHtml(p, m)).join("")}`).join("");
+
+  const bar = `
+    <div class="rt-settings-bar">
+      <span class="rt-inline-note">协议为 OpenAI 兼容的 <code>/chat/completions</code>。默认只展开已配置的服务商，点「配置」展开填写；Key 仅存于服务器本地数据库，页面任何情况不回显。</span>
+      <button class="btn-mini ghost" id="rt-add-provider-toggle">＋ 自定义服务商</button>
+    </div>`;
 
   const addRow = `
-    <div class="rt-settings-row rt-settings-add">
+    <div class="rt-settings-row rt-settings-add${rtAddFormOpen ? "" : " hidden"}" id="rt-add-provider-form">
       <div class="row">
-        <label class="rt-field" style="width:190px">＋ 自定义服务商<input type="text" id="rt-new-provider" placeholder="名称，如 myllm"></label>
+        <label class="rt-field" style="width:190px">服务商名称<input type="text" id="rt-new-provider" placeholder="字母数字_-，如 myllm"></label>
         <label class="rt-field grow">base_url<input type="text" id="rt-new-baseurl" placeholder="https://api.example.com/v1"></label>
         <label class="rt-field grow">model<input type="text" id="rt-new-model" placeholder="留空则需在席位里指定"></label>
         <button class="btn-mini" id="rt-add-provider">添加</button>
       </div>
     </div>`;
 
-  body.innerHTML = rows + addRow + `<p class="rt-inline-note">协议为 OpenAI 兼容的 <code>/chat/completions</code>：内置常见服务商，也可用上方「＋ 自定义服务商」接入任意同类服务（填名称 + base_url + model，名称只作区分）。Key 仅存于服务器本地数据库，页面任何情况不回显；清除 Key 后自动席位将无法生成。<br>「可达」= 本服务器能否直连该域名。本机只有 IPv6 出口，标「本机不可达」的服务商即使配好 Key 也无法生成。</p>`;
+  body.innerHTML = bar + addRow + rows +
+    `<p class="rt-inline-note">「可达」= 本服务器能否直连该 base_url 的主机端口。本机只有 IPv6 出口，标「本机不可达」的服务商即使配好 Key 也无法生成，需换服务商或走中继。<br>模型名各厂商改版较快，可直接在展开行里改成当前可用的型号；任何 OpenAI 兼容服务都可用上方「＋ 自定义服务商」接入（填名称 + base_url + model）。</p>`;
+
+  // 折叠 / 展开（重渲染而非就地显隐：折叠态统一由 rtProvOpen 决定，避免有输入值时状态错位）
+  body.querySelectorAll("[data-toggle-prov]").forEach(b => b.onclick = () => {
+    const p = b.getAttribute("data-toggle-prov");
+    if (rtProvOpen.has(p)) rtProvOpen.delete(p); else rtProvOpen.add(p);
+    rtRenderSettings();
+  });
+
   body.querySelectorAll("[data-save-settings]").forEach(b => b.onclick = async () => {
     const row = b.closest(".rt-settings-row");
     const provider = b.getAttribute("data-save-settings");
@@ -700,10 +758,24 @@ function rtRenderSettings() {
     if (!confirm(`确认删除自定义服务商「${provider}」？其 base_url / model / Key 将一并清除。`)) return;
     try {
       await API("PUT", "/api/roundtable/settings", { provider, delete: true });
+      rtProvOpen.delete(provider);
       showToast("已删除");
       await rtReloadSettings();
     } catch (e) { showToast("删除失败：" + e.message); }
   });
+
+  // 自定义服务商表单由顶部按钮控制显隐
+  const addToggle = document.getElementById("rt-add-provider-toggle");
+  if (addToggle) addToggle.onclick = () => {
+    rtAddFormOpen = !rtAddFormOpen;
+    const form = document.getElementById("rt-add-provider-form");
+    if (form) form.classList.toggle("hidden", !rtAddFormOpen);
+    addToggle.textContent = rtAddFormOpen ? "收起自定义入口" : "＋ 自定义服务商";
+    if (rtAddFormOpen) {
+      const n = document.getElementById("rt-new-provider");
+      if (n) n.focus();
+    }
+  };
 
   // 新增自定义服务商：后端要求必须带 base_url（自定义项没有内置默认值）
   const addBtn = document.getElementById("rt-add-provider");
@@ -714,6 +786,7 @@ function rtRenderSettings() {
     if (!name || !bu) { showToast("请填写服务商名称与 base_url"); return; }
     try {
       await API("PUT", "/api/roundtable/settings", { provider: name, base_url: bu, model: md });
+      if (rtProvOpen) rtProvOpen.add(name);      // 新增后直接展开，方便接着填 Key
       showToast(`已添加「${name}」，请再填入它的 API Key`);
       await rtReloadSettings();
     } catch (e) { showToast("添加失败：" + e.message); }

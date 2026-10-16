@@ -1059,32 +1059,65 @@ DEFAULT_SEATS = [
 #   openai → **403 unsupported_country_region_territory**：网络通，但按地区拒绝中国 IP，
 #            故实际不可用；保留只为完整性，以及将来换机房/加代理时能用
 #   deepseek / moonshot → Name or service not known（本机无 AAAA，必然失败）
+# 内置服务商：**必须**是 OpenAI 兼容的 /chat/completions 协议（见 llm.py）。
+# 字段：label 中文名 / base_url 默认接口根 / model 默认模型 / host 可达性探测目标
+#      （默认不带端口 = 443；本地自建可写 host:port）/ group 设置页分组。
+# model 只是默认值，厂商改版较快，设置页里可随时改；不要在这里放易过期的型号为主推。
 PROVIDER_DEFAULTS = {
-    "deepseek":    {"label": "DeepSeek",   "base_url": "https://api.deepseek.com",
-                    "model": "deepseek-chat", "host": "api.deepseek.com"},
+    # ---- 国内 ----
     "zhipu":       {"label": "智谱 GLM",   "base_url": "https://open.bigmodel.cn/api/paas/v4",
-                    "model": "glm-4-air", "host": "open.bigmodel.cn"},
+                    "model": "glm-5.3-flash", "host": "open.bigmodel.cn", "group": "国内"},
     "qwen":        {"label": "通义千问",   "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                    "model": "qwen-plus", "host": "dashscope.aliyuncs.com"},
+                    "model": "qwen-plus", "host": "dashscope.aliyuncs.com", "group": "国内"},
     "doubao":      {"label": "火山豆包",   "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-                    "model": "doubao-pro-32k", "host": "ark.cn-beijing.volces.com"},
+                    "model": "doubao-seed-2-1-pro-260915", "host": "ark.cn-beijing.volces.com", "group": "国内"},
+    "deepseek":    {"label": "DeepSeek",   "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-flash", "host": "api.deepseek.com", "group": "国内"},
+    "moonshot":    {"label": "Kimi 月之暗面", "base_url": "https://api.moonshot.cn/v1",
+                    "model": "kimi-k3", "host": "api.moonshot.cn", "group": "国内"},
     "siliconflow": {"label": "硅基流动",   "base_url": "https://api.siliconflow.cn/v1",
-                    "model": "Qwen/Qwen2.5-7B-Instruct", "host": "api.siliconflow.cn"},
+                    "model": "Qwen/Qwen2.5-7B-Instruct", "host": "api.siliconflow.cn", "group": "国内"},
+    "qianfan":     {"label": "百度千帆 · 文心", "base_url": "https://qianfan.baidubce.com/v2",
+                    "model": "ernie-5.0", "host": "qianfan.baidubce.com", "group": "国内"},
+    "hunyuan":     {"label": "腾讯混元",   "base_url": "https://api.hunyuan.cloud.tencent.com/v1",
+                    "model": "hunyuan-turbo", "host": "api.hunyuan.cloud.tencent.com", "group": "国内"},
+    "spark":       {"label": "讯飞星火",   "base_url": "https://spark-api-open.xf-yun.com/v1",
+                    "model": "4.0Ultra", "host": "spark-api-open.xf-yun.com", "group": "国内"},
+    "stepfun":     {"label": "阶跃星辰",   "base_url": "https://api.stepfun.com/v1",
+                    "model": "step-3.7-flash", "host": "api.stepfun.com", "group": "国内"},
+    "yi":          {"label": "零一万物 Yi", "base_url": "https://api.lingyiwanwu.com/v1",
+                    "model": "yi-lightning", "host": "api.lingyiwanwu.com", "group": "国内"},
+    "baichuan":    {"label": "百川智能",   "base_url": "https://api.baichuan-ai.com/v1",
+                    "model": "Baichuan4-Turbo", "host": "api.baichuan-ai.com", "group": "国内"},
+    # ---- 海外 ----
     "openai":      {"label": "OpenAI",     "base_url": "https://api.openai.com/v1",
-                    "model": "gpt-4o-mini", "host": "api.openai.com"},
+                    "model": "gpt-4o-mini", "host": "api.openai.com", "group": "海外"},
     "openrouter":  {"label": "OpenRouter", "base_url": "https://openrouter.ai/api/v1",
-                    "model": "openai/gpt-4o-mini", "host": "openrouter.ai"},
-    "moonshot":    {"label": "Kimi",       "base_url": "https://api.moonshot.cn/v1",
-                    "model": "moonshot-v1-8k", "host": "api.moonshot.cn"},
+                    "model": "openai/gpt-4o-mini", "host": "openrouter.ai", "group": "海外"},
+    "gemini":      {"label": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                    "model": "gemini-3.8-flash", "host": "generativelanguage.googleapis.com", "group": "海外"},
+    "grok":        {"label": "xAI Grok",   "base_url": "https://api.x.ai/v1",
+                    "model": "grok-3-mini", "host": "api.x.ai", "group": "海外"},
+    "mistral":     {"label": "Mistral",    "base_url": "https://api.mistral.ai/v1",
+                    "model": "mistral-large-latest", "host": "api.mistral.ai", "group": "海外"},
+    "groq":        {"label": "Groq",       "base_url": "https://api.groq.com/openai/v1",
+                    "model": "llama-3.3-70b-versatile", "host": "api.groq.com", "group": "海外"},
+    # ---- 本地 / 自建（host 带端口，探测按实际端口而不是 443）----
+    "ollama":      {"label": "Ollama（本地）", "base_url": "http://127.0.0.1:11434/v1",
+                    "model": "qwen2.5:7b", "host": "127.0.0.1:11434", "group": "本地 / 自建"},
 }
+
+# 设置页分组显示顺序（自定义服务商固定排最后）
+PROVIDER_GROUPS = ["国内", "海外", "本地 / 自建"]
+CUSTOM_GROUP = "自定义"
 
 # 自定义服务商名称规则：允许字母数字下划线连字符，长度 1~32。
 # 既是安全边界（该名会被拼进 settings 的 key），也留足了自定义空间。
 _PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
-_reach_cache: dict = {}      # {host: (探测时间戳, 是否可达)}
+_reach_cache: dict = {}      # {"host:port": (探测时间戳, 是否可达)}
 _REACH_TTL = 300             # 秒。避免每次进设置页都全量重探
-_REACH_TIMEOUT = 2.0         # 秒。可达的通常百毫秒内握手，2 秒够用
+_REACH_TIMEOUT = 1.5         # 秒。实测可达域名握手 0.02~0.7s，1.5 秒足够且不拖慢设置页
 
 
 def _host_of(url: str) -> str:
@@ -1095,26 +1128,53 @@ def _host_of(url: str) -> str:
         return ""
 
 
-def _host_reachable(host: str) -> bool:
-    """探测本机能否与 `host:443` 建连（带 5 分钟缓存）。
+def _reach_target(base_url: str, hint: str = "") -> tuple:
+    """探测目标 (host, port)：**以实际 base_url 为准**，hint 仅在 base_url 为空时兜底。
+
+    以 base_url 为准很关键：用户在设置页把某个服务商改指到别处（代理 / 内网网关）后，
+    要探的必须是新地址；本地自建（如 http://127.0.0.1:11434/v1）也只有按 base_url
+    才能拿到真实端口——写死 443 会恒判「不可达」。
+    """
+    u = urlparse((base_url or "").strip())
+    host = u.hostname or ""
+    try:
+        port = u.port or 0
+    except ValueError:          # 端口不合法（如 :abc）时当作没写
+        port = 0
+    if not host:
+        hint = (hint or "").strip()
+        if ":" in hint:
+            h, _, p = hint.rpartition(":")
+            if p.isdigit():
+                return h, int(p)
+        return hint, 443
+    if not port:
+        port = 443 if (u.scheme or "https").lower() == "https" else 80
+    return host, port
+
+
+def _host_reachable(target) -> bool:
+    """探测本机能否与 (host, port) 建连（带 5 分钟缓存）。
 
     刻意走 `socket.create_connection`：与 `llm.chat_complete` 是**同一套解析路径**
     （llm.py 在导入时把 getaddrinfo 固定成 AF_INET6），所以探测结果就等于真实可用性，
     IPv4-only 的域名在这里会因无 AAAA 而立刻失败，不会给出假阳性。
     只做 TCP 握手，不发业务请求、不带 Key。
     """
+    host, port = target
     if not host:
         return False
+    key = f"{host}:{port}"
     now = time.time()
-    hit = _reach_cache.get(host)
+    hit = _reach_cache.get(key)
     if hit and now - hit[0] < _REACH_TTL:
         return hit[1]
     try:
-        with socket.create_connection((host, 443), timeout=_REACH_TIMEOUT):
+        with socket.create_connection((host, port), timeout=_REACH_TIMEOUT):
             ok = True
     except Exception:
         ok = False
-    _reach_cache[host] = (now, ok)
+    _reach_cache[key] = (now, ok)
     return ok
 
 
@@ -1485,35 +1545,37 @@ def rt_submit_post(body: RoundtablePostIn, u: User = Depends(get_current_user), 
 def rt_get_settings(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """LLM 设置（脱敏）：返回**内置 + 自定义**提供方的配置状态，绝不回传 Key 本身。
 
-    额外下发 `reachable`（本机到该 host:443 的 TCP 可达性），供设置页提示
+    额外下发 `reachable`（本机到该 base_url 对应 host:port 的 TCP 可达性），供设置页提示
     「这台机器连不上」——本 VPS 只有 IPv6 出口，IPv4-only 的服务商（如 DeepSeek）
     在此必然失败，不提示的话用户只会看到「点了没反应」。
-    探测并发执行且带 5 分钟缓存：首次打开最坏约 2 秒，之后瞬时返回。
+    同时下发 `group`（国内 / 海外 / 本地 / 自定义），设置页据此分组显示。
+    探测并发执行且带 5 分钟缓存：首次打开典型 <1 秒，之后瞬时返回。
     """
     if not u.is_admin:
         raise HTTPException(403, "forbidden")
     names = _known_providers(db)
     confs = {n: _get_llm_conf(db, n) for n in names}
-    hosts = {}
+    targets = {}
     for n in names:
         dflt = PROVIDER_DEFAULTS.get(n) or {}
-        hosts[n] = dflt.get("host") or _host_of(confs[n]["base_url"])
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(names)))) as ex:
-        reach = dict(zip(names, ex.map(_host_reachable, [hosts[n] for n in names])))
+        targets[n] = _reach_target(confs[n]["base_url"], dflt.get("host", ""))
+    with ThreadPoolExecutor(max_workers=min(12, max(1, len(names)))) as ex:
+        reach = dict(zip(names, ex.map(_host_reachable, [targets[n] for n in names])))
     providers = {}
     for n in names:
         dflt = PROVIDER_DEFAULTS.get(n) or {}
         conf = confs[n]
         providers[n] = {
             "label": dflt.get("label") or n,
+            "group": dflt.get("group") or CUSTOM_GROUP,
             "builtin": n in PROVIDER_DEFAULTS,
             "configured": bool(conf["api_key"]),
             "base_url": conf["base_url"],
             "model": conf["model"] or dflt.get("model", ""),
-            "host": hosts[n],
+            "host": _host_of(conf["base_url"]) or (dflt.get("host") or ""),
             "reachable": reach.get(n, False),
         }
-    return {"providers": providers}
+    return {"providers": providers, "groups": PROVIDER_GROUPS + [CUSTOM_GROUP]}
 
 
 @app.put("/api/roundtable/settings")

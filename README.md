@@ -222,7 +222,7 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 | GET | `/api/roundtable/history` | 历史标的与仓位操作记录 |
 | GET | `/api/roundtable/prompt?seat_id=` | 生成该席位今日提示词（手动通道复制用） |
 | GET / POST | `/api/roundtable/posts` | 当日各席位观点 / **手动粘贴回填**（覆盖当日该席位观点） |
-| GET | `/api/roundtable/settings` | 管理员：LLM 服务商配置状态（含 `reachable` 本机可达性） |
+| GET | `/api/roundtable/settings` | 管理员：LLM 服务商配置状态（含 `group` 分组、`reachable` 本机可达性） |
 | PUT | `/api/roundtable/settings` | 管理员：保存某服务商配置。`api_key: ""` = 清 Key；`delete: true` = 删自定义服务商（内置项拒绝） |
 | POST | `/api/roundtable/generate` | 管理员：对 `mode=auto` 的席位并发调 LLM 生成今日观点 |
 
@@ -277,16 +277,27 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 > 补数**直接复用网页端 `app.fetch_prices`**（同一函数），窗口口径、覆盖式/合并式写入语义、
 > 缩水守卫、`last_fetch_date` 限频全部一致 —— 不另造一套拉取实现。单只失败只记 warn，不阻断日报。
 
-> **服务商清单的唯一数据源**是 `app.py → PROVIDER_DEFAULTS`（内置 8 家），由
-> `GET /api/roundtable/settings` 一并下发（前端不再硬编码）。除内置项，还可用
+> **服务商清单的唯一数据源**是 `app.py → PROVIDER_DEFAULTS`（内置 19 家），由
+> `GET /api/roundtable/settings` 一并下发（前端不再硬编码），每项带 `group`
+> （国内 / 海外 / 本地 · 自建 / 自定义），设置页据此分组。除内置项，还可用
 > `PUT` 自建任意 OpenAI 兼容服务商：名称须匹配 `[A-Za-z0-9_-]{1,32}` 且**必须自带 `base_url`**
-> （自定义项没有内置默认值）。
+> （自定义项没有内置默认值）。自定义项固定归入「自定义」分组，入口固定在设置页顶部。
+>
+> 内置分组：**国内 12 家**（智谱 GLM、通义千问、火山豆包、DeepSeek、Kimi、硅基流动、
+> 百度千帆·文心、腾讯混元、讯飞星火、阶跃星辰、零一万物、百川）· **海外 6 家**
+> （OpenAI、OpenRouter、Google Gemini、xAI Grok、Mistral、Groq）· **本地 1 家**（Ollama）。
+> `model` 只是**默认值**，各厂商改版较快，设置页里可随时改；协议一律是 OpenAI 兼容的
+> `/chat/completions`（所以 Anthropic 原生接口这类不在此列，要用得自己套一层网关）。
 >
 > ⚠️ **本 VPS 只有 IPv6 出口**，所以只有域名带真 AAAA 的服务商才连得上。`GET` 返回的
-> `reachable` 即本机到该 host:443 的 TCP 连通性（带 5 分钟缓存），设置页据此标「可达 / 不可达」。
-> 2026-10-17 用假 Key 实测：`zhipu` / `qwen` / `doubao` / `siliconflow` / `openrouter` 返回
-> 401 鉴权错（链路正常，只差 Key）；`deepseek` / `moonshot` 因无 AAAA 直接失败；
-> `openai` 网络可达但被**按地区拒绝**（403 `unsupported_country_region_territory`），中国大陆 IP 实际不可用。
+> `reachable` 即本机到该 **base_url 对应 host:port** 的 TCP 连通性（带 5 分钟缓存），
+> 设置页据此标「可达 / 不可达」。按 base_url 取端口是刻意的：本地自建（如 Ollama 的
+> `http://127.0.0.1:11434/v1`）写死 443 会恒判不可达。
+> 2026-10-17 在本机实测连通性：**可达** `qianfan` / `stepfun` / `yi` / `baichuan` /
+> `gemini` / `grok`（api.x.ai）/ `mistral` / `groq` / 以及原有的 `zhipu` / `qwen` / `doubao` /
+> `siliconflow` / `openrouter` / `openai`；**不可达（无 AAAA）** `deepseek` / `moonshot` /
+> `hunyuan` / `spark`。另注：`openai` 虽然连得上，但被**按地区拒绝**
+> （403 `unsupported_country_region_territory`），中国大陆出口实际用不了。
 
 **资讯工作台**
 
