@@ -38,6 +38,7 @@
 | 🔄 行情限频拉取 | 游客模式每天仅实际调用一次数据源；当日数据已存在则提示无需重复获取。写入按品种分：场内覆盖式重写、场外合并写入（见 §4）。 |
 | 📰 资讯工作台（首页） | RSS / Atom 订阅驱动的资讯流：日期分组、区间与分类筛选、搜索、收藏；订阅源可增删启停、单个抓取，并支持 **OPML 批量导入**。抓取统一走 Cloudflare 中继（见 §8）。 |
 | 🗣 圆桌讨论 | 多 AI 席位（手动回填提示词 / LLM Key 自动）各自给出每日观点；**观点保存时自动在论坛建档一条存档帖**，方便后期回看历史与修订过程（见 §8）。 |
+| 📮 每日持仓日报 | 每交易日 22:00 自动把「总览 / 大盘指数 / 持仓明细 / 近期操作」总结成一篇帖子发到论坛（署名「系统日报」，`author_type=system`）；仪表台页头可手动补发。每天固定一帖，内容没变不重复写（见 §8）。 |
 
 ---
 
@@ -95,7 +96,7 @@ quant-web/
 ├── datasource.py     # 行情多源回退抓取（前复权）
 ├── requirements.txt  # 依赖：fastapi / uvicorn / sqlalchemy / pydantic / akshare
 ├── deploy.sh         # 部署 / 运维工具：本地验证 → 线上备份 → 同步 → 重启 → 健康检查（失败自动回退）
-├── scripts/          # 运维脚本：db_backup.sh / fetch_fund_nav.py（基金补数）/ sync_roundtable_forum.py（圆桌观点回填论坛存档）
+├── scripts/          # 运维脚本：db_backup.sh / fetch_fund_nav.py（基金补数）/ sync_roundtable_forum.py（圆桌观点回填论坛存档）/ daily_report.py（每日持仓日报）
 └── static/
     ├── index.html    # 单页应用骨架（顶栏：关于 / 用户管理 / GitHub / 主题切换）
     ├── app.js        # 前端逻辑：登录、项目、图表、游客、主题
@@ -244,6 +245,38 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 > /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/sync_roundtable_forum.py
 > ```
 
+**每日持仓日报**
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/report/daily` | 管理员：生成当日持仓日报并发布到论坛；返回 `created` / `unchanged` / `skipped` 三态与 `thread_id` |
+
+> **日报 → 论坛（2026-10-17 起）**：把「仓位、收益变化 + 大盘指数」算成一篇帖子发到论坛，
+> 方便日后回看。与圆桌存档帖的分工：圆桌存档是**搬运**（席位观点原样落到论坛），
+> 日报是**算出来的新内容**；与交易仪表台的分工：仪表台看「此刻持仓」，日报看「较上一期变了多少」。
+>
+> - **身份**：`author_type=system`（署名「系统日报」+「自动」徽章），不占用任何 AI 席位，
+>   也不计入论坛的「Agent 参与数」；只有管理员能删。
+> - **节奏**：定时任务每交易日 22:00（北京时间）自动发布 —— 之所以不是收盘就发，是因为
+>   持仓 13/16 是场外基金，净值要到 19:00–22:00 才由基金公司陆续披露（QDII 更是 T+1/T+2）。
+> - **幂等**：`daily_reports` 表以日期为主键，**每天固定一个主题帖**（标题 `【日报】YYYY-MM-DD · 持仓与收益`）。
+>   正文与帖内最后一层一致 → **不写**；有变化 → 在**同一帖追加一层**并标注 `（第 N 次更新 · 北京时间）`。
+>   帖子被删后再发布会自动重建。所以定时任务重跑、当天补数后再跑都不会刷屏，同时保留修订痕迹。
+> - **收益口径**：`equity = 已实现盈亏 + 持仓浮盈`，与项目页盈亏曲线**同源**
+>   （唯一实现 `app._pnl_curve`，两处共用，避免数字对不上）。买入不计入收益、卖出把浮盈转为已实现，
+>   因此「本期变化」**不含新增投入的本金**；各标的最新行情日期不一致时基准标「按各标的最新一期行情」。
+> - **无持仓时不发布**（返回 `skipped`），避免每天刷一条空帖。
+> - 手动补发 / 重发：仪表台页头「发布日报到论坛」按钮，或下面的脚本。
+
+> 日报脚本（定时任务与人工共用；`--no-fetch` 离线调试、`--date` 补发指定日期）：
+> ```bash
+> /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/daily_report.py --dry-run --no-fetch
+> /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/daily_report.py            # 先补行情再发布
+> /opt/quant-web/.venv/bin/python /opt/quant-web/scripts/daily_report.py --date 2026-10-16
+> ```
+> 补数**直接复用网页端 `app.fetch_prices`**（同一函数），窗口口径、覆盖式/合并式写入语义、
+> 缩水守卫、`last_fetch_date` 限频全部一致 —— 不另造一套拉取实现。单只失败只记 warn，不阻断日报。
+
 > **服务商清单的唯一数据源**是 `app.py → PROVIDER_DEFAULTS`（内置 8 家），由
 > `GET /api/roundtable/settings` 一并下发（前端不再硬编码）。除内置项，还可用
 > `PUT` 自建任意 OpenAI 兼容服务商：名称须匹配 `[A-Za-z0-9_-]{1,32}` 且**必须自带 `base_url`**
@@ -322,8 +355,12 @@ bash deploy.sh rollback [TS]         # 回退到指定备份（默认最近一�
 
 | 时间 | 任务 | 说明 |
 | --- | --- | --- |
+| `0 14 * * 1-5` | `/opt/quant-web/.venv/bin/python /opt/quant-web/scripts/daily_report.py` | 每**交易日 22:00**（北京时间）自动发布「每日持仓日报」到论坛。先补最新行情（复用 `app.fetch_prices`），再生成并发布；每天固定一帖、内容没变不重写、无持仓则跳过。日志 `/var/log/quant-daily-report.log`。 |
 | `30 13 * * 1-5` | `/usr/bin/python3 /opt/quant-web/scripts/fetch_fund_nav.py` | 交易日收盘后自动补**场外基金**净值。窗口 365 自然日、与主系统 `fund` 口径一致；复用 `datasource.fetch_hist`（不再自带第二套取数实现）；**合并写入**不删历史，并回写 `projects.last_fetch_date` 以免网页端当天重复拉取。日志 `/var/log/quant-fundnav.log`。 |
 | `0 12 * * *` | `/opt/quant-web/scripts/db_backup.sh` | 线上库热备（`sqlite3 .backup` + `integrity_check`）。日志 `/var/log/quant-db-backup.log`。 |
+
+> ⚠️ **crontab 表达式的时区是服务器时区 `Etc/UTC`**（不是北京时间）：`30 13 * * 1-5` = 北京 21:30、
+> `0 14 * * 1-5` = 北京 22:00。写定时任务时用 `date -u` 对齐，别按本机时间直接填。
 
 > **场内品种（股票 / 场内基金 / 债券）没有定时任务**，只在打开项目页时自动拉取一次（限频每日一次）。
 > 这是已知留白：无人访问则不会更新，且失败无告警。

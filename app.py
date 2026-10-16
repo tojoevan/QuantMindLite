@@ -31,7 +31,7 @@ from db import (
     engine, SessionLocal, Project, MarketPrice, Prediction, Feedback,
     User, Session as SessionModel, PasswordResetRequest,
     RoundtableSeat, RoundtablePost, ForumThread, ForumPost, Setting,
-    NewsFeed, NewsItem,
+    NewsFeed, NewsItem, DailyReport,
 )
 from models import (
     ProjectCreate, ProjectOut, ProjectUpdate, PricePoint, PredictionCreate, PredictionOut,
@@ -40,7 +40,7 @@ from models import (
     RoundtablePostIn, RoundtablePostOut, RoundtableSettingsIn, RoundtableGenerateReq,
     ForumThreadCreate, ForumPostCreate, ForumPostOut, ForumThreadOut, ForumThreadDetail,
     NewsFeedCreate, NewsFeedUpdate, NewsFeedOut, NewsItemOut, NewsFetchReq, NewsSettingsIn,
-    NewsOpmlIn,
+    NewsOpmlIn, DailyReportReq,
 )
 from predictor import run_strategy, STRATEGY_CATALOG, rolling_predict, forecast_future
 from datasource import (
@@ -287,6 +287,42 @@ def _holding_initial(fbs, cur_shares, cur_cost):
         elif f.action == "SELL" and (f.qty or 0) > 0:
             s = s + f.qty  # 卖出不改变成本基准
     return s, avg
+
+
+def _pnl_curve(mps, fbs, init_shares, init_cost):
+    """逐日 mark-to-market 收益曲线：`equity = 已实现盈亏 + 持仓浮盈`。
+
+    **必须唯一定义**：项目页盈亏曲线（_build_chart）与每日持仓日报的「收益变化」
+    都取这一段结果，两处口径一旦分家，日报的数字就会和项目页曲线对不上。
+
+    性质：买入不改变 equity（新份额按买入价入账、浮盈为 0），卖出把浮盈转为已实现
+    （equity 连续），因此相邻两点的差就是**真实收益变化**，不包含新增投入的本金。
+
+    返回 [{"date","pnl","pct"}, ...]，与行情日期一一对应。
+    """
+    shares, avg, realized = float(init_shares or 0.0), float(init_cost or 0.0), 0.0
+    fs = sorted(fbs, key=lambda f: (f.date, f.id))
+    fi = 0
+    out = []
+    for mp in mps:
+        while fi < len(fs) and fs[fi].date <= mp.date:
+            f = fs[fi]
+            if f.action == "BUY" and (f.qty or 0) > 0:
+                ns = shares + f.qty
+                if ns > 0:
+                    avg = (avg * shares + f.price * f.qty) / ns
+                shares = ns
+            elif f.action == "SELL" and (f.qty or 0) > 0:
+                sq = min(f.qty, shares)
+                realized += (f.price - avg) * sq
+                shares -= sq
+                if shares <= 1e-9:
+                    shares, avg = 0.0, 0.0
+            fi += 1
+        equity = realized + shares * (mp.close - avg)
+        pct = round(((mp.close - avg) / avg) * 100, 2) if shares > 1e-9 and avg > 1e-9 else None
+        out.append({"date": mp.date, "pnl": round(equity, 2), "pct": pct})
+    return out
 
 
 # ---------------- 健康检查 ----------------
@@ -787,30 +823,8 @@ def _build_chart(p, db):
     )
 
     # pnl 曲线：按行情日期 mark-to-market（以建仓起点为基准，正向重放反馈）
-    shares = init_s
-    avg = init_c
-    realized = 0.0
-    fb_sorted = sorted(fbs, key=lambda f: (f.date, f.id))
-    fi = 0
-    pnl_curve = []
-    for mp in mps:
-        while fi < len(fb_sorted) and fb_sorted[fi].date <= mp.date:
-            f = fb_sorted[fi]
-            if f.action == "BUY" and f.qty > 0:
-                ns = shares + f.qty
-                if ns > 0:
-                    avg = (avg * shares + f.price * f.qty) / ns
-                shares = ns
-            elif f.action == "SELL" and f.qty > 0:
-                sq = min(f.qty, shares)
-                realized += (f.price - avg) * sq
-                shares -= sq
-                if shares <= 1e-9:
-                    shares, avg = 0.0, 0.0
-            fi += 1
-        equity = realized + shares * (mp.close - avg)
-        pct = round(((mp.close - avg) / avg) * 100, 2) if shares > 1e-9 and avg > 1e-9 else None
-        pnl_curve.append({"date": mp.date, "pnl": round(equity, 2), "pct": pct})
+    # 唯一实现见 _pnl_curve —— 每日持仓日报复用同一段，保证两处口径一致
+    pnl_curve = _pnl_curve(mps, fbs, init_s, init_c)
 
     # 持仓面板补充：最新价、市值、浮动盈亏、种子仓位
     latest_close = mps[-1].close if mps else None
@@ -1631,6 +1645,11 @@ FM_MAX_TITLE = 200
 FM_MAX_CONTENT = 20000
 FM_EXCERPT_LEN = 120
 
+# 系统身份（author_type="system"）：目前只有「每日持仓日报」使用。
+# 刻意不复用 agent —— 它没有对应席位，混进席位体系会让「Agent 参与数」等统计失真。
+FM_SYSTEM_NAME = "系统日报"
+FM_SYSTEM_ROLE = "自动"
+
 # ---- 圆桌观点 → 论坛存档（方便后期回看历史信息）----
 # 由圆桌的两个写入口调用：rt_submit_post（手动粘贴回填）、rt_generate（LLM 自动生成）。
 # 存档语义**刻意与圆桌不同**：圆桌是「每个席位每天一条、重复提交覆盖」，
@@ -1692,11 +1711,13 @@ def _forum_identity(u: User, author_type: str, seat_id: Optional[int], db: Sessi
 
 
 def _forum_author(db: Session, author_type: str, author_id: Optional[int]):
-    """身份 → (显示名, AI 角色)。用户取邮箱前缀；Agent 取席位名与角色。
+    """身份 → (显示名, AI 角色)。用户取邮箱前缀；Agent 取席位名与角色；system 为固定署名。
 
     读取时实时解析（不存快照），因此席位改名会同步体现在历史发言上；
     席位/用户被删除时给出兜底显示名，不报错。
     """
+    if (author_type or "user") == "system":
+        return FM_SYSTEM_NAME, FM_SYSTEM_ROLE
     if (author_type or "user") == "agent":
         s = db.get(RoundtableSeat, author_id) if author_id else None
         if not s:
@@ -1842,6 +1863,231 @@ def forum_delete_post(pid: int, u: User = Depends(get_current_user), db: Session
     db.delete(p)
     db.commit()
     return {"ok": True}
+
+
+# ---------------- 每日持仓日报（仓位 / 收益变化 / 大盘 → 论坛帖） ----------------
+# 需求：每天把「仓位、收益变化及相关信息」总结成一篇消息发到论坛，方便日后回看。
+# 与圆桌存档帖的分工：圆桌存档是**搬运**（席位观点原样落到论坛），日报是**算出来的新内容**；
+# 与交易仪表台的分工：仪表台看「此刻的持仓」，日报看「较上一期变化了多少」。
+# 发布身份固定为 system（见 _forum_author），不占用任何 AI 席位。
+REPORT_TITLE = "【日报】{date} · 持仓与收益"
+REPORT_OPS_DAYS = 5          # 「近期操作」回溯的自然日数（当天没录交易时不至于一片空白）
+
+
+def _report_thread_title(date_s: str) -> str:
+    return REPORT_TITLE.format(date=date_s or "")[:FM_MAX_TITLE]
+
+
+def _report_projects(db):
+    """日报覆盖的标的集合。
+
+    站点当前是单用户运营，日报口径 = 全部标的（与仪表台管理员视角一致），
+    且由定时任务在服务端生成、**不按请求用户过滤** —— 详见 _publish_daily_report 注释。
+    """
+    return (db.query(Project)
+            .order_by(Project.pinned.desc(), Project.created_at.desc()).all())
+
+
+def _report_money(v) -> str:
+    return "—" if v is None else f"{v:,.2f}"
+
+
+def _report_pct(v) -> str:
+    return "—" if v is None else f"{v:+.2f}%"
+
+
+def _build_daily_report(date_s: str, db):
+    """组装日报正文（纯文本，论坛按纯文本渲染），返回 (title, content, meta)。
+
+    所有数字**现算不落库**：行情取各自最新日期（场外基金与 QDII 的净值日期通常早于
+    日报日期，逐条标注避免误导），收益变化取 _pnl_curve 最后两点之差。
+    """
+    projects = _report_projects(db)
+    items, watch = [], 0
+    tot_mv = tot_un = tot_real = tot_pnl = tot_chg = 0.0
+    chg_base_dates, latest_dates, prev_dates = [], [], []
+    for p in projects:
+        fbs = db.query(Feedback).filter(Feedback.project_id == p.id).all()
+        realized = round(sum(float(f.realized_pnl or 0.0) for f in fbs), 2)
+        tot_real += realized
+        shares = float(p.position_shares or 0.0)
+        cost = float(p.position_cost or 0.0)
+        if shares <= 1e-9:
+            watch += 1               # 未建仓的标的只计数，不占正文
+            continue
+        mps = (db.query(MarketPrice).filter(MarketPrice.project_id == p.id)
+               .order_by(MarketPrice.date).all())
+        curve = _pnl_curve(mps, fbs, *_holding_initial(fbs, shares, cost))
+        last = mps[-1] if mps else None
+        prev = mps[-2] if len(mps) > 1 else None
+        close = float(last.close) if last else None
+        prev_close = float(prev.close) if prev else None
+        mv = round(shares * close, 2) if close is not None else None
+        un = round((close - cost) * shares, 2) if close is not None else None
+        ret = (round((close - cost) / cost * 100, 2)
+               if (close is not None and cost > 1e-9) else None)
+        day_pct = (round((close - prev_close) / prev_close * 100, 2)
+                   if (close is not None and prev_close) else None)
+        pnl_total = curve[-1]["pnl"] if curve else 0.0
+        chg = round(curve[-1]["pnl"] - curve[-2]["pnl"], 2) if len(curve) > 1 else None
+        tot_mv += mv or 0.0
+        tot_un += un or 0.0
+        tot_pnl += pnl_total
+        tot_chg += chg or 0.0
+        if last:
+            latest_dates.append(last.date)
+        if prev:
+            prev_dates.append(prev.date)
+        items.append({
+            "id": p.id, "name": p.name or "", "code": p.code or "", "market": p.market or "A",
+            "shares": round(shares, 4), "cost": round(cost, 4),
+            "close": close, "date": last.date if last else None,
+            "day_pct": day_pct, "market_value": mv, "unrealized": un,
+            "return_pct": ret, "pnl_total": round(pnl_total, 2), "change": chg,
+        })
+
+    # 本期变化降序（今天赚得最多的排前面）；无基准（只有一根行情）的排最后
+    items.sort(key=lambda x: (x["change"] is None, -(x["change"] or 0.0)))
+
+    # 基准日期：各标的最新一期行情日期不一致时（QDII 掉队、停牌等）不能只取一个日期，
+    # 否则会读成「全仓位从那天起的变化」。
+    base_dates = sorted(set(prev_dates))
+    base_note = ("（基准 " + base_dates[0] + "）" if len(base_dates) == 1
+                 else "（按各标的最新一期行情）") if base_dates else "（暂无基准）"
+    L = [f"【每日持仓日报】{date_s}", ""]
+    L += ["■ 总览",
+          f"总市值　　{_report_money(round(tot_mv, 2))} 元",
+          f"浮动盈亏　{_report_money(round(tot_un, 2))} 元",
+          f"累计已实现　{_report_money(round(tot_real, 2))} 元",
+          f"累计总收益　{_report_money(round(tot_pnl, 2))} 元（= 已实现 + 浮动）",
+          f"本期变化　{_report_money(round(tot_chg, 2))} 元{base_note}",
+          f"持仓 / 标的　{len(items)} / {len(projects)}"]
+
+    L += ["", "■ 大盘指数"]
+    try:
+        indices = fetch_index_quotes()
+    except Exception as e:
+        logger.warning("日报获取大盘指数失败：%s", e)
+        indices = []
+    if not indices:
+        L.append("数据获取失败")
+    for idx in indices:
+        if idx.get("close") is None:
+            L.append(f"{idx['name']}　数据获取失败")
+        else:
+            L.append(f"{idx['name']}　{idx['close']}　{_report_pct(idx.get('chg_pct'))}"
+                     f"（{idx.get('date') or ''}）")
+
+    L += ["", "■ 持仓明细（按本期变化降序）"]
+    if not items:
+        L.append("当前无持仓标的")
+    for i, h in enumerate(items, 1):
+        if h["close"] is None:
+            L.append(f"{i}. {h['name']}（{h['code']}）　暂无行情数据")
+            continue
+        L.append(f"{i}. {h['name']}（{h['code']}）")
+        L.append(f"　 净值 {h['close']}（{h['date']}，{_report_pct(h['day_pct'])}）"
+                 f"　市值 {_report_money(h['market_value'])} 元")
+        L.append(f"　 份额 {h['shares']:,.0f} · 成本 {h['cost']} · "
+                 f"浮动 {_report_money(h['unrealized'])} 元（{_report_pct(h['return_pct'])}）"
+                 f" · 本期 {_report_money(h['change'])} 元")
+
+    # 近期操作：日报通常晚于交易录入，只看当天容易空白，故回溯 REPORT_OPS_DAYS 天
+    since = (datetime.utcnow() + _CN_TZ_OFFSET - timedelta(days=REPORT_OPS_DAYS)).strftime("%Y-%m-%d")
+    ops = (db.query(Feedback, Project)
+           .join(Project, Feedback.project_id == Project.id)
+           .filter(Feedback.date >= since)
+           .order_by(Feedback.date.desc(), Feedback.id.desc()).all())
+    L += ["", f"■ 近期操作（最近 {REPORT_OPS_DAYS} 个自然日）"]
+    if not ops:
+        L.append("无操作记录")
+    for f, proj in ops:
+        label = {"BUY": "买入", "SELL": "卖出", "HOLD": "持有"}.get(f.action, f.action or "")
+        seg = (f"{f.date}　{label} {proj.name}（{proj.code}）"
+               f"　{f.qty or 0:,.0f} 份 @ {f.price or 0}")
+        if f.realized_pnl:
+            seg += f"　实现 {f.realized_pnl:,.2f} 元"
+        if (f.note or "").strip():
+            seg += f"　备注：{f.note.strip()}"
+        L.append(seg)
+
+    dmin = min(latest_dates) if latest_dates else "—"
+    dmax = max(latest_dates) if latest_dates else "—"
+    L += ["", "■ 数据说明",
+          "· 收益口径：已实现盈亏 + 持仓浮盈（与项目页盈亏曲线同源）——"
+          "买入不计入收益、卖出把浮盈转为已实现，故本期变化不含新增投入的本金。",
+          "· 净值日期：场外基金由基金公司于交易日 19:00–22:00 陆续披露，"
+          "QDII 为 T+1/T+2 披露，因此明细中的净值日期可能早于日报日期。",
+          f"· 本日报数据日期：{dmin}" + (f" ~ {dmax}" if dmax != dmin else "")
+          # 刻意不写「生成于 HH:MM」：正文要用来判重（内容没变就不追加更新层），
+          # 一旦正文里带上生成时刻，每次执行都会「内容不同」，幂等设计就失效了。
+          # 真实发布/更新时间看帖子的创建时间与各更新层的标注。
+          + "；由系统于每交易日 22:00 自动生成并发布。"]
+
+    meta = {
+        "date": date_s, "holdings": len(items), "watch": watch,
+        "projects": len(projects), "market_value": round(tot_mv, 2),
+        "unrealized": round(tot_un, 2), "realized": round(tot_real, 2),
+        "total_pnl": round(tot_pnl, 2), "change": round(tot_chg, 2),
+        "data_date": dmax,
+    }
+    return _report_thread_title(date_s), "\n".join(L), meta
+
+
+def _publish_daily_report(db, date_s: Optional[str] = None):
+    """生成当日日报并发布到论坛，返回结果 dict（接口与定时脚本共用）。
+
+    幂等语义与圆桌存档一致：**每天一个主题帖**；内容与帖内最后一层完全一致 → 不写，
+    有变化 → 在该帖追加一层并标注第几次更新。这样定时任务重跑、当天补数后再跑
+    都不会刷屏，同时保留修订痕迹。
+    """
+    date_s = date_s or _cn_today()
+    title, content, meta = _build_daily_report(date_s, db)
+    if meta["holdings"] <= 0:
+        return {"ok": False, "skipped": True, "reason": "no_holdings", "title": title,
+                "message": "当前没有持仓标的，本次不发布日报", **meta}
+    rec = db.get(DailyReport, date_s)
+    t = db.get(ForumThread, rec.thread_id) if (rec and rec.thread_id) else None
+    if t is None:                       # 首次，或帖子被用户删掉 → 重建并改写关联
+        t = ForumThread(title=title, author_type="system", author_id=None)
+        db.add(t)
+        db.flush()
+        db.add(ForumPost(thread_id=t.id, author_type="system", author_id=None, content=content))
+        if rec is None:
+            rec = DailyReport(date=date_s)
+            db.add(rec)
+        rec.thread_id = t.id
+        rec.updates = 1
+        db.commit()
+        return {"ok": True, "created": True, "posts": 1, "thread_id": t.id,
+                "title": title, "content": content, **meta}
+    if (t.title or "") != title:
+        t.title = title
+    last = (db.query(ForumPost).filter(ForumPost.thread_id == t.id)
+            .order_by(ForumPost.id.desc()).first())
+    if last and (last.content or "").strip() == content.strip():
+        db.commit()                     # 标题可能刚回写，仍要提交
+        n = db.query(func.count(ForumPost.id)).filter(ForumPost.thread_id == t.id).scalar() or 1
+        return {"ok": True, "created": False, "unchanged": True, "posts": n,
+                "thread_id": t.id, "title": title, "content": content, **meta}
+    n = db.query(func.count(ForumPost.id)).filter(ForumPost.thread_id == t.id).scalar() or 0
+    db.add(ForumPost(thread_id=t.id, author_type="system", author_id=None,
+                     content=f"（第 {n + 1} 次更新 · {_cn_now()}）\n{content}"))
+    t.updated_at = datetime.utcnow()     # 有新一层 → 主题活跃时间刷新（列表置顶依据）
+    rec.updates = n + 1
+    db.commit()
+    return {"ok": True, "created": False, "unchanged": False, "posts": n + 1,
+            "thread_id": t.id, "title": title, "content": content, **meta}
+
+
+@app.post("/api/report/daily")
+def report_daily(body: Optional[DailyReportReq] = None,
+                 u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """管理员：生成当日持仓日报并发布到论坛（每天一篇，内容有变化才追加更新层）。"""
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    date_s = ((body.date if body else None) or "").strip() or _cn_today()
+    return _publish_daily_report(db, date_s)
 
 
 # ---------------- 资讯工作台（RSS 订阅 · 中继抓取 · 列表） ----------------

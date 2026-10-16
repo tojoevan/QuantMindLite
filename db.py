@@ -167,6 +167,20 @@ class ForumPost(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class DailyReport(Base):
+    """每日持仓/收益日报 → 论坛帖的锚点。
+
+    存在理由：日报由定时任务每天自动发布，重复执行（手动重跑 / 当天补数后又跑一次）
+    必须落到**同一个主题帖**，否则论坛会被同日多帖刷满。date 作主键天然保证「每天一篇」。
+    """
+    __tablename__ = "daily_reports"
+    date = Column(String(10), primary_key=True)         # YYYY-MM-DD（北京时间）
+    thread_id = Column(Integer, nullable=True)          # 对应论坛主题帖（forum_threads.id）
+    updates = Column(Integer, default=0)                # 已写入层数（含首帖）
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class NewsFeed(Base):
     """资讯工作台 · 订阅源（RSS 2.0 / Atom）。
 

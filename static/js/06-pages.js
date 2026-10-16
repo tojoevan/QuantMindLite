@@ -208,12 +208,15 @@ async function renderDashboard() {
   }).join("") || `<tr><td colspan="7" class="muted">暂无交易记录</td></tr>`;
 
   const newBtn = isGuest ? "" : `<button class="btn primary sm" id="dash-new">＋ 新建标的</button>`;
+  // 发布日报：与定时任务（每交易日 22:00）同一个后端接口，幂等，可随时手动补发/重发
+  const reportBtn = (!isGuest && me && me.is_admin)
+    ? `<button class="btn ghost sm" id="dash-report">发布日报到论坛</button>` : "";
   main.innerHTML = `
     <div class="page">
       ${banner}
       <div class="page-head">
         <div><h1>交易仪表台</h1><p class="page-sub">持仓总览 · 盈亏汇总 · 最近交易记录</p></div>
-        <div class="page-head-actions">${newBtn}<button class="btn ghost sm" id="dash-reload">刷新</button></div>
+        <div class="page-head-actions">${reportBtn}${newBtn}<button class="btn ghost sm" id="dash-reload">刷新</button></div>
       </div>
 
       <div class="kpi-grid">
@@ -246,6 +249,8 @@ async function renderDashboard() {
 
   const rl = document.getElementById("dash-reload");
   if (rl) rl.onclick = () => renderDashboard();
+  const rep = document.getElementById("dash-report");
+  if (rep) rep.onclick = () => publishDailyReport(rep);
   const nw = document.getElementById("dash-new");
   if (nw) nw.onclick = openProjectModal;          // 侧栏删除后，新建入口挪到仪表台页头
   const lg = document.getElementById("dash-login");
@@ -257,6 +262,31 @@ async function renderDashboard() {
   main.querySelectorAll("#dash-pos .pin-btn").forEach(btn => {
     btn.onclick = (e) => { e.stopPropagation(); togglePin(parseInt(btn.getAttribute("data-pin"), 10)); };
   });
+}
+
+// ===== 每日持仓日报：手动发布（后端同一个接口，幂等）=====
+// 定时任务每交易日 22:00 自动发；这里用于随时补发 / 数据补全后重发。
+// 响应三态：skipped（无持仓）/ unchanged（内容没变，不刷屏）/ created|updated（已入论坛）。
+async function publishDailyReport(btn) {
+  const label = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
+  try {
+    const r = await API("POST", "/api/report/daily", {});
+    if (r && r.skipped) {
+      showToast(r.message || "当前无持仓，未发布");
+      return;
+    }
+    showToast(r && r.created ? "日报已发布到论坛"
+      : (r && r.unchanged ? "今日日报内容未变化，未重复发布" : "日报已更新到论坛"));
+    if (r && r.thread_id) {
+      await showView("forum");
+      if (typeof fmOpenThread === "function") await fmOpenThread(r.thread_id);
+    }
+  } catch (e) {
+    showToast("发布失败：" + (e.message || e));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
 }
 
 // ===== 论坛（P3 已落地，实现在 07-forum.js：列表 / 详情 / 发帖 / 回复）=====

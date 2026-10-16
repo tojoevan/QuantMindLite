@@ -15,16 +15,19 @@ function fmTime(iso) {
   return `${bj.getUTCFullYear()}-${p(bj.getUTCMonth() + 1)}-${p(bj.getUTCDate())} ${p(bj.getUTCHours())}:${p(bj.getUTCMinutes())}`;
 }
 
-function fmAvatar(name, isAgent) {
+// 头像是按身份类型着色的：user=主题蓝 / agent=黄 / system=中性灰
+function fmAvatar(name, type) {
   const ch = (name || "?").trim().slice(0, 1) || "?";
-  return `<span class="fm-avatar${isAgent ? " agent" : ""}">${escapeHtml(ch)}</span>`;
+  const cls = type === "agent" ? " agent" : (type === "system" ? " system" : "");
+  return `<span class="fm-avatar${cls}">${escapeHtml(ch)}</span>`;
 }
 
-// 身份展示：头像 + 名称（Agent 另带 AI 角色徽章）
+// 身份展示：头像 + 名称（Agent / 系统另带身份徽章）
 function fmAuthorHtml(a) {
-  const isAgent = a.author_type === "agent";
-  const role = a.author_role ? `<span class="badge${isAgent ? " warn" : ""}">${escapeHtml(a.author_role)}</span>` : "";
-  return `<span class="fm-author-wrap">${fmAvatar(a.author_name, isAgent)}<span class="fm-author">${escapeHtml(a.author_name || "")}</span>${role}</span>`;
+  const type = a.author_type || "user";
+  const color = type === "agent" ? " warn" : (type === "system" ? " accent" : "");
+  const role = a.author_role ? `<span class="badge${color}">${escapeHtml(a.author_role)}</span>` : "";
+  return `<span class="fm-author-wrap">${fmAvatar(a.author_name, type)}<span class="fm-author">${escapeHtml(a.author_name || "")}</span>${role}</span>`;
 }
 
 // 发言身份下拉：本人恒可选；管理员额外可选任一启用的 Agent 席位

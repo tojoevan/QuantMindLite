@@ -211,6 +211,11 @@ class ForumThreadDetail(BaseModel):
     posts: list[ForumPostOut] = []
 
 
+# ================= 每日持仓日报 =================
+class DailyReportReq(BaseModel):
+    date: Optional[str] = None       # 缺省今天（北京时间）；补发历史日报时才传
+
+
 # ================= 资讯工作台 =================
 class NewsFeedCreate(BaseModel):
     url: str
