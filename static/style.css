@@ -514,6 +514,21 @@ th { color: var(--muted); font-weight: 600; }
 .rt-field.grow { flex: 1; }
 .rt-inline-note { color: var(--muted); font-size: 12px; line-height: 1.6; }
 
+/* 圆桌 AI 设置：服务商「本机可达性」徽标。
+   本 VPS 只有 IPv6 出口，IPv4-only 的服务商（如 DeepSeek）必然连不上，
+   不显式标出来，用户配完 Key 只会看到「点了没反应」。边框用 currentColor，
+   暗/浅两种主题都自动跟随。 */
+.rt-reach {
+  font-size: var(--fs-xs); font-weight: 500; padding: 0 6px;
+  border-radius: var(--radius-pill); margin-left: var(--sp-1);
+  white-space: nowrap; vertical-align: middle;
+  border: var(--bd-w) solid currentColor;
+}
+.rt-reach.ok  { color: var(--green); }
+.rt-reach.bad { color: var(--red); }
+/* 「＋ 自定义服务商」那一行用虚线区分，表示它是操作入口而非已配置项 */
+.rt-settings-add { border-style: dashed; }
+
 @media (max-width: 768px) {
   .rt-head-actions { margin-left: 0; width: 100%; }
   .rt-page h1 { font-size: 20px; }

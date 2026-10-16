@@ -1,11 +1,25 @@
 // 05-roundtable —— 圆桌讨论（多 AI 席位 · 自动/手动双通道）
 // ===== 圆桌讨论（多 AI 席位 · 双通道：自动席位配 Key 直调 LLM / 手动席位复制提示词外部咨询后回填） =====
-const RT_PROVIDERS = {
-  deepseek: { base_url: "https://api.deepseek.com", model: "deepseek-chat" },
-  zhipu: { base_url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-air" },
-  moonshot: { base_url: "https://api.moonshot.cn/v1", model: "moonshot-v1-8k" },
-  openai: { base_url: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+// 服务商清单的**唯一数据源在后端**（app.py → PROVIDER_DEFAULTS），由
+// GET /api/roundtable/settings 连同 base_url / model / 本机可达性一起下发。
+// 下表仅用于「后端数据尚未加载」时兜底渲染，字段与后端保持同名；
+// 用户在 AI 设置里自建的自定义服务商不在本表内，只来自后端。
+const RT_PROVIDERS_FALLBACK = {
+  deepseek:    { label: "DeepSeek",   base_url: "https://api.deepseek.com",                         model: "deepseek-chat" },
+  zhipu:       { label: "智谱 GLM",   base_url: "https://open.bigmodel.cn/api/paas/v4",             model: "glm-4-air" },
+  qwen:        { label: "通义千问",   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
+  doubao:      { label: "火山豆包",   base_url: "https://ark.cn-beijing.volces.com/api/v3",          model: "doubao-pro-32k" },
+  siliconflow: { label: "硅基流动",   base_url: "https://api.siliconflow.cn/v1",                    model: "Qwen/Qwen2.5-7B-Instruct" },
+  openai:      { label: "OpenAI",     base_url: "https://api.openai.com/v1",                         model: "gpt-4o-mini" },
+  openrouter:  { label: "OpenRouter", base_url: "https://openrouter.ai/api/v1",                      model: "openai/gpt-4o-mini" },
+  moonshot:    { label: "Kimi",       base_url: "https://api.moonshot.cn/v1",                        model: "moonshot-v1-8k" },
 };
+
+/** 当前生效的服务商表：后端下发优先，未加载时退回兜底表。 */
+function rtProviders() {
+  const api = (rtState.settings && rtState.settings.providers) || null;
+  return (api && Object.keys(api).length) ? api : RT_PROVIDERS_FALLBACK;
+}
 // 手动席位可选配置的「AI 角色」（预设下拉 + 自定义），仅作身份标签与提示词注入
 const RT_ROLES = ["豆包", "DeepSeek", "元宝", "Kimi", "通义千问", "ChatGPT", "Claude", "Gemini", "文心一言", "其他"];
 
@@ -514,10 +528,10 @@ function rtRenderManage() {
       <div class="row">
         <label class="rt-field" style="width:150px">提供方
           <select data-f="provider">
-            ${Object.keys(RT_PROVIDERS).map(p => `<option value="${p}" ${s.provider === p ? "selected" : ""}>${p}</option>`).join("")}
+            ${Object.entries(rtProviders()).map(([p, m]) => `<option value="${p}" ${s.provider === p ? "selected" : ""}>${escapeHtml(m.label || p)}</option>`).join("")}
           </select>
         </label>
-        <label class="rt-field grow">模型（留空用默认）<input type="text" data-f="model" value="${escapeHtml(s.model)}" placeholder="${escapeHtml((RT_PROVIDERS[s.provider] || {}).model || "")}"></label>
+        <label class="rt-field grow">模型（留空用默认）<input type="text" data-f="model" value="${escapeHtml(s.model)}" placeholder="${escapeHtml((rtProviders()[s.provider] || {}).model || "")}"></label>
         <label class="chk"><input type="checkbox" data-f="enabled" ${s.enabled ? "checked" : ""}>启用</label>
         <button class="btn-mini" data-save="${s.id}">保存</button>
         <button class="btn-mini danger" data-del-seat="${s.id}">删除</button>
@@ -539,7 +553,7 @@ function rtRenderManage() {
       </div>
       <div class="row">
         <label class="rt-field" style="width:150px">提供方
-          <select name="provider">${Object.keys(RT_PROVIDERS).map(p => `<option value="${p}">${p}</option>`).join("")}</select>
+          <select name="provider">${Object.entries(rtProviders()).map(([p, m]) => `<option value="${p}">${escapeHtml(m.label || p)}</option>`).join("")}</select>
         </label>
         <label class="rt-field grow">模型（留空用默认）<input type="text" name="model"></label>
         <button class="btn-mini" type="submit">添加席位</button>
@@ -597,15 +611,28 @@ function rtRenderManage() {
 function rtRenderSettings() {
   const body = document.getElementById("rt-settings-body");
   if (!body) return;
+  const provs = rtProviders();
   const cur = (rtState.settings && rtState.settings.providers) || {};
-  body.innerHTML = Object.keys(RT_PROVIDERS).map(p => {
-    const c = cur[p] || {};
+
+  // 可达性徽标：本服务器只有 IPv6 出口，IPv4-only 的服务商（如 DeepSeek）配了 Key 也调不通。
+  // 不把这件事显式标出来，用户只会看到「点了没反应」。
+  const reachTag = (m) => {
+    if (!m || typeof m.reachable !== "boolean") return "";
+    return m.reachable
+      ? `<span class="rt-reach ok" title="本机可以直连该域名">可达</span>`
+      : `<span class="rt-reach bad" title="本机连不上该域名：本服务器只有 IPv6 出口，IPv4-only 的服务商（如 DeepSeek）在此不可用，只能换服务商或走中继。">不可达</span>`;
+  };
+
+  const rows = Object.entries(provs).map(([p, m]) => {
+    m = m || {};
+    const c = cur[p] || m;
+    const custom = m.builtin === false;
     return `
-    <div class="rt-settings-row">
+    <div class="rt-settings-row" data-provider="${p}">
       <div class="row">
-        <span class="rt-seat-name" style="width:110px">${p}</span>
-        <label class="rt-field grow">base_url<input type="text" data-f="base_url" value="${escapeHtml(c.base_url || RT_PROVIDERS[p].base_url)}"></label>
-        <label class="rt-field grow">model<input type="text" data-f="model" value="${escapeHtml(c.model || RT_PROVIDERS[p].model)}"></label>
+        <span class="rt-seat-name" style="width:190px" title="${escapeHtml(p)}">${escapeHtml(m.label || p)}${custom ? ` <span class="muted">自定义</span>` : ""} ${reachTag(m)}</span>
+        <label class="rt-field grow">base_url<input type="text" data-f="base_url" value="${escapeHtml(c.base_url || m.base_url || "")}"></label>
+        <label class="rt-field grow">model<input type="text" data-f="model" value="${escapeHtml(c.model || m.model || "")}"></label>
       </div>
       <div class="row">
         <label class="rt-field grow">API Key ${c.configured ? "（已配置 · 留空保存=不修改）" : "（未配置）"}
@@ -613,9 +640,22 @@ function rtRenderSettings() {
         </label>
         <button class="btn-mini" data-save-settings="${p}">保存</button>
         ${c.configured ? `<button class="btn-mini danger" data-clear-settings="${p}">清除 Key</button>` : ""}
+        ${custom ? `<button class="btn-mini danger" data-del-settings="${p}">删除</button>` : ""}
       </div>
     </div>`;
-  }).join("") + `<p class="rt-inline-note">OpenAI 兼容协议：任意支持 /chat/completions 的服务均可填入使用。Key 仅存储于服务器本地数据库，页面任何情况不回显；清除后自动席位将无法生成。</p>`;
+  }).join("");
+
+  const addRow = `
+    <div class="rt-settings-row rt-settings-add">
+      <div class="row">
+        <label class="rt-field" style="width:190px">＋ 自定义服务商<input type="text" id="rt-new-provider" placeholder="名称，如 myllm"></label>
+        <label class="rt-field grow">base_url<input type="text" id="rt-new-baseurl" placeholder="https://api.example.com/v1"></label>
+        <label class="rt-field grow">model<input type="text" id="rt-new-model" placeholder="留空则需在席位里指定"></label>
+        <button class="btn-mini" id="rt-add-provider">添加</button>
+      </div>
+    </div>`;
+
+  body.innerHTML = rows + addRow + `<p class="rt-inline-note">协议为 OpenAI 兼容的 <code>/chat/completions</code>：内置常见服务商，也可用上方「＋ 自定义服务商」接入任意同类服务（填名称 + base_url + model，名称只作区分）。Key 仅存于服务器本地数据库，页面任何情况不回显；清除 Key 后自动席位将无法生成。<br>「可达」= 本服务器能否直连该域名。本机只有 IPv6 出口，标「本机不可达」的服务商即使配好 Key 也无法生成。</p>`;
   body.querySelectorAll("[data-save-settings]").forEach(b => b.onclick = async () => {
     const row = b.closest(".rt-settings-row");
     const provider = b.getAttribute("data-save-settings");
@@ -642,6 +682,31 @@ function rtRenderSettings() {
       await rtReloadSettings();
     } catch (e) { showToast("清除失败：" + e.message); }
   });
+
+  // 删除自定义服务商（内置项不渲染该按钮，后端也会拒绝）
+  body.querySelectorAll("[data-del-settings]").forEach(b => b.onclick = async () => {
+    const provider = b.getAttribute("data-del-settings");
+    if (!confirm(`确认删除自定义服务商「${provider}」？其 base_url / model / Key 将一并清除。`)) return;
+    try {
+      await API("PUT", "/api/roundtable/settings", { provider, delete: true });
+      showToast("已删除");
+      await rtReloadSettings();
+    } catch (e) { showToast("删除失败：" + e.message); }
+  });
+
+  // 新增自定义服务商：后端要求必须带 base_url（自定义项没有内置默认值）
+  const addBtn = document.getElementById("rt-add-provider");
+  if (addBtn) addBtn.onclick = async () => {
+    const name = document.getElementById("rt-new-provider").value.trim();
+    const bu = document.getElementById("rt-new-baseurl").value.trim();
+    const md = document.getElementById("rt-new-model").value.trim();
+    if (!name || !bu) { showToast("请填写服务商名称与 base_url"); return; }
+    try {
+      await API("PUT", "/api/roundtable/settings", { provider: name, base_url: bu, model: md });
+      showToast(`已添加「${name}」，请再填入它的 API Key`);
+      await rtReloadSettings();
+    } catch (e) { showToast("添加失败：" + e.message); }
+  };
 }
 
 // 圆桌入口的页级绑定统一收口到 06-pages.js 的 bindNav()

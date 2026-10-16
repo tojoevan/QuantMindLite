@@ -6,6 +6,8 @@ FastAPI + SQLite，独立运行。预测引擎是本地纯函数策略（predict
 import os
 import re
 import json
+import time
+import socket
 import logging
 import secrets
 import hashlib
@@ -14,6 +16,7 @@ from datetime import datetime, timedelta
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -1023,12 +1026,94 @@ DEFAULT_SEATS = [
 ]
 
 # LLM 提供方默认配置（OpenAI 兼容协议；用户可在「AI 设置」覆盖）
+# LLM 提供方清单 —— **单一数据源**，前端不再硬编码 provider 表，一律由
+# /api/roundtable/settings 下发。除下列内置项外，设置页还支持任意**自定义服务商**
+# （名称 + base_url + model + key）：协议都走 OpenAI 兼容的 /chat/completions，
+# 所以后端不做白名单限制，只校验名称合法性。
+#
+# ⚠️ `host` 供设置页做「本机可达性」探测。本 VPS **只有 IPv6 出口**（无 IPv4 默认路由，
+# `ip -4 route get 1.1.1.1` → Network is unreachable），因此只有域名带**真 AAAA** 的
+# 服务商才连得上：deepseek / moonshot 均为 IPv4-only，在本机上必然失败。
+# 二者仍保留在内置表（换到有 IPv4 的机器即可用），页面上会明确标红提示。
+#
+# 2026-10-17 用**假 Key 实测**各家真实响应（验证链路真的通，而不是只做了 TCP 握手）：
+#   zhipu / qwen / doubao / siliconflow / openrouter → 401 鉴权错（链路正常，只差真 Key）
+#   openai → **403 unsupported_country_region_territory**：网络通，但按地区拒绝中国 IP，
+#            故实际不可用；保留只为完整性，以及将来换机房/加代理时能用
+#   deepseek / moonshot → Name or service not known（本机无 AAAA，必然失败）
 PROVIDER_DEFAULTS = {
-    "deepseek": {"base_url": "https://api.deepseek.com", "model": "deepseek-chat"},
-    "zhipu": {"base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-4-air"},
-    "moonshot": {"base_url": "https://api.moonshot.cn/v1", "model": "moonshot-v1-8k"},
-    "openai": {"base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+    "deepseek":    {"label": "DeepSeek",   "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-chat", "host": "api.deepseek.com"},
+    "zhipu":       {"label": "智谱 GLM",   "base_url": "https://open.bigmodel.cn/api/paas/v4",
+                    "model": "glm-4-air", "host": "open.bigmodel.cn"},
+    "qwen":        {"label": "通义千问",   "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    "model": "qwen-plus", "host": "dashscope.aliyuncs.com"},
+    "doubao":      {"label": "火山豆包",   "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                    "model": "doubao-pro-32k", "host": "ark.cn-beijing.volces.com"},
+    "siliconflow": {"label": "硅基流动",   "base_url": "https://api.siliconflow.cn/v1",
+                    "model": "Qwen/Qwen2.5-7B-Instruct", "host": "api.siliconflow.cn"},
+    "openai":      {"label": "OpenAI",     "base_url": "https://api.openai.com/v1",
+                    "model": "gpt-4o-mini", "host": "api.openai.com"},
+    "openrouter":  {"label": "OpenRouter", "base_url": "https://openrouter.ai/api/v1",
+                    "model": "openai/gpt-4o-mini", "host": "openrouter.ai"},
+    "moonshot":    {"label": "Kimi",       "base_url": "https://api.moonshot.cn/v1",
+                    "model": "moonshot-v1-8k", "host": "api.moonshot.cn"},
 }
+
+# 自定义服务商名称规则：允许字母数字下划线连字符，长度 1~32。
+# 既是安全边界（该名会被拼进 settings 的 key），也留足了自定义空间。
+_PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+_reach_cache: dict = {}      # {host: (探测时间戳, 是否可达)}
+_REACH_TTL = 300             # 秒。避免每次进设置页都全量重探
+_REACH_TIMEOUT = 2.0         # 秒。可达的通常百毫秒内握手，2 秒够用
+
+
+def _host_of(url: str) -> str:
+    """从 base_url 提取主机名（自定义服务商没有内置 host 时用）。"""
+    try:
+        return urlparse((url or "").strip()).hostname or ""
+    except Exception:
+        return ""
+
+
+def _host_reachable(host: str) -> bool:
+    """探测本机能否与 `host:443` 建连（带 5 分钟缓存）。
+
+    刻意走 `socket.create_connection`：与 `llm.chat_complete` 是**同一套解析路径**
+    （llm.py 在导入时把 getaddrinfo 固定成 AF_INET6），所以探测结果就等于真实可用性，
+    IPv4-only 的域名在这里会因无 AAAA 而立刻失败，不会给出假阳性。
+    只做 TCP 握手，不发业务请求、不带 Key。
+    """
+    if not host:
+        return False
+    now = time.time()
+    hit = _reach_cache.get(host)
+    if hit and now - hit[0] < _REACH_TTL:
+        return hit[1]
+    try:
+        with socket.create_connection((host, 443), timeout=_REACH_TIMEOUT):
+            ok = True
+    except Exception:
+        ok = False
+    _reach_cache[host] = (now, ok)
+    return ok
+
+
+def _known_providers(db) -> list:
+    """内置提供方 + 用户自建的自定义提供方（扫 settings 里出现过的 `llm.<name>.*`）。
+
+    settings 表很小（十几条），全表扫描的代价可忽略。
+    """
+    names = list(PROVIDER_DEFAULTS.keys())
+    for (key,) in db.query(Setting.key).all():
+        if not key or not key.startswith("llm."):
+            continue
+        parts = key.split(".")
+        if len(parts) == 3 and parts[1] and parts[2] in ("api_key", "base_url", "model"):
+            if parts[1] not in names:
+                names.append(parts[1])
+    return names
 
 # 提示词输出格式约定（行式结构，前端 prewrap 渲染即整齐，避免表格）
 PROMPT_OUTPUT_SPEC = """# 输出格式（严格遵守，不要使用表格）
@@ -1071,10 +1156,12 @@ def _get_llm_conf(db, provider: str) -> dict:
     """读取某提供方的 LLM 配置（含 api_key，仅服务端使用，绝不回传前端）。"""
     rows = dict(db.query(Setting.key, Setting.value)
                 .filter(Setting.key.like(f"llm.{provider}.%")).all())
-    dflt = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["deepseek"])
+    # 自定义服务商不在内置表里 → 没有默认值，base_url 必须由用户自己填。
+    # （此前这里 fallback 到 deepseek 的默认，会让自定义服务商悄悄指向 api.deepseek.com）
+    dflt = PROVIDER_DEFAULTS.get(provider) or {}
     return {
         "api_key": rows.get(f"llm.{provider}.api_key") or "",
-        "base_url": rows.get(f"llm.{provider}.base_url") or dflt["base_url"],
+        "base_url": rows.get(f"llm.{provider}.base_url") or dflt.get("base_url", ""),
         "model": rows.get(f"llm.{provider}.model") or "",
     }
 
@@ -1365,28 +1452,67 @@ def rt_submit_post(body: RoundtablePostIn, u: User = Depends(get_current_user), 
 
 @app.get("/api/roundtable/settings")
 def rt_get_settings(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """LLM 设置（脱敏）：只返回是否已配置 Key 与 base_url/model，绝不回传 Key 本身。"""
+    """LLM 设置（脱敏）：返回**内置 + 自定义**提供方的配置状态，绝不回传 Key 本身。
+
+    额外下发 `reachable`（本机到该 host:443 的 TCP 可达性），供设置页提示
+    「这台机器连不上」——本 VPS 只有 IPv6 出口，IPv4-only 的服务商（如 DeepSeek）
+    在此必然失败，不提示的话用户只会看到「点了没反应」。
+    探测并发执行且带 5 分钟缓存：首次打开最坏约 2 秒，之后瞬时返回。
+    """
     if not u.is_admin:
         raise HTTPException(403, "forbidden")
+    names = _known_providers(db)
+    confs = {n: _get_llm_conf(db, n) for n in names}
+    hosts = {}
+    for n in names:
+        dflt = PROVIDER_DEFAULTS.get(n) or {}
+        hosts[n] = dflt.get("host") or _host_of(confs[n]["base_url"])
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(names)))) as ex:
+        reach = dict(zip(names, ex.map(_host_reachable, [hosts[n] for n in names])))
     providers = {}
-    for name in PROVIDER_DEFAULTS:
-        conf = _get_llm_conf(db, name)
-        providers[name] = {
+    for n in names:
+        dflt = PROVIDER_DEFAULTS.get(n) or {}
+        conf = confs[n]
+        providers[n] = {
+            "label": dflt.get("label") or n,
+            "builtin": n in PROVIDER_DEFAULTS,
             "configured": bool(conf["api_key"]),
             "base_url": conf["base_url"],
-            "model": conf["model"] or PROVIDER_DEFAULTS[name]["model"],
+            "model": conf["model"] or dflt.get("model", ""),
+            "host": hosts[n],
+            "reachable": reach.get(n, False),
         }
     return {"providers": providers}
 
 
 @app.put("/api/roundtable/settings")
 def rt_put_settings(body: RoundtableSettingsIn, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """保存某提供方 LLM 配置；api_key 传空串 = 清除已配置的 Key。"""
+    """保存某提供方 LLM 配置；api_key 传空串 = 清除已配置的 Key。
+
+    支持**自定义服务商**：名称符合 `_PROVIDER_NAME_RE` 即可（不必是内置项）。
+    但自定义项没有内置默认值，必须自带 base_url，否则调用时无处可发。
+    """
     if not u.is_admin:
         raise HTTPException(403, "forbidden")
     provider = (body.provider or "").strip()
+    if not _PROVIDER_NAME_RE.match(provider):
+        raise HTTPException(400, "服务商名称只能用字母、数字、下划线和连字符，长度 1~32")
+    if body.delete:
+        # 删除自定义服务商：清掉它的全部 llm.<name>.* 配置。
+        # 内置项**显式拒绝**——若放任它走到下面，只会把 None 字段一个个 continue 掉、
+        # 返回一个「成功」的假象（2026-10-17 实测踩到）。
+        if provider in PROVIDER_DEFAULTS:
+            raise HTTPException(400, f"「{provider}」是内置服务商，不能删除；清除 API Key 即可停用")
+        removed = (db.query(Setting)
+                     .filter(Setting.key.like(f"llm.{provider}.%"))
+                     .delete(synchronize_session=False))
+        db.commit()
+        return {"ok": True, "deleted": removed}
     if provider not in PROVIDER_DEFAULTS:
-        raise HTTPException(400, f"不支持的提供方：{provider}")
+        # 自定义服务商没有内置默认值 → 必须自带 base_url，否则调用时无处可发
+        cur = _get_llm_conf(db, provider)
+        if not ((body.base_url or "").strip() or cur["base_url"]):
+            raise HTTPException(400, f"自定义服务商「{provider}」必须填写 base_url")
     fields = {"api_key": body.api_key, "base_url": body.base_url, "model": body.model}
     for field, val in fields.items():
         key = f"llm.{provider}.{field}"
@@ -1434,7 +1560,12 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
         if not conf.get("api_key"):
             return {"seat_id": sid, "seat_name": m["name"], "ok": False,
                     "error": f"未配置 {m['provider']} 的 API Key"}
-        model = m["model"] or conf.get("model") or PROVIDER_DEFAULTS[m["provider"]]["model"]
+        # 自定义服务商不在内置表里，取不到默认模型 → 必须显式指定，否则报错而不是崩
+        model = (m["model"] or conf.get("model")
+                 or (PROVIDER_DEFAULTS.get(m["provider"]) or {}).get("model", ""))
+        if not model:
+            return {"seat_id": sid, "seat_name": m["name"], "ok": False,
+                    "error": f"未指定模型，且服务商「{m['provider']}」没有默认模型"}
         seat_obj = RoundtableSeat(id=sid, name=m["name"], persona=m["persona"])  # 仅用于拼提示词
         prompt = _snapshot_prompt_text(snap, seat_obj)
         try:

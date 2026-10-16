@@ -156,6 +156,7 @@ class RoundtableSettingsIn(BaseModel):
     api_key: Optional[str] = None    # 传空串表示清除已配置的 Key
     base_url: Optional[str] = None
     model: Optional[str] = None
+    delete: bool = False             # True = 删除该提供方的全部配置（仅自定义提供方，内置项拒绝）
 
 
 class RoundtableGenerateReq(BaseModel):

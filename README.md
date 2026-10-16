@@ -208,6 +208,25 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 | GET | `/api/guest/projects/{pid}/consensus` | 游客策略共识 |
 | GET | `/api/guest/projects/{pid}/refresh` | 游客行情限频刷新（每日一次）。⚠️ 是 GET 但**会写库**（写入语义同 `/api/projects/{pid}/fetch`），且免鉴权——仅对 `GUEST_STOCK_CODE` 项目生效。 |
 
+**AI 席位（圆桌）**
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/roundtable/settings` | 管理员：LLM 服务商配置状态（含 `reachable` 本机可达性） |
+| PUT | `/api/roundtable/settings` | 管理员：保存某服务商配置。`api_key: ""` = 清 Key；`delete: true` = 删自定义服务商（内置项拒绝） |
+| POST | `/api/roundtable/generate` | 管理员：对 `mode=auto` 的席位并发调 LLM 生成今日观点 |
+
+> **服务商清单的唯一数据源**是 `app.py → PROVIDER_DEFAULTS`（内置 8 家），由
+> `GET /api/roundtable/settings` 一并下发（前端不再硬编码）。除内置项，还可用
+> `PUT` 自建任意 OpenAI 兼容服务商：名称须匹配 `[A-Za-z0-9_-]{1,32}` 且**必须自带 `base_url`**
+> （自定义项没有内置默认值）。
+>
+> ⚠️ **本 VPS 只有 IPv6 出口**，所以只有域名带真 AAAA 的服务商才连得上。`GET` 返回的
+> `reachable` 即本机到该 host:443 的 TCP 连通性（带 5 分钟缓存），设置页据此标「可达 / 不可达」。
+> 2026-10-17 用假 Key 实测：`zhipu` / `qwen` / `doubao` / `siliconflow` / `openrouter` 返回
+> 401 鉴权错（链路正常，只差 Key）；`deepseek` / `moonshot` 因无 AAAA 直接失败；
+> `openai` 网络可达但被**按地区拒绝**（403 `unsupported_country_region_territory`），中国大陆 IP 实际不可用。
+
 ---
 
 ## 九、部署（IPv6 VPS + systemd）
