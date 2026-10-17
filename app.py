@@ -3139,9 +3139,15 @@ def _news_items_payload(db, range_s="today", category="", q="", star_only=False,
     start = _news_range_start(range_s)
     if start is not None:
         query = query.filter(NewsItem.published_at.isnot(None), NewsItem.published_at >= start)
-    category = (category or "").strip()
+    category = (category or "").strip().strip(",")
     if category:
-        query = query.filter((NewsItem.category == category) | (NewsFeed.category == category))
+        # category 是以逗号分隔的多值字段（RSS 多条 <category> 会拼接成一个字符串存储），
+        # 选中单个关键字时须按逗号边界匹配，否则「AI」匹配不到「AI,大模型」这类组合值。
+        tok = f"%,{category},%"
+        query = query.filter(
+            ("," + NewsItem.category + ",").like(tok)
+            | ("," + NewsFeed.category + ",").like(tok)
+        )
     q = (q or "").strip()
     if q:
         like = f"%{q}%"
@@ -3177,17 +3183,24 @@ def _news_items_payload(db, range_s="today", category="", q="", star_only=False,
     # 在筛选条上根本看不见 —— 但下面的 category 过滤条件其实已经认它（见上方的 OR），
     # 会出现「筛得中、却点不到」的割裂。两个来源合并计数：一条同时带条目分类与源分类的
     # 条目会各计一次，这与「按分类筛选时两种都匹配」的语义一致。
+    # 注意：category 字段是逗号分隔的多值（RSS 多条 <category> 拼接存储），
+    # 聚合时按逗号拆成独立关键字，避免筛选条上出现「AI,大模型」这种一组粘连的 chip。
+    def _split_cats(raw):
+        return [x.strip() for x in (raw or "").split(",") if x.strip()]
+
     cat_counts = Counter()
     for c, n in (db.query(NewsItem.category, func.count(NewsItem.id))
                  .join(NewsFeed, NewsItem.feed_id == NewsFeed.id)
                  .filter(NewsFeed.enabled == 1, NewsItem.category != "")
                  .group_by(NewsItem.category).all()):
-        cat_counts[c] += n
+        for k in _split_cats(c):
+            cat_counts[k] += n
     for c, n in (db.query(NewsFeed.category, func.count(NewsItem.id))
                  .join(NewsItem, NewsItem.feed_id == NewsFeed.id)
                  .filter(NewsFeed.enabled == 1, NewsFeed.category != "")
                  .group_by(NewsFeed.category).all()):
-        cat_counts[c] += n
+        for k in _split_cats(c):
+            cat_counts[k] += n
     cats = [{"name": c, "count": n} for c, n in cat_counts.most_common()]
 
     today_start = _news_range_start("today")
