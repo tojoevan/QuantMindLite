@@ -403,7 +403,12 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 > 改完须 `wrangler deploy` 才生效，否则取回的是 `403 host not allowed`。
 > 白名单只解决「本机连不上」，**不解决「源是空的」**——两者是独立的坑。
 >
-> 当前白名单：`aihot.news`、`chinanews.com.cn`、`wallstreetcn.com`、`jiemian.com`、`eastmoney.com`。
+> 当前白名单（2026-10-18）：`aihot.news`、`chinanews.com.cn`、`wallstreetcn.com`、
+> `jiemian.com`、`eastmoney.com`（5 个资讯源，均 IPv4-only）+ `qbitai.com`（量子位，AI 第 2 源，
+> 已加入 `news_feeds`）+ `api.deepseek.com`/`api.moonshot.cn`（LLM POST 通道）+ `generativelanguage.googleapis.com`
+> （LLM POST 通道基础设施；Gemini 对中国 Key 返 400 地域拒，经中继亦不绕过，仅作预留）。
+> ⚠️ 死候选已剔除并记入 `rss-relay/wrangler.toml` 注释：财联社/机器之心/36氪 官方 RSS 失效或 403、
+> 人民日报时政僵尸源(2025)、RSSHub 公共实例 403、Hacker News 英文不纳入、澎湃 anyfeeder 镜像陈旧(全 10-09)。
 > 其中华尔街见闻的 RSS 末尾被其 CDN 追加了一段统计 `<script>`（源站把 Content-Type 标成
 > `text/html` 触发 Cloudflare HTML 改写），严格 XML 解析会抛 `junk after document element`；
 > `newsfetch._xml_root` 对这一种错法做了截断容错。
