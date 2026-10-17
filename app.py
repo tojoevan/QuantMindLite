@@ -2954,7 +2954,14 @@ def _publish_news_digest(db, date_s: Optional[str] = None, dry_run: bool = False
     conf = news_llm_conf(db)
     admin = db.query(User).filter(User.is_admin == 1).order_by(User.id).first()
     holdings = _user_holdings(admin, db) if admin else []
-    title, content = newsai.build_digest(db, conf, date_s, holdings)
+    # 快照给「今日数据速览」节用（指数/账户/持仓真实数据）。取数失败不阻塞发布——
+    # 降级为没有数据节（纯资讯版），概要继续发。
+    try:
+        snapshot = _build_snapshot(admin, db) if admin else None
+    except Exception as e:
+        logger.warning("市场概要快照获取失败（数据速览节降级）：%s", e)
+        snapshot = None
+    title, content = newsai.build_digest(db, conf, date_s, holdings, snapshot=snapshot)
     if not content:
         return {"ok": False, "skipped": True, "reason": "no_data", "date": date_s,
                 "title": title or "", "message": f"{date_s} 没有重要度达标的资讯，本次不发布"}
