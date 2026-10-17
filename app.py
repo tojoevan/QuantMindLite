@@ -2109,11 +2109,20 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
         seat_obj = RoundtableSeat(id=sid, name=m["name"], persona=m["persona"])  # 仅用于拼提示词
         prompt = _snapshot_prompt_text(snap, seat_obj)
         stats = _llm_stats_base(sid, m, model, conf)
+        # 输出预算按持仓数动态定：正文 ≈ 400（总体判断+风险提示）+ 持仓数×50。
+        # 标定依据（2026-10-17 实测）：7 条真实输出 token 167–946、中位 518，
+        # 中文 ≈0.63 token/字，逐持仓点评随持仓数线性增长；13 持仓最长样本 946
+        # 已超原固定 900（finish=length 会截出半截正文，比空正文更危险）。
+        # 下限 900 保底、上限 4000 防呆；此为关思考场景的预算，若某席位开着
+        # 思考导致超预算，llm.py 内的自动关思考兜底会兜住。
+        n_holdings = len(snap.get("holdings") or [])
+        max_tokens = min(4000, max(900, 400 + n_holdings * 50))
         try:
             content = chat_complete(
                 conf["base_url"], conf["api_key"], model,
                 [{"role": "system", "content": _LLM_SYSTEM},
                  {"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
                 via_relay=conf.get("via_relay") or "",
                 relay_key=conf.get("relay_key") or "",
                 # 推理模型（deepseek-flash）思考与正文共享 max_tokens，圆桌长提示词下
