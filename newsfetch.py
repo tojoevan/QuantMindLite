@@ -12,6 +12,7 @@ import html
 import hashlib
 import re
 import ssl
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -316,14 +317,36 @@ def _norm(title, link, guid, raw_desc, published, author, category) -> dict:
 
 
 # ---------------- 入库 ----------------
-def refresh_feed(db, feed: NewsFeed, limit: int = 60) -> dict:
-    """抓取单个源并入库。返回统计；异常不抛出，写进 last_error 后返回。"""
+def refresh_feed(db, feed: NewsFeed, limit: int = 60, retries: int = 1) -> dict:
+    """抓取单个源并入库。返回统计；异常不抛出，写进 last_error 后返回。
+
+    retries：失败重试次数（默认 1）。大包源实测不稳定——东方财富
+    rss_partener.xml 约 780KB，经中继稳定 14-25s，单次请求常撞读超时；
+    读超时放宽到 30s 并重试一次，大概率就过。定时抓取每天跑，没必要因
+    一次抖动就把源记成 error。
+    """
     conf = relay_conf(db)
     now = datetime.utcnow()
+    raw, msg = None, ""
+    for attempt in range(retries + 1):
+        try:
+            raw = http_get(feed.url, conf, timeout=30)
+            break
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"[:400]
+            if attempt < retries:
+                time.sleep(2)
+    if raw is None:
+        feed.last_fetched = now
+        feed.last_status = "error"
+        feed.last_error = msg
+        db.commit()
+        return {"feed_id": feed.id, "ok": False, "error": msg, "added": 0, "updated": 0}
+
     try:
-        raw = http_get(feed.url, conf)
         meta, entries = parse_feed(raw)
     except Exception as e:
+        # 抓到了但解析不了（XML 损坏/格式变了）——重试无意义，直接记 error
         msg = f"{type(e).__name__}: {e}"[:400]
         feed.last_fetched = now
         feed.last_status = "error"
