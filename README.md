@@ -99,7 +99,7 @@ quant-web/
 ├── datasource.py     # 行情多源回退抓取（前复权）
 ├── requirements.txt  # 依赖：fastapi / uvicorn / sqlalchemy / pydantic / akshare
 ├── deploy.sh         # 部署 / 运维工具：本地验证 → 线上备份 → 同步 → 重启 → 健康检查（失败自动回退）
-├── scripts/          # 运维脚本：db_backup.sh / fetch_fund_nav.py（基金补数）/ sync_roundtable_forum.py（圆桌观点回填论坛存档）/ settle_report.py（周期结算帖：日/周/月/季/半年/年）/ news_score.py（资讯 AI 加工：评分/理由/标签/关联标的）/ news_digest.py（市场概要帖）
+├── scripts/          # 运维脚本：db_backup.sh / fetch_fund_nav.py（基金补数）/ sync_roundtable_forum.py（圆桌观点回填论坛存档）/ settle_report.py（周期结算帖：日/周/月/季/半年/年）/ news_fetch.py（定时抓取订阅源，早晚各一次）/ news_score.py（资讯 AI 加工：评分/理由/标签/关联标的）/ news_digest.py（市场概要帖）
 ├── fund_profiles.json  # 持仓行业画像（标的 → 行业 + 关键词）：让「持仓相关」覆盖场外基金
 └── static/
     ├── index.html    # 单页应用骨架（顶栏：关于 / 用户管理 / GitHub / 主题切换）
@@ -478,6 +478,7 @@ bash deploy.sh rollback [TS]         # 回退到指定备份（默认最近一�
 | `30 13 * * 1-5` | `/usr/bin/python3 /opt/quant-web/scripts/fetch_fund_nav.py` | 交易日收盘后自动补**场外基金**净值。窗口 365 自然日、与主系统 `fund` 口径一致；复用 `datasource.fetch_hist`（不再自带第二套取数实现）；**合并写入**不删历史，并回写 `projects.last_fetch_date` 以免网页端当天重复拉取。日志 `/var/log/quant-fundnav.log`。 |
 | `50 12 * * *` | `/opt/quant-web/.venv/bin/python /opt/quant-web/scripts/news_score.py --limit 80` | **每日 20:50**（北京时间）资讯 AI 结构化加工：把未评分条目批量送 LLM（30 条/块），回写重要度 / 理由 / 标签 / 关联标的 / 同题合并。日志 `/var/log/quant-news-score.log`。 |
 | `20 13 * * *` | `/opt/quant-web/.venv/bin/python /opt/quant-web/scripts/news_digest.py` | **每日 21:20**（北京时间）发布「市场概要」帖到论坛（今日大事 / 持仓影响 / 明日关注）。必须晚于评分任务；两者共用 `/tmp/quant-news.lock` 串行，并错开 21:30 的基金补数。日志 `/var/log/quant-news-digest.log`。 |
+| `0 4 * * *` / `30 12 * * *` | `/opt/quant-web/.venv/bin/python /opt/quant-web/scripts/news_fetch.py` | **每日 12:00 / 20:30**（北京时间）定时抓取订阅源入库（早晚各一次）。晚间档早于 20:50 评分 20 分钟、错开 21:30 基金补数；不调 LLM 无峰谷问题。抓取原先只能靠管理员开页面点「立即抓取」——资讯→Agent 注入链路要无人值守运转就不能依赖人工。与评分/概要共用 `/tmp/quant-news.lock`。日志 `/var/log/quant-news-fetch.log`。 |
 | `0 12 * * *` | `/opt/quant-web/scripts/db_backup.sh` | 线上库热备（`sqlite3 .backup` + `integrity_check`）。日志 `/var/log/quant-db-backup.log`。 |
 
 > ⚠️ **crontab 表达式的时区是服务器时区 `Etc/UTC`**（不是北京时间）：`30 13 * * 1-5` = 北京 21:30、
