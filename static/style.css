@@ -1064,9 +1064,19 @@ th { color: var(--muted); font-weight: 600; }
 @media (max-width: 768px) {
   .news-item { padding: 10px 2px; }
   .news-idx { display: none; }
-  .news-title { font-size: var(--fs-md); }
   .nf-search { flex: 1 1 100%; }
   .nm-url { max-width: 140px; }
+
+  /* G-UX（2026-10-18）：iPhone 等小屏资讯页可读性 — 仅字号/间距调整，不动结构与功能 */
+  .news-title { font-size: 16px; line-height: 1.4; }        /* 标题 14 → 16，更醒目 */
+  .news-summary { font-size: 14px; line-height: 1.7; }      /* 摘要 13 → 14 */
+  .news-meta { font-size: 12px; }                           /* meta 保持小字但不过缩 */
+  .nf-chip { font-size: 13px; padding: 5px 11px; }          /* 筛选 chip 12 → 13，点击区略增 */
+  /* 页头操作按钮（抓取最新/AI 加工/订阅管理/刷新）：移动端**去除外框**、改文字链接样式，
+     字号放大；横向 padding 收紧、靠间距分隔；不改变任何行为。抓取最新(primary)保留填充以
+     突出主操作，其余去框去底读起来像链接 */
+  .news-page .page-head-actions .btn.sm { font-size: 15px; padding: 8px 5px; border-color: transparent; }
+  .news-page .page-head-actions .btn.ghost.sm { color: var(--muted); }
 }
 
 /* ============ P9 · 新建标的支持基金 / 债券 ============ */
