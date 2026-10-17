@@ -267,6 +267,37 @@ class Setting(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class LLMCallLog(Base):
+    """LLM 调用日志（圆桌自动生成 / 测试入口），一次调用一行，供「生成健康度」统计。
+
+    error_kind 分类（app._llm_error_kind）：
+      ok / budget        —— 正文为空且 finish=length（推理模型思考耗尽 max_tokens）
+      empty              —— 正文为空但 finish 不是 length
+      http4xx / http5xx  —— 源站或中继的 HTTP 错误（403 forbidden 多为中继密钥错）
+      network            —— 连接 / DNS / 超时（本机 IPv6-only 环境下的高发类）
+      other              —— 其余
+    thinking_fallback=1 表示触发了「超预算自动关思考兜底」（llm.py 内实现）。
+    """
+    __tablename__ = "llm_call_log"
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    seat_id = Column(Integer, nullable=True)
+    seat_name = Column(String(200), default="")
+    provider = Column(String(64), default="")
+    model = Column(String(128), default="")
+    ok = Column(Integer, default=0)                     # 0 / 1
+    error_kind = Column(String(32), default="")         # 见 docstring
+    error = Column(Text, default="")                    # 原始错误串（截断 500）
+    finish_reason = Column(String(16), default="")
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    reasoning_tokens = Column(Integer, default=0)
+    duration_ms = Column(Integer, default=0)
+    via_relay = Column(Integer, default=0)              # 是否走了中继
+    thinking = Column(String(16), default="")           # off / on
+    thinking_fallback = Column(Integer, default=0)      # 是否触发超预算兜底
+
+
 Base.metadata.create_all(engine)
 
 # ---- 兼容已存在的数据库：补加新列（SQLite 不支持 ALTER ADD COLUMN 进 create_all 自动迁移）----

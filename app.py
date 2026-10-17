@@ -31,7 +31,7 @@ from db import (
     engine, SessionLocal, Project, MarketPrice, Prediction, Feedback,
     User, Session as SessionModel, PasswordResetRequest,
     RoundtableSeat, RoundtablePost, RoundtableStyle, ForumThread, ForumPost, Setting,
-    NewsFeed, NewsItem, SettleReport,
+    NewsFeed, NewsItem, SettleReport, LLMCallLog,
 )
 from models import (
     ProjectCreate, ProjectOut, ProjectUpdate, PricePoint, PredictionCreate, PredictionOut,
@@ -1136,7 +1136,11 @@ PROVIDER_DEFAULTS = {
     "doubao":      {"label": "火山豆包",   "base_url": "https://ark.cn-beijing.volces.com/api/v3",
                     "model": "doubao-seed-2-1-pro-260915", "host": "ark.cn-beijing.volces.com", "group": "国内"},
     "deepseek":    {"label": "DeepSeek",   "base_url": "https://api.deepseek.com",
-                    "model": "deepseek-flash", "host": "api.deepseek.com", "group": "国内"},
+                    "model": "deepseek-flash", "host": "api.deepseek.com", "group": "国内",
+                    # 推理模型：思考与正文共享 max_tokens，圆桌长提示词下思考发散会烧光预算
+                    # （900→1585 字思考、2000→5249 字，reasoning_effort=low 也压不住，
+                    # 2026-10-17 实测）。故默认关思考；兜底逻辑见 llm.chat_complete。
+                    "thinking": "disabled"},
     "moonshot":    {"label": "Kimi 月之暗面", "base_url": "https://api.moonshot.cn/v1",
                     "model": "kimi-k3", "host": "api.moonshot.cn", "group": "国内"},
     "siliconflow": {"label": "硅基流动",   "base_url": "https://api.siliconflow.cn/v1",
@@ -1257,6 +1261,69 @@ def _llm_route(db, base_url: str) -> dict:
     if not (conf.get("url") and conf.get("key")):
         return {}
     return {"via_relay": conf["url"], "relay_key": conf["key"]}
+
+
+def _llm_stats_base(seat_id, m: dict, model, conf: dict = None) -> dict:
+    """构造 llm_call_log 的 stats 雏形（调用前的静态部分）。
+
+    m 为 seat_meta 项（含 provider/name）。conf 非空时补齐 via_relay。
+    """
+    conf = conf or {}
+    return {
+        "seat_id": seat_id,
+        "seat_name": m.get("name") or "",
+        "provider": m.get("provider") or "",
+        "model": model or "",
+        "via_relay": 1 if conf.get("via_relay") else 0,
+        "ok": 0, "error": "", "finish_reason": "",
+        "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0,
+        "duration_ms": 0, "thinking": "", "thinking_fallback": 0,
+    }
+
+
+def _llm_error_kind(ok: bool, error: str, finish_reason: str = "") -> str:
+    """把一次调用的成败归类成稳定枚举（供健康度按类聚合，不逐字 match 错误文本）。"""
+    if ok:
+        return "ok"
+    e = (error or "")
+    if "返回为空" in e or "返回无 choices" in e:
+        # 推理模型思考耗尽预算是独立一类：它跟「没配 Key」的改进动作完全不同
+        return "budget" if finish_reason == "length" else "empty"
+    if "HTTP 403" in e and "forbidden" in e:
+        return "relay_forbidden"     # 中继密钥错（Worker 侧的 403）
+    if "HTTP 4" in e:
+        return "http4xx"
+    if "HTTP 5" in e:
+        return "http5xx"
+    low = e.lower()
+    if ("unreachable" in low or "network" in low or "timed out" in e
+            or "resolve" in low or "not known" in low or "name or service" in low):
+        return "network"
+    return "other"
+
+
+def _log_llm_call(db, seat_id, seat_name: str, stats: dict, ok: bool, error: str = ""):
+    """把一次 LLM 调用写入 llm_call_log（主线程、事务内）。失败只 warning 不回滚观点。"""
+    row = LLMCallLog(
+        seat_id=seat_id,
+        seat_name=seat_name or "",
+        provider=stats.get("provider") or "",
+        model=stats.get("model") or "",
+        ok=1 if ok else 0,
+        error_kind=_llm_error_kind(ok, error, stats.get("finish_reason") or ""),
+        error=(error or stats.get("error") or "")[:500],
+        finish_reason=stats.get("finish_reason") or "",
+        prompt_tokens=stats.get("prompt_tokens") or 0,
+        completion_tokens=stats.get("completion_tokens") or 0,
+        reasoning_tokens=stats.get("reasoning_tokens") or 0,
+        duration_ms=stats.get("duration_ms") or 0,
+        via_relay=stats.get("via_relay") or 0,
+        thinking=stats.get("thinking") or "",
+        thinking_fallback=1 if stats.get("thinking_fallback") else 0,
+    )
+    db.add(row)
+    db.commit()
+    return row
 
 
 def _known_providers(db) -> list:
@@ -1892,6 +1959,63 @@ def rt_get_settings(u: User = Depends(get_current_user), db: Session = Depends(g
     return {"providers": providers, "groups": PROVIDER_GROUPS + [CUSTOM_GROUP]}
 
 
+@app.get("/api/roundtable/llm-stats")
+def rt_llm_stats(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """生成健康度：LLM 调用成功率与失败分析（管理员）。
+
+    数据源 llm_call_log（rt_generate 每次调用一行，含成败/错误分类/tokens/耗时/
+    是否中继/是否触发超预算兜底）。口径：
+      - 7d / 30d 两个窗口（按服务器本地日期切，UTC naive 存储）；
+      - by_kind 为错误分类计数（budget=推理模型超预算、network=连接类、
+        relay_forbidden=中继密钥错、http4xx/http5xx、empty、other）；
+      - by_provider 给出各服务商的成败，用于「换服务商」决策；
+      - fallback_7d 为超预算自动关思考兜底触发次数（>0 说明有模型在裸奔发散）；
+      - recent_failures 最近 10 条失败明细（含错误串截断）。
+    """
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    now = datetime.utcnow()
+    rows = (db.query(LLMCallLog)
+            .filter(LLMCallLog.created_at >= now - timedelta(days=30))
+            .order_by(LLMCallLog.created_at.desc()).all())
+
+    def _win(days):
+        since = now - timedelta(days=days)
+        return [r for r in rows if r.created_at and r.created_at >= since]
+
+    def _agg(rs):
+        ok = sum(1 for r in rs if r.ok)
+        return {"total": len(rs), "ok": ok, "fail": len(rs) - ok,
+                "rate": round(ok / len(rs) * 100, 1) if rs else None}
+
+    by_kind = {}
+    by_provider = {}
+    fallback_7d = 0
+    for r in rows:
+        if not r.ok:
+            by_kind[r.error_kind or "other"] = by_kind.get(r.error_kind or "other", 0) + 1
+        p = r.provider or "?"
+        d = by_provider.setdefault(p, {"total": 0, "ok": 0})
+        d["total"] += 1
+        d["ok"] += 1 if r.ok else 0
+        if r.thinking_fallback and r.created_at and r.created_at >= now - timedelta(days=7):
+            fallback_7d += 1
+    w7 = _win(7)
+    recent = [{
+        "time": (r.created_at.strftime("%m-%d %H:%M") if r.created_at else ""),
+        "seat": r.seat_name, "provider": r.provider, "model": r.model,
+        "kind": r.error_kind, "error": (r.error or "")[:200],
+        "finish": r.finish_reason, "completion": r.completion_tokens,
+        "reasoning": r.reasoning_tokens, "relay": bool(r.via_relay),
+    } for r in rows if not r.ok][:10]
+    return {
+        "d7": _agg(w7), "d30": _agg(rows),
+        "by_kind": by_kind, "by_provider": by_provider,
+        "fallback_7d": fallback_7d,
+        "recent_failures": recent,
+    }
+
+
 @app.put("/api/roundtable/settings")
 def rt_put_settings(body: RoundtableSettingsIn, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """保存某提供方 LLM 配置；api_key 传空串 = 清除已配置的 Key。
@@ -1973,15 +2097,18 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
         conf = confs[sid]
         if not conf.get("api_key"):
             return {"seat_id": sid, "seat_name": m["name"], "ok": False,
-                    "error": f"未配置 {m['provider']} 的 API Key"}
+                    "error": f"未配置 {m['provider']} 的 API Key",
+                    "stats": _llm_stats_base(sid, m, None)}
         # 自定义服务商不在内置表里，取不到默认模型 → 必须显式指定，否则报错而不是崩
         model = (m["model"] or conf.get("model")
                  or (PROVIDER_DEFAULTS.get(m["provider"]) or {}).get("model", ""))
         if not model:
             return {"seat_id": sid, "seat_name": m["name"], "ok": False,
-                    "error": f"未指定模型，且服务商「{m['provider']}」没有默认模型"}
+                    "error": f"未指定模型，且服务商「{m['provider']}」没有默认模型",
+                    "stats": _llm_stats_base(sid, m, None)}
         seat_obj = RoundtableSeat(id=sid, name=m["name"], persona=m["persona"])  # 仅用于拼提示词
         prompt = _snapshot_prompt_text(snap, seat_obj)
+        stats = _llm_stats_base(sid, m, model, conf)
         try:
             content = chat_complete(
                 conf["base_url"], conf["api_key"], model,
@@ -1989,24 +2116,34 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
                  {"role": "user", "content": prompt}],
                 via_relay=conf.get("via_relay") or "",
                 relay_key=conf.get("relay_key") or "",
-                # deepseek-flash 是推理模型：思考与正文共享 max_tokens，圆桌 900 的
-                # 预算会被思考烧光（finish=length、正文空）。圆桌要的是短结构化点评，
-                # 关闭思考（2026-10-17 实测：关思考后 522 tokens 正常产出）。
-                disable_thinking=(m["provider"] == "deepseek"),
+                # 推理模型（deepseek-flash）思考与正文共享 max_tokens，圆桌长提示词下
+                # 思考发散会烧光预算（finish=length、正文空）。策略按 PROVIDER_DEFAULTS
+                # 的 "thinking" 字段走：deepseek=disabled；llm.py 内还有超预算自动兜底。
+                disable_thinking=(PROVIDER_DEFAULTS.get(m["provider"]) or {}).get("thinking") == "disabled",
+                stats=stats,
             )
         except Exception as e:
+            stats["error"] = str(e)[:500]
             return {"seat_id": sid, "seat_name": m["name"], "ok": False,
-                    "error": str(e), "model": model}
+                    "error": str(e), "model": model, "stats": stats}
         if not content.strip():
             return {"seat_id": sid, "seat_name": m["name"], "ok": False,
-                    "error": "模型返回为空", "model": model}
+                    "error": "模型返回为空", "model": model, "stats": stats}
         return {"seat_id": sid, "seat_name": m["name"], "ok": True,
-                "content": content, "model": model}
+                "content": content, "model": model, "stats": stats}
 
     results = []
     with ThreadPoolExecutor(max_workers=min(3, len(seats))) as ex:
         for r in ex.map(_one, [s.id for s in seats]):
             results.append(r)
+    # 每次调用（无论成败）落一行 llm_call_log，供「生成健康度」统计与失败追溯
+    for r in results:
+        try:
+            _log_llm_call(db, r.get("seat_id"), r.get("seat_name"), r.get("stats") or {},
+                          ok=bool(r.get("ok")), error=r.get("error") or "")
+        except Exception as e:
+            logger.warning("llm_call_log 写入失败: %s", e)
+            db.rollback()
     # 主线程统一写库；每条观点入库后同步进论坛存档（同一「席位 × 日期」一个主题帖）
     seat_by_id = {s.id: s for s in seats}
     for r in results:

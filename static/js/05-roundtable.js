@@ -41,7 +41,7 @@ const RT_MODES = {
   mcp:    { label: "MCP 待接", cls: "mode-mcp" },
 };
 function rtModeInfo(m) { return RT_MODES[m] || RT_MODES.manual; }
-let rtState = { date: null, snap: null, seats: [], styles: [], posts: {}, settings: null, history: null, admin: false };
+let rtState = { date: null, snap: null, seats: [], styles: [], posts: {}, settings: null, history: null, admin: false, llmStats: null };
 const rtAdmin = () => !!(me && me.is_admin);
 
 // P7：首页已改为「资讯工作台」，圆桌是二级页。
@@ -195,12 +195,14 @@ async function rtLoadAll() {
     rtState.posts = {};
     (posts || []).forEach(p => { rtState.posts[p.seat_id] = p; });
     if (rtState.admin) {
-      const [settings, styles] = await Promise.all([
+      const [settings, styles, stats] = await Promise.all([
         API("GET", "/api/roundtable/settings").catch(() => null),
         API("GET", "/api/roundtable/styles").catch(() => []),
+        API("GET", "/api/roundtable/llm-stats").catch(() => null),
       ]);
       rtState.settings = settings;
       rtState.styles = styles || [];
+      rtState.llmStats = stats;
     }
   } catch (e) {
     showToast("圆桌数据加载失败：" + e.message);
@@ -572,6 +574,7 @@ async function rtReloadSeats() {
 
 async function rtReloadSettings() {
   rtState.settings = await API("GET", "/api/roundtable/settings").catch(() => null);
+  rtState.llmStats = await API("GET", "/api/roundtable/llm-stats").catch(() => null);
   rtState.seats = await API("GET", "/api/roundtable/seats");
   rtRenderSettings();
   rtRenderSeats();
@@ -929,6 +932,46 @@ function rtRenderStyles() {
 let rtProvOpen = null;      // Set<provider>；null = 尚未按「已配置」初始化过
 let rtAddFormOpen = false;  // 「＋ 自定义服务商」表单是否展开
 
+// ---- 生成健康度（LLM 调用成功率 / 失败分类 / 超预算兜底，管理员可见） ----
+// 数据来自 GET /api/roundtable/llm-stats（llm_call_log 表聚合）。
+// 设计意图：把「点了没反应」变成可归因的数字——成功率低时按 by_kind 直接定位
+// （budget=推理模型超预算、network=连接、relay_forbidden=中继密钥错）。
+const LLM_KIND_LABEL = {
+  budget: "推理超预算", empty: "空返回", network: "连接失败",
+  relay_forbidden: "中继密钥错", http4xx: "源站4xx", http5xx: "源站5xx", other: "其他",
+};
+function rtHealthHtml() {
+  const s = rtState.llmStats;
+  if (!s || !(s.d7 || s.d30)) return "";
+  const rateCls = (r) => (r === null ? "" : r >= 90 ? "llm-good" : r >= 70 ? "llm-warn" : "llm-bad");
+  const cell = (w) => {
+    if (!w || !w.total) return `<span class="muted">暂无调用</span>`;
+    const cls = rateCls(w.rate);
+    return `<span class="llm-rate ${cls}">${w.rate}%</span><span class="muted"> ${w.ok}/${w.total}</span>`;
+  };
+  const kinds = Object.entries(s.by_kind || {}).map(([k, n]) =>
+    `<span class="llm-chip" title="${escapeHtml(LLM_KIND_LABEL[k] || k)}">${escapeHtml(LLM_KIND_LABEL[k] || k)} ×${n}</span>`).join("");
+  const provs = Object.entries(s.by_provider || {}).map(([p, d]) =>
+    `<span class="llm-chip${d.ok === d.total ? "" : " llm-chip-warn"}" title="${d.ok}/${d.total} 成功">${escapeHtml(p)} ${d.ok}/${d.total}</span>`).join("");
+  const fails = (s.recent_failures || []).map(f => `
+    <div class="llm-fail-row"><span class="muted">${escapeHtml(f.time)}</span>
+      <span>${escapeHtml(f.seat)}</span><span class="muted">${escapeHtml(f.provider)}${f.relay ? " ·中继" : ""}</span>
+      <span class="llm-chip">${escapeHtml(LLM_KIND_LABEL[f.kind] || f.kind || "-")}</span>
+      <span class="grow muted" title="${escapeHtml(f.error)}">${escapeHtml(f.error).slice(0, 60)}</span>
+    </div>`).join("");
+  return `
+  <div class="llm-health">
+    <div class="row rt-health-head">
+      <span class="th">生成健康度</span>
+      <span class="muted">近7天 ${cell(s.d7)} · 近30天 ${cell(s.d30)}</span>
+      ${s.fallback_7d ? `<span class="llm-chip llm-chip-warn" title="有模型思考发散烧光预算，已自动关思考重试兜底">兜底 ×${s.fallback_7d}</span>` : ""}
+    </div>
+    ${kinds ? `<div class="row rt-health-line">${kinds}</div>` : ""}
+    ${provs ? `<div class="row rt-health-line muted">${provs}</div>` : ""}
+    ${fails ? `<div class="llm-fail-list">${fails}</div>` : `<p class="rt-inline-note">近期无失败调用。</p>`}
+  </div>`;
+}
+
 function rtRenderSettings() {
   const body = document.getElementById("rt-settings-body");
   if (!body) return;
@@ -945,7 +988,7 @@ function rtRenderSettings() {
     if (!m || typeof m.reachable !== "boolean") return "";
     return m.reachable
       ? `<span class="rt-reach ok" title="本机可以直连该域名">可达</span>`
-      : `<span class="rt-reach bad" title="本机连不上该域名：本服务器只有 IPv6 出口，IPv4-only 的服务商（如 DeepSeek）在此不可用，只能换服务商或走中继。">不可达</span>`;
+      : `<span class="rt-reach bad" title="本机直连不可达（该域名无 IPv6 记录，本服务器只有 IPv6 出口）。调用时会自动经中继（relay.kapibala.icu）转发，通常不影响使用。">不可达</span>`;
   };
 
   const rowHtml = (p, m) => {
@@ -998,6 +1041,8 @@ function rtRenderSettings() {
       <button class="btn-mini ghost" id="rt-add-provider-toggle">＋ 自定义服务商</button>
     </div>`;
 
+  const health = rtHealthHtml();
+
   const addRow = `
     <div class="rt-settings-row rt-settings-add${rtAddFormOpen ? "" : " hidden"}" id="rt-add-provider-form">
       <div class="row">
@@ -1008,8 +1053,8 @@ function rtRenderSettings() {
       </div>
     </div>`;
 
-  body.innerHTML = bar + addRow + rows +
-    `<p class="rt-inline-note">「可达」= 本服务器能否直连该 base_url 的主机端口。本机只有 IPv6 出口，标「本机不可达」的服务商即使配好 Key 也无法生成，需换服务商或走中继。<br>模型名各厂商改版较快，可直接在展开行里改成当前可用的型号；任何 OpenAI 兼容服务都可用上方「＋ 自定义服务商」接入（填名称 + base_url + model）。</p>`;
+  body.innerHTML = bar + health + addRow + rows +
+    `<p class="rt-inline-note">「可达」= 本服务器能否直连该 base_url 的主机端口。本机只有 IPv6 出口，标「不可达」的服务商（如 DeepSeek / Moonshot，无 IPv6 记录）调用时会自动经中继（relay.kapibala.icu）转发，无需手动切换。<br>模型名各厂商改版较快，可直接在展开行里改成当前可用的型号；任何 OpenAI 兼容服务都可用上方「＋ 自定义服务商」接入（填名称 + base_url + model）。</p>`;
 
   // 折叠 / 展开（重渲染而非就地显隐：折叠态统一由 rtProvOpen 决定，避免有输入值时状态错位）
   body.querySelectorAll("[data-toggle-prov]").forEach(b => b.onclick = () => {

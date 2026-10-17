@@ -7,14 +7,26 @@
 没有任何直连路径，改经 rss-relay（relay.kapibala.icu）的 POST 通道转发：
 请求发到 `{via_relay}/post?url={原URL}`，原 Authorization 由 Worker 透传给源站。
 调用方在目标主机不可达且中继已配置时才启用（见 app._llm_route），本模块不判断可达性。
+
+推理模型的思考预算（2026-10-17）：deepseek-flash 等推理模型的
+reasoning_content 与正文**共享 max_tokens**。长提示词下思考会发散、把预算烧光，
+表现为 finish=length 且正文为空（圆桌提示词实测：900 烧 1585 字思考、
+2000 烧 5249 字，reasoning_effort=low 也压不住）。三种应对：
+  - disable_thinking=True：请求带 thinking:{type:"disabled"}（对 DeepSeek 实测有效）；
+  - reasoning_effort：部分厂商支持，可压低思考量（未全覆盖验证）；
+  - 自动兜底：思考未关却超预算时，自动降级重试一次（关思考），防呆不依赖配置。
+    兜底成功会打 warning，调用方从 stats["thinking_fallback"] 得知。
 """
 import json
+import logging
 import socket
 import ssl
 import time
 import urllib.parse
 import urllib.request
 import urllib.error
+
+log = logging.getLogger("quant-web.llm")
 
 # 强制 IPv6 解析（与 scripts/fetch_fund_nav.py 同一原因：本机 IPv4 出口不可达）
 _orig_getaddrinfo = socket.getaddrinfo
@@ -39,19 +51,41 @@ def chat_complete(base_url: str, api_key: str, model: str, messages: list,
                   timeout: int = 40, max_tokens: int = 900,
                   temperature: float = 0.4, retries: int = 1,
                   via_relay: str = "", relay_key: str = "",
-                  disable_thinking: bool = False) -> str:
+                  disable_thinking: bool = False, reasoning_effort: str = "",
+                  stats: dict = None) -> str:
     """调用 OpenAI 兼容聊天接口，返回文本内容。失败抛 RuntimeError。
 
     via_relay：中继基址（如 https://relay.kapibala.icu）。非空时请求改走
     `{via_relay}/post?url=<base_url>/chat/completions`，relay_key 作为
     x-relay-key 头；源站鉴权仍靠原 api_key（Worker 透传 Authorization）。
-    disable_thinking：推理模型的思考（reasoning_content）与正文**共享**
-    max_tokens 预算——长提示词下思考可能耗尽预算、正文为空（finish=length）。
-    传 True 时附带 `thinking: {"type": "disabled"}` 关闭思考
-    （2026-10-17 对 deepseek-flash 实测有效；其他厂商未验证，勿盲开）。
+    disable_thinking：关闭推理模型的思考（请求带 thinking:{type:"disabled"}）。
+    reasoning_effort：可选 low/medium/high，压思考档位（厂商支持情况不一）。
+    stats：可选出参 dict，回填本次调用的诊断信息（供 app 层落 llm_call_log）：
+      ok, finish_reason, prompt_tokens, completion_tokens, reasoning_tokens,
+      duration_ms, via_relay(0/1), thinking("off"/"on"), thinking_fallback(0/1),
+      error（失败时的错误串）。异常路径上也会尽力回填（ok=0 + error）。
     4xx（Key 无效 / 参数错误）不重试直接抛错；429 与 5xx、网络异常按 retries 重试。
     证书校验失败时自动降级为不验证重试一次（本机 CA 链可能不全）。
     """
+    t0 = time.time()
+    if stats is None:
+        stats = {}
+    stats.setdefault("model", model)
+    stats.setdefault("via_relay", 1 if via_relay else 0)
+    stats["thinking"] = "off" if disable_thinking else "on"
+
+    def _finish(ok: bool, err: str = ""):
+        stats["ok"] = 1 if ok else 0
+        if err:
+            stats["error"] = err[:500]
+        stats["duration_ms"] = int((time.time() - t0) * 1000)
+        log.info("llm call model=%s ok=%s finish=%s completion=%s dur=%sms "
+                 "relay=%s thinking=%s fallback=%s err=%s",
+                 model, ok, stats.get("finish_reason"),
+                 stats.get("completion_tokens"), stats["duration_ms"],
+                 stats["via_relay"], stats["thinking"],
+                 stats.get("thinking_fallback", 0), err[:120])
+
     url = base_url.rstrip("/") + "/chat/completions"
     payload = {
         "model": model,
@@ -61,6 +95,8 @@ def chat_complete(base_url: str, api_key: str, model: str, messages: list,
     }
     if disable_thinking:
         payload["thinking"] = {"type": "disabled"}
+    elif reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
@@ -78,28 +114,61 @@ def chat_complete(base_url: str, api_key: str, model: str, messages: list,
         choices = j.get("choices") or []
         if not choices:
             raise RuntimeError("LLM 返回无 choices")
-        msg = choices[0].get("message") or {}
+        ch = choices[0]
+        msg = ch.get("message") or {}
         content = msg.get("content") or ""
+        usage = j.get("usage") or {}
+        stats["finish_reason"] = ch.get("finish_reason") or ""
+        stats["prompt_tokens"] = usage.get("prompt_tokens") or 0
+        stats["completion_tokens"] = usage.get("completion_tokens") or 0
+        stats["reasoning_tokens"] = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
         if not content.strip():
-            # 推理模型（如 deepseek-flash）的思考与正文共享 max_tokens：
-            # finish=length 且正文空 = 预算被 reasoning_content 烧光，不是没生成。
-            fr = choices[0].get("finish_reason")
+            # 推理模型的思考与正文共享 max_tokens：finish=length 且正文空
+            # = 预算被 reasoning_content 烧光，不是没生成（2026-10-17 圆桌实测）。
+            fr = ch.get("finish_reason")
             hint = ("推理模型的思考耗尽了 max_tokens（正文未开始即被截断），"
                     "可关思考或加大 max_tokens" if fr == "length"
                     else f"finish_reason={fr}，请检查模型名与参数")
-            raise RuntimeError(f"模型返回为空（finish_reason={fr}）：{hint}")
+            raise _EmptyContent(f"模型返回为空（finish_reason={fr}）：{hint}")
         return content
+
+    class _EmptyContent(RuntimeError):
+        """正文为空（多为推理模型超预算），供自动兜底识别。"""
 
     last_err = None
     for attempt in range(retries + 1):
         try:
-            return _post(verify=True)
+            content = _post(verify=True)
+            _finish(True)
+            return content
         except ssl.SSLError:
             # 证书链问题：降级不验证再试一次（仍走 HTTPS 加密通道）
             try:
-                return _post(verify=False)
+                content = _post(verify=False)
+                _finish(True)
+                return content
             except Exception as e:
                 last_err = e
+        except _EmptyContent as e:
+            # 思考没关却超预算 → 自动降级：关思考重试一次（配置防呆）。
+            # 已关过还空 → 是真的没内容，按普通错误抛出。
+            if not disable_thinking:
+                log.warning("llm 超预算兜底：%s → 关思考重试（model=%s）", e, model)
+                stats["thinking_fallback"] = 1
+                disable_thinking = True
+                payload["thinking"] = {"type": "disabled"}
+                data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                stats["thinking"] = "off"
+                try:
+                    content = _post(verify=True)
+                    stats["thinking_fallback"] = 1
+                    _finish(True)
+                    return content
+                except Exception as e2:
+                    _finish(False, str(e2))
+                    raise RuntimeError(str(e2))
+            _finish(False, str(e))
+            raise
         except urllib.error.HTTPError as e:
             body = ""
             try:
@@ -107,10 +176,12 @@ def chat_complete(base_url: str, api_key: str, model: str, messages: list,
             except Exception:
                 pass
             if 400 <= e.code < 500 and e.code != 429:
+                _finish(False, f"LLM HTTP {e.code}: {body}")
                 raise RuntimeError(f"LLM HTTP {e.code}: {body}")
             last_err = RuntimeError(f"LLM HTTP {e.code}: {body}")
         except Exception as e:
             last_err = e
         if attempt < retries:
             time.sleep(1.5 * (attempt + 1))
+    _finish(False, str(last_err))
     raise last_err if last_err else RuntimeError("LLM 调用失败")

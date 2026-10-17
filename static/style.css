@@ -552,6 +552,31 @@ th { color: var(--muted); font-weight: 600; }
 }
 .rt-reach.ok  { color: var(--green); }
 .rt-reach.bad { color: var(--red); }
+
+/* 生成健康度（AI 设置顶部，管理员）：LLM 调用成功率 / 失败分类 / 兜底次数。
+   配色不用 .pos/.neg（那是行情涨红跌绿），成败语义独立：good/warn/bad。 */
+.llm-health {
+  border: var(--bd-w) solid var(--line-2, var(--border));
+  border-radius: var(--radius-md); padding: 10px 12px; margin-bottom: 12px;
+  background: var(--bg-2, transparent);
+}
+.rt-health-head { justify-content: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.rt-health-line { flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.llm-rate { font-weight: 500; font-variant-numeric: tabular-nums; }
+.llm-rate.llm-good { color: var(--green); }
+.llm-rate.llm-warn { color: var(--amber, #b58900); }
+.llm-rate.llm-bad  { color: var(--red); }
+.llm-chip {
+  font-size: var(--fs-xs); padding: 0 6px; border-radius: var(--radius-pill);
+  border: var(--bd-w) solid var(--border); white-space: nowrap;
+}
+.llm-chip-warn { border-color: var(--amber, #b58900); color: var(--amber, #b58900); }
+.llm-fail-list { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+.llm-fail-row {
+  display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs);
+  padding: 2px 0; border-top: var(--bd-w) solid var(--border);
+}
+.llm-fail-row > .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 「＋ 自定义服务商」那一行用虚线区分，表示它是操作入口而非已配置项 */
 .rt-settings-add { border-style: dashed; }
 
