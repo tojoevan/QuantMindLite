@@ -38,12 +38,17 @@ def _ssl_ctx(verify: bool) -> ssl.SSLContext:
 def chat_complete(base_url: str, api_key: str, model: str, messages: list,
                   timeout: int = 40, max_tokens: int = 900,
                   temperature: float = 0.4, retries: int = 1,
-                  via_relay: str = "", relay_key: str = "") -> str:
+                  via_relay: str = "", relay_key: str = "",
+                  disable_thinking: bool = False) -> str:
     """调用 OpenAI 兼容聊天接口，返回文本内容。失败抛 RuntimeError。
 
     via_relay：中继基址（如 https://relay.kapibala.icu）。非空时请求改走
     `{via_relay}/post?url=<base_url>/chat/completions`，relay_key 作为
     x-relay-key 头；源站鉴权仍靠原 api_key（Worker 透传 Authorization）。
+    disable_thinking：推理模型的思考（reasoning_content）与正文**共享**
+    max_tokens 预算——长提示词下思考可能耗尽预算、正文为空（finish=length）。
+    传 True 时附带 `thinking: {"type": "disabled"}` 关闭思考
+    （2026-10-17 对 deepseek-flash 实测有效；其他厂商未验证，勿盲开）。
     4xx（Key 无效 / 参数错误）不重试直接抛错；429 与 5xx、网络异常按 retries 重试。
     证书校验失败时自动降级为不验证重试一次（本机 CA 链可能不全）。
     """
@@ -54,6 +59,8 @@ def chat_complete(base_url: str, api_key: str, model: str, messages: list,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if disable_thinking:
+        payload["thinking"] = {"type": "disabled"}
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
@@ -71,7 +78,17 @@ def chat_complete(base_url: str, api_key: str, model: str, messages: list,
         choices = j.get("choices") or []
         if not choices:
             raise RuntimeError("LLM 返回无 choices")
-        return (choices[0].get("message") or {}).get("content") or ""
+        msg = choices[0].get("message") or {}
+        content = msg.get("content") or ""
+        if not content.strip():
+            # 推理模型（如 deepseek-flash）的思考与正文共享 max_tokens：
+            # finish=length 且正文空 = 预算被 reasoning_content 烧光，不是没生成。
+            fr = choices[0].get("finish_reason")
+            hint = ("推理模型的思考耗尽了 max_tokens（正文未开始即被截断），"
+                    "可关思考或加大 max_tokens" if fr == "length"
+                    else f"finish_reason={fr}，请检查模型名与参数")
+            raise RuntimeError(f"模型返回为空（finish_reason={fr}）：{hint}")
+        return content
 
     last_err = None
     for attempt in range(retries + 1):

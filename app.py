@@ -1989,6 +1989,10 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
                  {"role": "user", "content": prompt}],
                 via_relay=conf.get("via_relay") or "",
                 relay_key=conf.get("relay_key") or "",
+                # deepseek-flash 是推理模型：思考与正文共享 max_tokens，圆桌 900 的
+                # 预算会被思考烧光（finish=length、正文空）。圆桌要的是短结构化点评，
+                # 关闭思考（2026-10-17 实测：关思考后 522 tokens 正常产出）。
+                disable_thinking=(m["provider"] == "deepseek"),
             )
         except Exception as e:
             return {"seat_id": sid, "seat_name": m["name"], "ok": False,
