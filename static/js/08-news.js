@@ -205,7 +205,7 @@ function newsItemHtml(it, idx) {
         <div class="news-meta">
           <span class="news-time">${escapeHtml(it.time || "—")}</span>
           ${it.source_name ? `<span class="news-source">${escapeHtml(it.source_name)}</span>` : ""}
-          ${it.category ? `<span class="news-cat">${escapeHtml(it.category)}</span>` : ""}
+          ${it.category ? it.category.split(",").filter(Boolean).map(c => `<span class="news-cat">${escapeHtml(c.trim())}</span>`).join("") : ""}
           ${score}
           ${rel}
         </div>
