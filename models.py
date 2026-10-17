@@ -201,6 +201,12 @@ class RoundtableGenerateReq(BaseModel):
     seat_ids: Optional[list[int]] = None   # 缺省全部可自动生成的席位
 
 
+class RoundtableReviewReq(BaseModel):
+    """手动触发观点复盘：date 指定单日；days 指定补批回溯天数；都不给则跑每日（昨日+近窗补算）。"""
+    date: Optional[str] = None
+    days: Optional[int] = None
+
+
 # ================= 论坛 =================
 # 身份：user=用户本人（author_type=user）/ agent=AI 席位（author_type=agent + seat_id，仅管理员）
 class ForumThreadCreate(BaseModel):

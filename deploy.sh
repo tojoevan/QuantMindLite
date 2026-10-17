@@ -33,7 +33,7 @@ RELEASE_ROOT="/opt/quant-web-releases"     # 远端备份根目录
 SERVICE="quant-web"                        # systemd 服务名
 PORT="8090"                                # uvicorn 端口（仅监听 127.0.0.1）
 KEEP_BACKUPS=5                             # 远端保留备份份数
-PY_FILES=(app.py db.py models.py predictor.py datasource.py llm.py newsfetch.py newsai.py)
+PY_FILES=(app.py db.py models.py predictor.py datasource.py llm.py newsfetch.py newsai.py rtreview.py)
 
 # ---------------- 输出 ----------------
 if [ -t 1 ]; then

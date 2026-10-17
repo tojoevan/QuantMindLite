@@ -39,6 +39,7 @@ from models import (
     RoundtableSeatCreate, RoundtableSeatUpdate, RoundtableSeatOut,
     RoundtablePostIn, RoundtablePostOut, RoundtableSettingsIn, RoundtableGenerateReq,
     RoundtableArchiveReq,
+    RoundtableReviewReq,
     RoundtableStyleCreate, RoundtableStyleUpdate, RoundtableStyleOut,
     ForumThreadCreate, ForumPostCreate, ForumPostOut, ForumThreadOut, ForumThreadDetail,
     NewsFeedCreate, NewsFeedUpdate, NewsFeedOut, NewsItemOut, NewsFetchReq, NewsSettingsIn,
@@ -53,6 +54,7 @@ from datasource import (
 from llm import chat_complete
 import newsfetch
 import newsai
+import rtreview
 
 app = FastAPI(title="慢量化操作台", version="0.1.0")
 
@@ -2092,6 +2094,53 @@ def rt_llm_stats(u: User = Depends(get_current_user), db: Session = Depends(get_
         "fallback_7d": fallback_7d,
         "recent_failures": recent,
     }
+
+
+@app.get("/api/roundtable/review/stats")
+def rt_review_stats(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """观点复盘面板数据（G3）：席位命中率 / 趋势 / 引用资讯信息量 / 样本明细。
+
+    判定全部机械（方向 × 真实收益），LLM 只负责「文本 → 结构化」抽取，
+    不在后端做任何「对错」判断——这是平台「可解释、人在回路」的底线。
+    命中率口径为 T+5（与策略外推 5 交易日同尺度）；hold/observe 与
+    |收益|<FLAT_BAND 的无效波动一律不计入命中率分母。
+    """
+    return {
+        "seat_stats": rtreview.seat_stats(db),
+        "trend": rtreview.trend_stats(db),
+        "news_hit": rtreview.news_hit_stats(db),
+        "samples": rtreview.samples(db, limit=50),
+        "meta": {"flat_band": rtreview.FLAT_BAND, "horizon": rtreview.HORIZON,
+                 "min_sample": rtreview.MIN_SAMPLE, "review_days": rtreview.REVIEW_DAYS},
+    }
+
+
+@app.post("/api/roundtable/review")
+def rt_review_run(body: Optional[RoundtableReviewReq] = None,
+                  u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """管理员手动触发复盘：date 复盘单日；days 补批历史（缺哪抽哪）；都不给则跑每日（昨日+近窗补算）。
+
+    抽取用资讯 AI 的 LLM 配置（news_llm_conf），与资讯评分/概要同源；
+    判定机械（方向 × 真实行情），不依赖任何模型事后自评。
+    """
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    try:
+        conf = news_llm_conf(db)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    date = (body.date if body and body.date else None)
+    days = (body.days if body and body.days else None)
+    if date:
+        r = rtreview.run_review(db, conf, date)
+        mode = "date"
+    elif days:
+        r = rtreview.backfill(db, conf, days)
+        mode = "backfill"
+    else:
+        r = rtreview.daily(db, conf)
+        mode = "daily"
+    return {"ok": True, "mode": mode, "result": r}
 
 
 @app.put("/api/roundtable/settings")
