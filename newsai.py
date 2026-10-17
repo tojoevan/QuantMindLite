@@ -35,6 +35,8 @@ SCORE_WINDOW_DAYS = 5       # 加工窗口：只处理最近 N 天发布且未�
 SCORE_MIN = 3               # 注入/概要的最低重要度（1-5 分制）
 PROMPT_DAYS = 3             # 注入窗口：近 72 小时（资讯影响有滞后，当天太窄）
 PROMPT_TOPK = 10            # 单次提示词最多注入几条（持仓相关优先，再补市场级大事）
+MARKET_MIN = 3              # 其中至少留几条市场级（非持仓相关）——科技重仓下行业新闻
+                            # 会占满注入位，没这条规则大盘大事一条都进不去
 DIGEST_MIN_SCORE = 4        # 进「市场概要」的最低重要度
 DIGEST_MAX_ITEMS = 6        # 概要喂给编辑模型的素材上限
 SUMMARY_SNIP = 150          # 送评分时摘要截断长度（原文可能几千字，烧 token）
@@ -353,13 +355,16 @@ def log_injections(db, date_s: str, item_ids) -> int:
 
 def select_news_for_prompt(db, holding_codes, today: str,
                            days: int = PROMPT_DAYS, top_k: int = PROMPT_TOPK,
-                           min_score: int = SCORE_MIN) -> list:
+                           min_score: int = SCORE_MIN,
+                           market_min: int = MARKET_MIN) -> list:
     """选注入席位提示词的资讯：持仓相关的排最前，再按重要度补市场级大事。
 
     - 窗口：近 days 天发布、已加工且重要度 >= min_score；
     - 去重：同题副本（ai_dup_of 指向的主条目也在候选里）跳过；
     - 防重复喂：**上次注入日期 < 今天**的才排除（同一天重复生成/试跑仍带同一批，
       第二天起让位给新条目——否则一个政策会连读三天）。
+    - 配额：市场级至少保底 market_min 条（候选里不够就有多少给多少）——否则
+      持仓偏科技时行业新闻会占满 top_k，大盘大事一条都进不去。
     返回 [{id, title, source, date, time, score, reason, codes, link, related}]。
     """
     codes = {norm_code(c) for c in (holding_codes or []) if norm_code(c)}
@@ -402,7 +407,10 @@ def select_news_for_prompt(db, holding_codes, today: str,
                      key=lambda x: (-(x["score"] or 0), x["id"]))
     market = sorted([p for p in picked if not p["related"]],
                     key=lambda x: (-(x["score"] or 0), x["id"]))
-    return (related + market)[:top_k]
+    # 市场级保底：候选里有几条市场级就保几条（上限 market_min），剩余名额给持仓相关
+    market_quota = min(market_min, len(market))
+    head = related[:max(top_k - market_quota, 0)]
+    return (head + market)[:top_k]
 
 
 def news_prompt_block(items: list) -> str:
