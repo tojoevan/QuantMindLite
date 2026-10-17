@@ -19,7 +19,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -3308,6 +3308,52 @@ def news_update_feed(fid: int, body: NewsFeedUpdate, u: User = Depends(get_curre
         f.sort = body.sort
     db.commit()
     return _news_feed_out(db, f)
+
+
+def _xml_attr(s: str) -> str:
+    """XML 属性值转义。OPML 里源标题/地址都可能带 & < > " '（财经源名尤其爱用 &）。"""
+    return (str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;").replace("'", "&apos;"))
+
+
+@app.get("/api/news/feeds/export-opml")
+def news_export_opml(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """导出现有订阅源为 OPML（换机 / 备份 / 分享订阅清单用）。
+
+    按 category 分组输出（与导入时的「源级/统一分类」对称）；无分类的源平铺在根下。
+    刻意**只导启用的源**——停用说明源有问题，导出去再导入只会得到一批待体检的僵尸源。
+    """
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    feeds = db.query(NewsFeed).order_by(NewsFeed.sort, NewsFeed.id).all()
+    groups: dict = {}
+    for f in feeds:
+        if not f.enabled:
+            continue
+        groups.setdefault((f.category or "").strip(), []).append(f)
+
+    L = ['<?xml version="1.0" encoding="UTF-8"?>',
+         '<opml version="2.0">', "<head>",
+         "<title>QuantMind 资讯订阅</title>",
+         f"<dateCreated>{datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S')} +0000</dateCreated>",
+         "</head>", "<body>"]
+    for cat in sorted(groups, key=lambda c: (c == "", c)):
+        kids = groups[cat]
+        if cat:
+            L.append(f'  <outline text="{_xml_attr(cat)}" title="{_xml_attr(cat)}">')
+        for f in kids:
+            attrs = (f'type="rss" text="{_xml_attr(f.title or f.url)}" '
+                     f'title="{_xml_attr(f.title or f.url)}" '
+                     f'xmlUrl="{_xml_attr(f.url)}"')
+            if (f.site_url or "").strip():
+                attrs += f' htmlUrl="{_xml_attr(f.site_url)}"'
+            L.append(f'    <outline {attrs} />')
+        if cat:
+            L.append("  </outline>")
+    L += ["</body>", "</opml>", ""]
+    return Response("\n".join(L), media_type="application/xml",
+                    headers={"Content-Disposition":
+                             'attachment; filename="quant-news-feeds.opml"'})
 
 
 @app.delete("/api/news/feeds/{fid}")

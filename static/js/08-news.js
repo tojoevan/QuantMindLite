@@ -432,6 +432,8 @@ async function newsOpenManage() {
         <input type="file" id="nm-opml-file" accept=".opml,.xml,text/xml,application/xml" />
         <input name="category" placeholder="统一分类（可选，如 财经）" />
         <button class="btn ghost sm" type="submit">⇪ 解析并导入</button>
+        <button class="btn ghost sm" type="button" id="nm-opml-export"
+          title="把当前订阅清单存成 OPML 文件（换机/备份用；只含启用的源）">⇩ 导出 OPML</button>
       </div>
     </form>
     <div id="nm-opml-report">${newsState.opmlReport ? newsOpmlReport(newsState.opmlReport) : ""}</div>
@@ -506,6 +508,31 @@ async function newsOpenManage() {
     };
     rd.onerror = () => showToast("读取文件失败");
     rd.readAsText(file, "utf-8");
+  };
+  const opmlExport = box.querySelector("#nm-opml-export");
+  if (opmlExport) opmlExport.onclick = async () => {
+    opmlExport.disabled = true;
+    try {
+      // 导出是 XML 附件，不能走 API()（它只吃 JSON）——原生 fetch + blob 下载
+      const r = await fetch("/api/news/feeds/export-opml", {
+        headers: { "Authorization": "Bearer " + token },
+      });
+      if (!r.ok) {
+        let m = r.status + " " + r.statusText;
+        try { const j = JSON.parse(await r.text()); if (j.detail) m = j.detail; } catch (e) {}
+        throw new Error(m);
+      }
+      const blob = await r.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "quant-news-feeds.opml";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+      showToast("已导出 OPML（只含启用的源）");
+    } catch (e) { showToast("导出失败：" + e.message); }
+    opmlExport.disabled = false;
   };
   box.querySelector("#nm-opml").onsubmit = async (e) => {
     e.preventDefault();
