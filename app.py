@@ -1242,6 +1242,23 @@ def _host_reachable(target) -> bool:
     return ok
 
 
+def _llm_route(db, base_url: str) -> dict:
+    """LLM 出站路由：目标主机本机不可达（无 AAAA，如 DeepSeek/Moonshot）且中继
+    已配置时，返回走 rss-relay POST 通道所需的参数；否则返回空 dict（直连）。
+
+    只在主线程、有 db 的地方调用（内部读 settings 表）；可达性探测有 5 分钟缓存。
+    误判方向安全：把「可达」误判成「不可达」只是多绕一跳中继（结果一样），
+    反过来才危险——而 _host_reachable 的探测路径与 chat_complete 完全一致。
+    """
+    host, port = _reach_target(base_url)
+    if _host_reachable((host, port)):
+        return {}
+    conf = newsfetch.relay_conf(db)
+    if not (conf.get("url") and conf.get("key")):
+        return {}
+    return {"via_relay": conf["url"], "relay_key": conf["key"]}
+
+
 def _known_providers(db) -> list:
     """内置提供方 + 用户自建的自定义提供方（扫 settings 里出现过的 `llm.<name>.*`）。
 
@@ -1943,7 +1960,13 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
     # 风格提示词在这里（主线程、有 db）就解析好——里面可能来自风格模板，工作线程取不到。
     seat_meta = {s.id: {"name": s.name or "", "provider": s.provider or "deepseek",
                         "model": s.model or "", "persona": _resolve_persona(s, db)} for s in seats}
-    confs = {sid: _get_llm_conf(db, m["provider"]) for sid, m in seat_meta.items()}
+    # 出站路由（无 AAAA 的服务商自动走 rss-relay）必须在主线程算好——
+    # _llm_route 读 settings 表，工作线程不碰 db session。
+    confs = {}
+    for sid, m in seat_meta.items():
+        c = _get_llm_conf(db, m["provider"])
+        c.update(_llm_route(db, c["base_url"]))
+        confs[sid] = c
 
     def _one(sid: int):
         m = seat_meta[sid]
@@ -1964,6 +1987,8 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
                 conf["base_url"], conf["api_key"], model,
                 [{"role": "system", "content": _LLM_SYSTEM},
                  {"role": "user", "content": prompt}],
+                via_relay=conf.get("via_relay") or "",
+                relay_key=conf.get("relay_key") or "",
             )
         except Exception as e:
             return {"seat_id": sid, "seat_name": m["name"], "ok": False,

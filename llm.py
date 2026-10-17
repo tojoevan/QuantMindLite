@@ -2,11 +2,17 @@
 
 适配 DeepSeek / 智谱 / Moonshot / OpenAI 等：只需 base_url + api_key + model。
 本机 VPS 出站仅 IPv6 可达（IPv4 不可达），强制 getaddrinfo 走 AF_INET6。
+
+中继通道（via_relay，2026-10-17）：无 AAAA 的服务商（DeepSeek / Moonshot）在本机
+没有任何直连路径，改经 rss-relay（relay.kapibala.icu）的 POST 通道转发：
+请求发到 `{via_relay}/post?url={原URL}`，原 Authorization 由 Worker 透传给源站。
+调用方在目标主机不可达且中继已配置时才启用（见 app._llm_route），本模块不判断可达性。
 """
 import json
 import socket
 import ssl
 import time
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -31,9 +37,13 @@ def _ssl_ctx(verify: bool) -> ssl.SSLContext:
 
 def chat_complete(base_url: str, api_key: str, model: str, messages: list,
                   timeout: int = 40, max_tokens: int = 900,
-                  temperature: float = 0.4, retries: int = 1) -> str:
+                  temperature: float = 0.4, retries: int = 1,
+                  via_relay: str = "", relay_key: str = "") -> str:
     """调用 OpenAI 兼容聊天接口，返回文本内容。失败抛 RuntimeError。
 
+    via_relay：中继基址（如 https://relay.kapibala.icu）。非空时请求改走
+    `{via_relay}/post?url=<base_url>/chat/completions`，relay_key 作为
+    x-relay-key 头；源站鉴权仍靠原 api_key（Worker 透传 Authorization）。
     4xx（Key 无效 / 参数错误）不重试直接抛错；429 与 5xx、网络异常按 retries 重试。
     证书校验失败时自动降级为不验证重试一次（本机 CA 链可能不全）。
     """
@@ -50,6 +60,9 @@ def chat_complete(base_url: str, api_key: str, model: str, messages: list,
         "Authorization": "Bearer " + (api_key or ""),
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36",
     }
+    if via_relay:
+        url = via_relay.rstrip("/") + "/post?url=" + urllib.parse.quote(url, safe="")
+        headers["x-relay-key"] = relay_key or ""
 
     def _post(verify: bool) -> str:
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
