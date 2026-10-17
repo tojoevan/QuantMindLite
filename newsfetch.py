@@ -396,8 +396,12 @@ def refresh_all(db, feed_id=None, limit: int = 60) -> dict:
 
 
 # ---------------- 展示用转换 ----------------
-def item_out(it: NewsItem, feed_title: str = ""):
-    """转成前端直接可用的形状：日期/时间在服务端算成北京时间，前端不做时区换算。"""
+def item_out(it: NewsItem, feed_title: str = "", related: bool = False):
+    """转成前端直接可用的形状：日期/时间在服务端算成北京时间，前端不做时区换算。
+
+    related 由调用方（app._news_items_payload）按「当前用户持仓代码 ∩ ai_codes」算好
+    传入——本模块不碰 Project 表，保持「源数据管道」的职责边界。
+    """
     dt = it.published_at
     cn = dt + CN_TZ if dt else None
     return {
@@ -416,4 +420,7 @@ def item_out(it: NewsItem, feed_title: str = ""):
         "ai_score": it.ai_score,
         "ai_reason": it.ai_reason or "",
         "ai_tags": it.ai_tags or "",
+        "ai_codes": it.ai_codes or "",
+        "ai_dup_of": it.ai_dup_of,
+        "related": 1 if related else 0,
     }

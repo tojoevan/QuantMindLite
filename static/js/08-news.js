@@ -3,8 +3,10 @@
 // 数据来自 RSS 订阅，经 Cloudflare 中继取回：quant-web 所在 VPS 只有 IPv6 出站，
 // 绝大多数资讯源只有 A 记录，直连必然失败（见 newsfetch.py 顶部说明）。
 //
-// P7b 预留：接口里已带 ai_score / ai_reason / ai_tags，后端填上后本页自动显示，
-// 前端无需再改（低分条目只显示标题 + 来源）。
+// AI 关键信息（2026-10-17 启用，此前为 P7b 预留位）：后端定时把资讯送 LLM 加工，
+// 回填 ai_score（重要度 1-5）/ ai_reason（推荐理由）/ ai_tags（标签）/
+// ai_codes（关联标的代码）/ related（是否与我的持仓相关，后端算）。
+// 同一份加工数据同时喂圆桌席位提示词与论坛「市场概要」帖。
 // 日期/时间由服务端算成北京时间下发，前端不做时区换算，避免跨时区错位。
 
 var newsState = {
@@ -14,6 +16,7 @@ var newsState = {
   category: "",
   q: "",
   starred: false,
+  related: false,       // 只看与我的持仓相关（后端按 ai_codes ∩ 持仓代码算）
   items: [],
   categories: [],
   stats: {},
@@ -43,10 +46,11 @@ async function renderNews() {
       <div class="page-head">
         <div>
           <h1>资讯工作台</h1>
-          <p class="page-sub">RSS 订阅 · 每日更新${newsIsAdmin() ? " · AI 关键信息（P7b 待接）" : ""}</p>
+          <p class="page-sub">RSS 订阅 · AI 关键信息${newsIsAdmin() ? " · 每日 20:50 自动评分" : ""}</p>
         </div>
         <div class="page-head-actions">
           ${newsIsAdmin() ? `<button class="btn primary sm" id="news-fetch">抓取最新</button>` : ``}
+          ${newsIsAdmin() ? `<button class="btn ghost sm" id="news-score" title="对未加工的资讯立即跑一遍 AI 结构化加工（重要度/理由/标签/关联标的）">AI 加工</button>` : ``}
           ${newsIsAdmin() ? `<button class="btn ghost sm" id="news-manage-toggle">订阅管理</button>` : ``}
           <button class="btn ghost sm" id="news-reload">刷新</button>
         </div>
@@ -61,6 +65,7 @@ async function renderNews() {
         <div class="nf-row nf-row-2">
           <input id="news-q" class="nf-search" type="search" placeholder="搜索标题 / 摘要 / 来源…" />
           ${isGuest ? "" : `<label class="nf-star"><input type="checkbox" id="news-starred" /> 只看收藏</label>`}
+          ${isGuest ? "" : `<label class="nf-star" title="只显示关联到我持仓标的的资讯"><input type="checkbox" id="news-related" /> 只看相关</label>`}
         </div>
       </div>
 
@@ -93,6 +98,8 @@ async function renderNews() {
   };
   const st = document.getElementById("news-starred");
   if (st) st.onchange = (e) => { newsState.starred = e.target.checked; newsReload(); };
+  const rl2 = document.getElementById("news-related");
+  if (rl2) rl2.onchange = (e) => { newsState.related = e.target.checked; newsReload(); };
 
   const rl = document.getElementById("news-reload");
   if (rl) rl.onclick = () => newsReload(true);
@@ -100,6 +107,8 @@ async function renderNews() {
   if (lg) lg.onclick = exitGuestToLogin;
   const ft = document.getElementById("news-fetch");
   if (ft) ft.onclick = newsFetchNow;
+  const sc = document.getElementById("news-score");
+  if (sc) sc.onclick = newsScoreNow;
   const mt = document.getElementById("news-manage-toggle");
   if (mt) mt.onclick = () => newsToggleManage();
 
@@ -124,6 +133,7 @@ async function newsLoad() {
     q: newsState.q || "",
     starred: newsState.starred ? "1" : "0",
   });
+  if (newsState.related) qs.set("related", "1");
   const path = (isGuest ? "/api/guest/news/items?" : "/api/news/items?") + qs.toString();
   return isGuest ? await guestApi("GET", path) : await API("GET", path);
 }
@@ -177,7 +187,9 @@ function newsDayLabel(dateStr) {
 function newsItemHtml(it, idx) {
   const long = (it.summary || "").length > 110;
   const score = (it.ai_score == null) ? "" :
-    `<span class="news-score">AI ${it.ai_score}</span>`;
+    `<span class="news-score" title="AI 重要度 1-5，5 为影响面最大的重大事件">AI ${it.ai_score}</span>`;
+  const rel = it.related
+    ? `<span class="news-rel" title="AI 识别到与我的持仓标的相关">持仓相关</span>` : "";
   const reason = it.ai_reason
     ? `<div class="news-reason"><b>推荐理由</b>${escapeHtml(it.ai_reason)}</div>` : "";
   const tags = it.ai_tags
@@ -195,6 +207,7 @@ function newsItemHtml(it, idx) {
           ${it.source_name ? `<span class="news-source">${escapeHtml(it.source_name)}</span>` : ""}
           ${it.category ? `<span class="news-cat">${escapeHtml(it.category)}</span>` : ""}
           ${score}
+          ${rel}
         </div>
         <h3 class="news-title"><a href="${escapeHtml(it.link || "#")}" target="_blank" rel="noopener">${escapeHtml(it.title || "(无标题)")}</a></h3>
         ${it.summary ? `<p class="news-summary ${long ? "clamp" : ""}">${escapeHtml(it.summary)}</p>` : ""}
@@ -213,6 +226,7 @@ function newsPaintList() {
   if (!items.length) {
     let hint;
     if (newsState.starred) hint = "还没有收藏的条目。取消「只看收藏」看全部，点条目右侧 ☆ 即可收藏。";
+    else if (newsState.related) hint = "当前范围内没有与持仓相关的资讯。取消「只看相关」看全部（相关性靠 AI 加工识别，刚抓取的条目要等加工后才标出来）。";
     else if (newsState.q || newsState.category) hint = "当前筛选条件下没有条目，换个条件或切到「全部类别」。";
     else if (newsState.range === "today") hint = "今天还没有新条目（订阅源通常在早间开始更新），切到「近 7 天」看最近的。";
     else if (isGuest) hint = "暂无资讯。登录后可管理订阅源并抓取。";
@@ -309,6 +323,23 @@ async function newsFetchNow() {
     showToast("抓取失败：" + e.message);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = "抓取最新"; }
+  }
+}
+
+// ---------- AI 加工（管理员）：对未加工资讯立即跑一遍结构化评分 ----------
+// 与 cron 的 scripts/news_score.py 同一逻辑；这里是「刚抓完想立刻看到徽标」的手动入口。
+// 加工结果同时服务：本页徽标 / 圆桌席位提示词注入 / 论坛市场概要帖。
+async function newsScoreNow() {
+  const btn = document.getElementById("news-score");
+  if (btn) { btn.disabled = true; btn.textContent = "加工中…"; }
+  try {
+    const r = await API("POST", "/api/news/score", { limit: 40 });
+    showToast(r.message || "AI 加工完成");
+    await newsReload(true);
+  } catch (e) {
+    showToast("AI 加工失败：" + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "AI 加工"; }
   }
 }
 

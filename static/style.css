@@ -946,6 +946,11 @@ th { color: var(--muted); font-weight: 600; }
   padding: 1px 7px; border-radius: var(--radius-sm); font-size: 11px;
   background: var(--subtle-bg); border: var(--bd-w) solid var(--border); color: var(--yellow);
 }
+/* 与我的持仓相关（后端按 ai_codes ∩ 持仓代码算）：实色accent，跟分类/评分的弱徽标区分开 */
+.news-rel {
+  padding: 1px 7px; border-radius: var(--radius-sm); font-size: 11px;
+  background: var(--accent); color: #fff;
+}
 .news-title { margin: 5px 0 0; font-size: var(--fs-lg); font-weight: 600; line-height: 1.45; }
 .news-title a { color: var(--text); text-decoration: none; }
 .news-title a:hover { color: var(--accent); }

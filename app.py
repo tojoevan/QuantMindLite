@@ -31,7 +31,7 @@ from db import (
     engine, SessionLocal, Project, MarketPrice, Prediction, Feedback,
     User, Session as SessionModel, PasswordResetRequest,
     RoundtableSeat, RoundtablePost, RoundtableStyle, ForumThread, ForumPost, Setting,
-    NewsFeed, NewsItem, SettleReport, LLMCallLog,
+    NewsFeed, NewsItem, NewsInjectLog, NewsDigest, SettleReport, LLMCallLog,
 )
 from models import (
     ProjectCreate, ProjectOut, ProjectUpdate, PricePoint, PredictionCreate, PredictionOut,
@@ -43,6 +43,7 @@ from models import (
     ForumThreadCreate, ForumPostCreate, ForumPostOut, ForumThreadOut, ForumThreadDetail,
     NewsFeedCreate, NewsFeedUpdate, NewsFeedOut, NewsItemOut, NewsFetchReq, NewsSettingsIn,
     NewsOpmlIn, DailyReportReq, SettleReportReq,
+    NewsDigestReq, NewsScoreReq,
 )
 from predictor import run_strategy, STRATEGY_CATALOG, rolling_predict, forecast_future
 from datasource import (
@@ -51,6 +52,7 @@ from datasource import (
 )
 from llm import chat_complete
 import newsfetch
+import newsai
 
 app = FastAPI(title="慢量化操作台", version="0.1.0")
 
@@ -1462,6 +1464,31 @@ def _get_llm_conf(db, provider: str) -> dict:
     }
 
 
+# 资讯 AI 加工（评分 / 市场概要）用的服务商：默认 deepseek，可在设置里覆盖。
+NEWS_LLM_PROVIDER_KEY = "news.llm_provider"
+
+
+def news_llm_conf(db) -> dict:
+    """资讯 AI 加工的 LLM 配置：读 Setting news.llm_provider（默认 deepseek）的
+    llm.* 配置，按 _llm_route 补出站路由（不可达自动走中继），并带上思考开关。
+
+    没配 Key 直接抛错——调用方（接口 / 定时脚本）会把错误明明白白显示出来，
+    而不是静悄悄跳过（资讯加工失败肉眼不可见，最容易拖成「功能像没上线」）。
+    """
+    provider = (newsfetch.get_setting(db, NEWS_LLM_PROVIDER_KEY) or "deepseek").strip() or "deepseek"
+    conf = _get_llm_conf(db, provider)
+    if not conf.get("api_key"):
+        raise RuntimeError(f"未配置 {provider} 的 API Key（请到「AI 设置」填写）")
+    conf.update(_llm_route(db, conf["base_url"]))
+    if not conf.get("model"):
+        conf["model"] = (PROVIDER_DEFAULTS.get(provider) or {}).get("model", "")
+    if not conf.get("model"):
+        raise RuntimeError(f"未指定模型，且服务商「{provider}」没有默认模型")
+    conf["disable_thinking"] = (
+        (PROVIDER_DEFAULTS.get(provider) or {}).get("thinking") == "disabled")
+    return conf
+
+
 def _seat_out(s: RoundtableSeat, db) -> RoundtableSeatOut:
     conf = _get_llm_conf(db, s.provider or "deepseek")
     # 只回传席位**自身**的 persona（自定义分支用），模板正文不回传——
@@ -1545,12 +1572,46 @@ def _build_snapshot(u, db) -> dict:
     }
 
 
-def _snapshot_prompt_text(snap: dict, seat: RoundtableSeat, persona: Optional[str] = None) -> str:
-    """把今日快照 + 席位人格 + 输出格式组装成完整提示词（自动/手动通道共用）。
+def _user_holdings(u, db) -> list:
+    """当前用户有持仓的标的 [{name, code}]（可见性口径与 _build_snapshot 一致：
+    管理员看全部，普通用户只看 owner_id 为自己的）。"""
+    q = db.query(Project)
+    if not u.is_admin:
+        q = q.filter(Project.owner_id == u.id)
+    out = []
+    for p in q.order_by(Project.pinned.desc(), Project.created_at.desc()).all():
+        shares, _cost, _fbs = _effective_position(p, db)
+        if shares > 0:
+            out.append({"name": p.name or "", "code": p.code or ""})
+    return out
+
+
+def _select_news_injection(u, db, date_s: str):
+    """给席位提示词选「近期相关资讯」。**必须在主线程调用**（选条要读库，
+    工作线程不碰 SQLAlchemy Session）。
+
+    返回 None = 选条失败（本次提示词不带资讯节，退回老行为，记 warning）；
+    返回 [] = 选条成功但近期没有达标资讯（提示词里明示「暂无」，让模型知道
+    不是被漏喂，任务规格据此要求标「纯技术面判断」）。
+    """
+    try:
+        codes = [h["code"] for h in _user_holdings(u, db) if h.get("code")]
+        return newsai.select_news_for_prompt(db, codes, today=date_s)
+    except Exception as e:
+        logger.warning("资讯选条失败（本次提示词不带资讯）：%s", e)
+        return None
+
+
+def _snapshot_prompt_text(snap: dict, seat: RoundtableSeat, persona: Optional[str] = None,
+                          news_items: Optional[list] = None) -> str:
+    """把今日快照 + 席位人格 + 近期资讯 + 输出格式组装成完整提示词（自动/手动通道共用）。
 
     ⚠️ `persona` 必须由调用方用 `_resolve_persona(seat, db)` 解析后传入——席位的风格
     可能来自风格模板而不是 seat.persona 本身。本函数不碰 db（自动通道在工作线程里拼提示词，
     而 SQLAlchemy Session 非线程安全）。不传则退回 seat.persona（仅供无 db 的测试用）。
+
+    `news_items`：由调用方在主线程选好（newsai.select_news_for_prompt）后传入——
+    工作线程不碰 db，选条要读库，所以必须外面选好。None = 本次不带资讯（老行为）。
     """
     style = persona if persona is not None else (seat.persona or "")
     L = ["# 角色", f"你是「{seat.name or '分析师'}」。{style or '语气专业、观点明确。'}"]
@@ -1584,10 +1645,17 @@ def _snapshot_prompt_text(snap: dict, seat: RoundtableSeat, persona: Optional[st
                 parts.append(f"系统策略建议 {h['latest_signal']}（{h.get('latest_signal_date') or ''}）")
             seg += "，".join(parts)
         L.append(seg)
+    # 近期相关资讯（2026-10-17 接入）：同一份数据也喂论坛「市场概要」帖。
+    # 刻意放在持仓之后、任务之前——模型先看账户、再看世界，最后才是任务。
+    if news_items is not None:
+        L += ["", newsai.news_prompt_block(news_items)]
     L += ["", "# 任务",
           "1. 先点评今日大盘对整体持仓的影响；",
-          "2. 逐个持仓给出持有/加仓/减仓建议与一句理由；",
-          "3. 指出当前最需警惕的一个风险。",
+          "2. 逐个持仓给出持有/加仓/减仓建议与一句理由；**每条建议必须引用上方资讯的条目编号"
+          "作为依据**（如「依据资讯 1、3」），与资讯无关的判断明确标注「纯技术面判断」；",
+          "3. 指出当前最需警惕的一个风险；",
+          "4. 若资讯中出现与当前持仓无关、但值得关注的新方向（行业景气、政策受益等），"
+          "可在末尾另起「新建标的观察」一节，只描述方向与理由（不构成建仓建议）。",
           "", PROMPT_OUTPUT_SPEC]
     return "\n".join(L)
 
@@ -1823,16 +1891,23 @@ def rt_history(u: User = Depends(get_current_user), db: Session = Depends(get_db
 
 @app.get("/api/roundtable/prompt")
 def rt_prompt(seat_id: int, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """生成某席位今日提示词（手动通道：用户复制后去外部 AI 网页咨询）。"""
+    """生成某席位今日提示词（手动通道：用户复制后去外部 AI 网页咨询）。
+
+    与自动通道同样注入「近期相关资讯」——手动粘贴去问外部 AI 时，资讯依据
+        一样要带上，否则两条通道给出的建议质量会拉开差距。
+    预览不写注入日志（没有副作用；自动通道生成成功才登记）。
+    """
     _ensure_default_seats(db)
     s = db.get(RoundtableSeat, seat_id)
     if not s:
         raise HTTPException(404, "席位不存在")
     snap = _build_snapshot(u, db)
+    news_items = _select_news_injection(u, db, snap["date"])
     return {"seat_id": s.id, "seat_name": s.name, "date": snap["date"],
             "style_name": (db.get(RoundtableStyle, s.style_id).name
                            if s.style_id and db.get(RoundtableStyle, s.style_id) else ""),
-            "prompt": _snapshot_prompt_text(snap, s, _resolve_persona(s, db))}
+            "news_count": len(news_items or []),
+            "prompt": _snapshot_prompt_text(snap, s, _resolve_persona(s, db), news_items=news_items)}
 
 
 @app.get("/api/roundtable/posts", response_model=list[RoundtablePostOut])
@@ -2080,6 +2155,9 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
                 "message": "没有可自动生成的席位（需在席位管理中将席位设为「自动」并配置 API Key）"}
 
     snap = _build_snapshot(u, db)
+    # 近期相关资讯选条：主线程读库选好，工作线程只拼提示词（同 persona/路由的理由）。
+    # None = 选条失败不带资讯；[] = 无达标资讯（提示词明示，模型据此标「纯技术面」）。
+    news_items = _select_news_injection(u, db, date_s)
     # 线程内只做网络调用（不碰 db session，SQLAlchemy Session 非线程安全），结果回主线程统一写库。
     # 风格提示词在这里（主线程、有 db）就解析好——里面可能来自风格模板，工作线程取不到。
     seat_meta = {s.id: {"name": s.name or "", "provider": s.provider or "deepseek",
@@ -2107,7 +2185,7 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
                     "error": f"未指定模型，且服务商「{m['provider']}」没有默认模型",
                     "stats": _llm_stats_base(sid, m, None)}
         seat_obj = RoundtableSeat(id=sid, name=m["name"], persona=m["persona"])  # 仅用于拼提示词
-        prompt = _snapshot_prompt_text(snap, seat_obj)
+        prompt = _snapshot_prompt_text(snap, seat_obj, news_items=news_items)
         stats = _llm_stats_base(sid, m, model, conf)
         # 输出预算按持仓数动态定：正文 ≈ 400（总体判断+风险提示）+ 持仓数×50。
         # 标定依据（2026-10-17 实测）：7 条真实输出 token 167–946、中位 518，
@@ -2172,6 +2250,15 @@ def rt_generate(body: Optional[RoundtableGenerateReq] = None,
             thread_id = None
         r["thread_id"] = thread_id
         r["archived"] = archived                # True=新增一层存档；False=内容未变、未重复写
+    # 资讯注入登记（防同一事件连日重复喂）：只有本次真的生成了观点才登记——
+    # 全失败也登记会把当日额度消耗掉，下次重跑反而没有资讯可看。
+    if news_items and any(r.get("ok") for r in results):
+        try:
+            n = newsai.log_injections(db, date_s, [x["id"] for x in news_items])
+            logger.info("资讯注入登记：%s 选中 %d 条（新增登记 %d）", date_s, len(news_items), n)
+        except Exception as e:
+            logger.warning("资讯注入登记失败（不影响观点本身）：%s", e)
+            db.rollback()
     return {"date": date_s, "results": results}
 
 
@@ -2184,6 +2271,10 @@ FM_EXCERPT_LEN = 120
 # 刻意不复用 agent —— 它没有对应席位，混进席位体系会让「Agent 参与数」等统计失真。
 FM_SYSTEM_NAME = "系统日报"
 FM_SYSTEM_ROLE = "自动"
+# 资讯身份（author_type="news"，2026-10-17「市场概要」帖）：同样不占席位——
+# 它是编辑台产物（从当日高分资讯汇总），不是某个分析师席位的观点。
+FM_NEWS_NAME = "市场概要"
+FM_NEWS_ROLE = "自动"
 
 # ---- 圆桌观点 → 论坛存档（方便后期回看历史信息）----
 # 由圆桌的两个写入口调用：rt_submit_post（手动粘贴回填）、rt_generate（LLM 自动生成）。
@@ -2253,6 +2344,8 @@ def _forum_author(db: Session, author_type: str, author_id: Optional[int]):
     """
     if (author_type or "user") == "system":
         return FM_SYSTEM_NAME, FM_SYSTEM_ROLE
+    if (author_type or "user") == "news":
+        return FM_NEWS_NAME, FM_NEWS_ROLE
     if (author_type or "user") == "agent":
         s = db.get(RoundtableSeat, author_id) if author_id else None
         if not s:
@@ -2845,6 +2938,92 @@ def report_daily(body: Optional[DailyReportReq] = None,
     return _publish_settlement(db, "day", key)
 
 
+# ---------------- 市场概要帖（资讯 AI 加工 → 论坛） ----------------
+def _publish_news_digest(db, date_s: Optional[str] = None, dry_run: bool = False) -> dict:
+    """生成当日「市场概要」并发布到论坛，返回结果 dict（接口与定时脚本共用）。
+
+    与结算帖的分工：结算帖**算账**（持仓数字），概要帖**说事**（世界发生了什么）。
+    幂等语义与结算帖一致：每天一个主题帖，正文与帖内最后一层完全一致 → 不写，
+    有变化 → 追加一层并标注第几次更新（判重同样先剥更新层前缀）。
+    身份用 author_type="news"（论坛显示「市场概要」），不占 AI 席位。
+    """
+    date_s = (date_s or "").strip() or _cn_today()
+    conf = news_llm_conf(db)
+    admin = db.query(User).filter(User.is_admin == 1).order_by(User.id).first()
+    holdings = _user_holdings(admin, db) if admin else []
+    title, content = newsai.build_digest(db, conf, date_s, holdings)
+    if not content:
+        return {"ok": False, "skipped": True, "reason": "no_data", "date": date_s,
+                "title": title or "", "message": f"{date_s} 没有重要度达标的资讯，本次不发布"}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "date": date_s, "title": title, "content": content}
+
+    rec = (db.query(NewsDigest).filter(NewsDigest.date == date_s).first())
+    t = db.get(ForumThread, rec.thread_id) if (rec and rec.thread_id) else None
+    if t is None:                       # 首次，或帖子被用户删掉 → 重建并改写关联
+        t = ForumThread(title=title, author_type="news", author_id=None)
+        db.add(t)
+        db.flush()
+        db.add(ForumPost(thread_id=t.id, author_type="news", author_id=None, content=content))
+        if rec is None:
+            rec = NewsDigest(date=date_s)
+            db.add(rec)
+        rec.thread_id = t.id
+        rec.updates = 1
+        db.commit()
+        return {"ok": True, "created": True, "posts": 1, "thread_id": t.id,
+                "title": title, "content": content}
+    if (t.title or "") != title:
+        t.title = title
+    last = (db.query(ForumPost).filter(ForumPost.thread_id == t.id)
+            .order_by(ForumPost.id.desc()).first())
+    if last and _strip_update_prefix(last.content).strip() == content.strip():
+        db.commit()
+        n = db.query(func.count(ForumPost.id)).filter(ForumPost.thread_id == t.id).scalar() or 1
+        return {"ok": True, "created": False, "unchanged": True, "posts": n,
+                "thread_id": t.id, "title": title, "content": content}
+    n = db.query(func.count(ForumPost.id)).filter(ForumPost.thread_id == t.id).scalar() or 0
+    db.add(ForumPost(thread_id=t.id, author_type="news", author_id=None,
+                     content=f"（第 {n + 1} 次更新 · {_cn_now()}）\n{content}"))
+    t.updated_at = datetime.utcnow()
+    rec.updates = n + 1
+    db.commit()
+    return {"ok": True, "created": False, "unchanged": False, "posts": n + 1,
+            "thread_id": t.id, "title": title, "content": content}
+
+
+@app.post("/api/report/news-digest")
+def report_news_digest(body: Optional[NewsDigestReq] = None,
+                       u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """管理员：生成当日市场概要帖并发布到论坛（每天一篇，内容有变化才追加更新层）。
+
+    body: {date?: 北京日期 YYYY-MM-DD（留空 = 今天）, dry_run?: 只生成正文不发布}
+    """
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    date_s = ((body.date if body else None) or "").strip()
+    dry_run = bool(body.dry_run) if body else False
+    return _publish_news_digest(db, date_s, dry_run=dry_run)
+
+
+@app.post("/api/news/score")
+def news_score(body: Optional[NewsScoreReq] = None,
+               u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """管理员：立即对未加工的资讯跑一遍 AI 结构化加工（定时任务同逻辑）。
+
+    评分结果同时服务三处：席位提示词注入、资讯页徽标、市场概要帖。
+    同步执行、单次最多 --limit 条（默认 40）；大批量补跑请用 scripts/news_score.py。
+    """
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    conf = news_llm_conf(db)
+    limit = (body.limit if body else None) or 40
+    stats = newsai.score_items(db, conf, limit=limit, log=logger.info)
+    stats["message"] = (f"加工 {stats['scored']} 条（选中 {stats['picked']} 条，"
+                        f"{stats['failed']} 块失败）")
+    return stats
+
+
 # ---------------- 资讯工作台（RSS 订阅 · 中继抓取 · 列表） ----------------
 # 首页。抓取经 Cloudflare 中继（本机 VPS 只有 IPv6 出站，多数资讯源仅有 A 记录）。
 NEWS_DEFAULT_FEEDS = [
@@ -2893,7 +3072,8 @@ def _news_range_start(range_s: str):
     return None
 
 
-def _news_items_payload(db, range_s="today", category="", q="", star_only=False, limit=300) -> dict:
+def _news_items_payload(db, range_s="today", category="", q="", star_only=False, limit=300,
+                        holding_codes=None, related_only=False) -> dict:
     query = (db.query(NewsItem, NewsFeed)
              .join(NewsFeed, NewsItem.feed_id == NewsFeed.id)
              .filter(NewsFeed.enabled == 1))
@@ -2913,7 +3093,20 @@ def _news_items_payload(db, range_s="today", category="", q="", star_only=False,
 
     rows = (query.order_by(NewsItem.published_at.desc(), NewsItem.id.desc())
             .limit(max(1, min(limit, 1000))).all())
-    items = [newsfetch.item_out(it, fd.title or "") for it, fd in rows]
+
+    # 「与我的持仓相关」在后端算：持仓代码（当前用户）∩ 条目的 ai_codes（LLM 提取）。
+    # 两边都过 newsai.norm_code 归一化（sh 前缀 / .SH 后缀 / 大小写），否则永远匹配不上。
+    codes = {newsai.norm_code(c) for c in (holding_codes or []) if newsai.norm_code(c)}
+    items, related_n = [], 0
+    for it, fd in rows:
+        item_codes = {newsai.norm_code(c) for c in (it.ai_codes or "").split(",")
+                      if newsai.norm_code(c)}
+        related = bool(codes and (codes & item_codes))
+        if related:
+            related_n += 1
+        if related_only and not related:
+            continue
+        items.append(newsfetch.item_out(it, fd.title or "", related=related))
 
     # 分类 chips：**条目自身分类**与**源的人工分类**都算。
     # 源级分类必须算进来，否则「导入 OPML 时整组打的分类」（如给财经源统一打「财经」）
@@ -2952,6 +3145,7 @@ def _news_items_payload(db, range_s="today", category="", q="", star_only=False,
             "feeds": int(feed_n),
             "feed_errors": int(err_n),
             "feed_empties": int(empty_n),
+            "related": int(related_n),       # 当前筛选范围内与持仓相关的条数
             "last_fetched": last.isoformat() + "Z" if last else None,
             "relay_ready": bool(conf.get("url") and conf.get("key")),
         },
@@ -2972,16 +3166,22 @@ def _news_feed_out(db, f: NewsFeed) -> NewsFeedOut:
 
 @app.get("/api/news/items")
 def news_items(range: str = "today", category: str = "", q: str = "",
-               starred: int = 0, u: User = Depends(get_current_user),
+               starred: int = 0, related: int = 0,
+               u: User = Depends(get_current_user),
                db: Session = Depends(get_db)):
     _ensure_default_feeds(db)
-    return _news_items_payload(db, range, category, q, bool(starred))
+    codes = [h["code"] for h in _user_holdings(u, db) if h.get("code")]
+    return _news_items_payload(db, range, category, q, bool(starred),
+                               holding_codes=codes, related_only=bool(related))
 
 
 @app.get("/api/guest/news/items")
 def guest_news_items(range: str = "today", category: str = "", q: str = "",
-                     starred: int = 0, db: Session = Depends(get_db)):
-    """游客只读：与登录态同一份资讯流，不暴露订阅源地址与抓取配置。"""
+                     starred: int = 0, related: int = 0, db: Session = Depends(get_db)):
+    """游客只读：与登录态同一份资讯流，不暴露订阅源地址与抓取配置。
+
+    游客没有持仓 → related 恒为 0、也不按相关筛选（前端对游客不渲染该开关）。
+    """
     _ensure_default_feeds(db)
     data = _news_items_payload(db, range, category, q, bool(starred))
     data["stats"].pop("relay_ready", None)

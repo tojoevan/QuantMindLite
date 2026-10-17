@@ -237,7 +237,9 @@ class NewsFeed(Base):
 class NewsItem(Base):
     """资讯工作台 · 条目。按 (feed_id, guid) 去重，重复抓取只更新不新增。
 
-    ai_* 三列为 P7b「AI 识别关键信息」预留，本期只建列不写入。
+    ai_* 列为「AI 结构化加工」（newsai.py）的落点：抓取后由定时任务批量送 LLM，
+    产出重要度评分 / 推荐理由 / 标签 / 关联标的代码 / 同题合并关系。
+    源站字段刷新时**绝不覆盖** ai_*（见 newsfetch.refresh_feed）。
     """
     __tablename__ = "news_items"
     __table_args__ = (UniqueConstraint("feed_id", "guid", name="uq_news_item_feed_guid"),)
@@ -254,9 +256,36 @@ class NewsItem(Base):
     published_at = Column(DateTime, nullable=True, index=True)  # 发布时间（UTC naive）
     fetched_at = Column(DateTime, default=datetime.utcnow)
     star = Column(Integer, default=0)                   # 收藏：0 / 1（站点级，单用户为主）
-    ai_score = Column(Integer, nullable=True)           # P7b 预留：AI 评分
-    ai_reason = Column(Text, default="")                # P7b 预留：推荐理由
-    ai_tags = Column(String(200), default="")           # P7b 预留：标签（逗号分隔）
+    ai_score = Column(Integer, nullable=True)           # AI 重要度 1-5（NULL = 未加工）
+    ai_reason = Column(Text, default="")                # AI 一句话推荐理由
+    ai_tags = Column(String(200), default="")           # AI 标签（逗号分隔）
+    ai_codes = Column(String(200), default="")          # AI 提取的关联标的代码（逗号分隔，已归一化）
+    ai_dup_of = Column(Integer, nullable=True)          # 同题主条目 id（多源报道合并；NULL = 主条目）
+
+
+class NewsInjectLog(Base):
+    """资讯注入席位提示词的日志 —— 防同一事件连续多日重复喂。
+
+    规则：某条目**上次注入日期 < 今天**才允许再次注入（同一天重复生成/试跑仍带同一批），
+    第二天起让位给新条目。没有这张表就会出现「一个政策连读三天」。
+    """
+    __tablename__ = "news_inject_log"
+    __table_args__ = (UniqueConstraint("date", "item_id", name="uq_news_inject_date_item"),)
+    id = Column(Integer, primary_key=True)
+    date = Column(String(10), nullable=False, index=True)   # 北京时间 YYYY-MM-DD
+    item_id = Column(Integer, ForeignKey("news_items.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class NewsDigest(Base):
+    """市场概要帖锚点（每天一条 → 论坛主题帖），与 SettleReport 同构。"""
+    __tablename__ = "news_digests"
+    id = Column(Integer, primary_key=True)
+    date = Column(String(10), nullable=False, unique=True)  # 北京时间 YYYY-MM-DD
+    thread_id = Column(Integer, nullable=True)          # 对应论坛主题帖（forum_threads.id）
+    updates = Column(Integer, default=0)                # 已写入层数（含首帖）
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class Setting(Base):
@@ -315,6 +344,18 @@ _for_add = {
 }
 for _cname, _ddl in _for_add.items():
     if _cname not in _cols:
+        with engine.connect() as _conn:
+            _conn.execute(text(_ddl))
+            _conn.commit()
+
+# news_items 的 ai_* 加工列（2026-10-17 资讯 AI 结构化加工）：老库补两列，
+# 已有的 ai_score/ai_reason/ai_tags 三列早已存在（P7b 预留），不用补。
+_news_cols = [c["name"] for c in _insp.get_columns("news_items")]
+for _cname, _ddl in {
+    "ai_codes": "ALTER TABLE news_items ADD COLUMN ai_codes VARCHAR(200) DEFAULT ''",
+    "ai_dup_of": "ALTER TABLE news_items ADD COLUMN ai_dup_of INTEGER",
+}.items():
+    if _cname not in _news_cols:
         with engine.connect() as _conn:
             _conn.execute(text(_ddl))
             _conn.commit()

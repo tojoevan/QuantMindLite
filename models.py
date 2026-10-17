@@ -310,9 +310,21 @@ class NewsItemOut(BaseModel):
     time: str = ""                     # 北京时间 HH:MM
     published_at: Optional[str] = None # UTC naive ISO（留档用）
     star: int = 0
-    ai_score: Optional[int] = None     # P7b 预留
+    ai_score: Optional[int] = None     # AI 重要度 1-5（NULL = 未加工）
     ai_reason: str = ""
     ai_tags: str = ""
+    ai_codes: str = ""                 # AI 提取的关联标的代码（逗号分隔）
+    ai_dup_of: Optional[int] = None    # 同题主条目 id（多源合并）
+    related: int = 0                   # 是否与当前用户持仓相关（后端按持仓代码算）
+
+
+class NewsDigestReq(BaseModel):
+    date: Optional[str] = None         # 北京日期 YYYY-MM-DD，留空 = 今天
+    dry_run: bool = False              # 只生成正文不发布
+
+
+class NewsScoreReq(BaseModel):
+    limit: int = 40                    # 本次最多加工多少条（定时脚本用 --limit 覆盖）
 
 
 class NewsFetchReq(BaseModel):
