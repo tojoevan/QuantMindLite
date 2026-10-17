@@ -123,6 +123,9 @@ async function renderRoundtable() {
             </div>
           </form>
         </div>` : ""}
+      <div class="panel" id="rt-review-panel">
+        <h3>观点复盘 <span class="muted">席位建议的「命中率 / 趋势 / 引用资讯信息量」——判定全部机械（方向 × 真实收益），不在页面做任何「对错」自评</span><button class="btn-mini ghost" id="rt-review-toggle">收起</button></h3>
+        <div id="rt-review-body"><span class="muted">加载中…</span></div>
       </div>
     </div>`;
   document.getElementById("rt-generate-all").onclick = () => rtGenerate(null);
@@ -142,6 +145,7 @@ async function renderRoundtable() {
   document.getElementById("rt-holdings-toggle").onclick = () => rtPanelFold("rt-holdings-body", "rt-holdings-toggle");
   document.getElementById("rt-indices-toggle").onclick = () => rtPanelFold("rt-indices", "rt-indices-toggle");
   document.getElementById("rt-kpi-toggle").onclick = () => rtPanelFold("rt-kpi", "rt-kpi-toggle");
+  document.getElementById("rt-review-toggle").onclick = () => rtPanelFold("rt-review-body", "rt-review-toggle");
   document.getElementById("rt-seat-collapse").onclick = () => rtFoldAll(true);
   document.getElementById("rt-seat-expand").onclick = () => rtFoldAll(false);
   const addSeatToggle = document.getElementById("rt-add-seat-toggle");
@@ -182,16 +186,18 @@ async function renderRoundtable() {
 
 async function rtLoadAll() {
   try {
-    const [seats, posts, snap, hist] = await Promise.all([
+    const [seats, posts, snap, hist, review] = await Promise.all([
       API("GET", "/api/roundtable/seats"),
       API("GET", "/api/roundtable/posts"),
       API("GET", "/api/roundtable/snapshot"),
       API("GET", "/api/roundtable/history").catch(() => null),
+      API("GET", "/api/roundtable/review/stats").catch(() => null),
     ]);
     rtState.seats = seats || [];
     rtState.snap = snap;
     rtState.date = snap ? snap.date : null;
     rtState.history = hist;
+    rtState.review = review;
     rtState.posts = {};
     (posts || []).forEach(p => { rtState.posts[p.seat_id] = p; });
     if (rtState.admin) {
@@ -219,6 +225,7 @@ function rtRenderAll() {
   rtRenderHoldings();
   rtRenderHistory();
   rtRenderSeats();
+  rtRenderReview();
   if (rtState.admin) {
     rtRenderManage();
     rtRenderStyles();
@@ -433,6 +440,12 @@ function rtRenderSeats() {
     const stateBadge = post
       ? `<span class="rt-badge state-done">${post.source === "auto" ? "已生成" : "已录入"}</span>`
       : `<span class="rt-badge state-pending">待生成</span>`;
+    // 命中率徽标：仅当有效样本达标（>=MIN_SAMPLE）才显示，避免小样本误导。
+    const _rs = (rtState.review && rtState.review.seat_stats) || [];
+    const _stat = _rs.find(x => x.seat_id === s.id);
+    const rateBadge = (_stat && _stat.min_ok && _stat.rate != null)
+      ? `<span class="rt-badge rate" title="近 ${((rtState.review && rtState.review.meta) || {}).review_days || 20} 天有效样本 ${_stat.hit}+${_stat.miss}，T+${((rtState.review && rtState.review.meta) || {}).horizon || 5} 机械判定命中率">命中 ${_stat.rate}%</span>`
+      : "";
     let actions = "";
     if (isAuto) {
       actions = `<button class="btn-mini" data-gen="${s.id}">${post ? "重新生成" : "生成"}</button>`;
@@ -479,6 +492,7 @@ function rtRenderSeats() {
           <span class="rt-badge ${modeInfo.cls}">${modeInfo.label}</span>
           ${roleHtml}
           ${stateBadge}
+          ${rateBadge}
         </div>
         <div class="rt-seat-actions">${actions}</div>
       </div>
@@ -501,6 +515,117 @@ function rtRenderSeats() {
   wrap.querySelectorAll("[data-gen]").forEach(b => b.onclick = () => rtGenerate([parseInt(b.getAttribute("data-gen"), 10)]));
   wrap.querySelectorAll("[data-thread]").forEach(b => b.onclick = () => rtOpenForumThread(parseInt(b.getAttribute("data-thread"), 10)));
   wrap.querySelectorAll("[data-archive]").forEach(b => b.onclick = () => rtArchiveSeat(parseInt(b.getAttribute("data-archive"), 10)));
+}
+
+// ---- 观点复盘面板（G3）：席位命中率 / 趋势 / 引用资讯信息量 / 样本明细 ----
+// 数据来自 GET /api/roundtable/review/stats（rtreview 模块机械判定，不在前端自评对错）。
+const RT_DIR_LABEL = { up: "看多", down: "看空", hold: "持有", observe: "观察" };
+const RT_VERDICT = {
+  hit:    { label: "命中", cls: "rt-v-hit" },
+  miss:   { label: "未中", cls: "rt-v-miss" },
+  flat:   { label: "无效波动", cls: "rt-v-flat" },
+  pending:{ label: "待定", cls: "rt-v-pending" },
+};
+let rtReviewChart = null;
+
+function rtRenderReview() {
+  const el = document.getElementById("rt-review-body");
+  if (!el) return;
+  const data = rtState.review;
+  if (!data) { el.innerHTML = `<span class="muted">复盘数据加载失败（不影响其他面板）</span>`; return; }
+  const meta = data.meta || {};
+  const horizon = meta.horizon || 5;
+  const band = meta.flat_band != null ? meta.flat_band : 0.5;
+  const minSample = meta.min_sample || 3;
+
+  // 1) 席位命中率表（只列有记录者；样本不足者不展示徽标但仍在表里标明）
+  const seats = (data.seat_stats || []).filter(s => s.total > 0);
+  const seatRows = seats.length ? seats.map(s => {
+    const rate = s.rate == null ? "—" : s.rate + "%";
+    const flag = s.min_ok ? "" : `<span class="muted">（样本不足）</span>`;
+    return `<tr>
+      <td>${escapeHtml(s.name)}</td>
+      <td class="${s.rate == null ? "" : (s.rate >= 50 ? "rt-v-hit" : "rt-v-miss")}">${rate}</td>
+      <td>${s.hit}/${s.miss}</td>
+      <td>${s.flat}</td>
+      <td>${s.pending}</td>
+      <td>${s.total} ${flag}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="6" class="muted">暂无复盘记录（每日 cron 自动复盘，或管理员手动触发）</td></tr>`;
+
+  // 2) 引用资讯信息量（按被引用次数降序，前若干条）
+  const news = (data.news_hit || []).filter(n => n.cited > 0).slice(0, 12);
+  const newsRows = news.length ? news.map(n => {
+    const rate = n.rate == null ? "—" : n.rate + "%";
+    return `<tr>
+      <td class="rt-news-title" title="${escapeHtml(n.title)}">${escapeHtml(n.title)}</td>
+      <td>${n.cited}</td>
+      <td class="${n.rate == null ? "" : (n.rate >= 50 ? "rt-v-hit" : "rt-v-miss")}">${rate}</td>
+      <td>${n.hit}/${n.miss}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="4" class="muted">暂无被引用的资讯（仅「自动生成」且观点明确引用「资讯 N」的判断才会挂依据）</td></tr>`;
+
+  // 3) 样本明细（近 limit 条，含判定）
+  const samples = data.samples || [];
+  const sampleRows = samples.length ? samples.map(r => {
+    const v = RT_VERDICT[r.verdict_t5] || RT_VERDICT.pending;
+    const basis = (r.basis && r.basis.length) ? r.basis.map(b => escapeHtml(b)).join("、") : `<span class="muted">—</span>`;
+    const t5 = r.ret_t5 == null ? "—" : (r.ret_t5 >= 0 ? "+" : "") + r.ret_t5 + "%";
+    return `<tr>
+      <td>${r.date}</td>
+      <td>${escapeHtml(r.seat)}</td>
+      <td>${escapeHtml(r.name || r.code)}</td>
+      <td>${RT_DIR_LABEL[r.direction] || r.direction}</td>
+      <td class="rt-news-title" title="${escapeHtml((r.basis || []).join('、'))}">${basis}</td>
+      <td class="${r.ret_t5 == null ? "" : (r.ret_t5 >= 0 ? "rt-v-hit" : "rt-v-miss")}">${t5}</td>
+      <td class="${v.cls}">${v.label}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="7" class="muted">暂无样本</td></tr>`;
+
+  el.innerHTML = `
+    <div class="rt-review-note">
+      判定窗口 T+${horizon}（与策略外推同尺度）；|收益| &lt; ${band}% 视为无效波动、不计命中率分母；
+      hold/观察无法用收益判对错，同样不计入。样本 &lt; ${minSample} 不展示命中率徽标。
+    </div>
+    <div class="rt-review-chart" id="rt-review-chart"></div>
+    <div class="rt-hist-sub">席位命中率（T+${horizon}）</div>
+    <div class="table-wrap"><table class="rt-review-table">
+      <thead><tr><th>席位</th><th>命中率</th><th>命中/未中</th><th>无效波动</th><th>待定</th><th>样本</th></tr></thead>
+      <tbody>${seatRows}</tbody>
+    </table></div>
+    <div class="rt-hist-sub">引用资讯的信息量（被引用 × 兑现）</div>
+    <div class="table-wrap"><table class="rt-review-table">
+      <thead><tr><th>资讯</th><th>被引用</th><th>信息量</th><th>命中/未中</th></tr></thead>
+      <tbody>${newsRows}</tbody>
+    </table></div>
+    <div class="rt-hist-sub">样本明细（近 ${samples.length} 条）</div>
+    <div class="table-wrap rt-scroll"><table class="rt-review-table">
+      <thead><tr><th>日期</th><th>席位</th><th>标的</th><th>方向</th><th>依据资讯</th><th>T+${horizon}</th><th>判定</th></tr></thead>
+      <tbody>${sampleRows}</tbody>
+    </table></div>`;
+
+  // 趋势图：逐日整体命中率（仅已有 hit/miss 的日期）
+  const trend = (data.trend || []).filter(t => t.n > 0);
+  const chartEl = document.getElementById("rt-review-chart");
+  if (chartEl && typeof window.echarts !== "undefined" && trend.length) {
+    try {
+      if (rtReviewChart) { rtReviewChart.dispose(); rtReviewChart = null; }
+      const c = chartTheme();
+      const chart = echarts.init(chartEl);
+      rtReviewChart = chart;
+      chart.setOption({
+        grid: { left: 40, right: 16, top: 24, bottom: 28 },
+        tooltip: { trigger: "axis" },
+        xAxis: { type: "category", data: trend.map(t => t.date.slice(5)), axisLabel: { color: c.axis, fontSize: 11 }, axisLine: { lineStyle: { color: c.axis } } },
+        yAxis: { type: "value", min: 0, max: 100, axisLabel: { color: c.axis, formatter: "{value}%" }, splitLine: { lineStyle: { color: c.axis, opacity: .2 } } },
+        series: [{ type: "line", smooth: true, data: trend.map(t => t.rate), itemStyle: { color: c.actual }, lineStyle: { color: c.actual, width: 2 }, areaStyle: { color: c.actual, opacity: .12 } }],
+      });
+    } catch (e) {
+      if (chartEl) chartEl.innerHTML = `<span class="muted">趋势图渲染失败</span>`;
+    }
+  } else if (chartEl) {
+    chartEl.style.display = "none";
+  }
 }
 
 // 跳到该观点的论坛存档帖：先走 showView("forum") 再定位帖子——

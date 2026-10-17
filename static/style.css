@@ -474,6 +474,15 @@ th { color: var(--muted); font-weight: 600; }
 .rt-badge.mode-mcp { color: var(--muted); border-style: dashed; opacity: .85; }
 .rt-badge.state-done { color: #3fb950; border-color: rgba(63, 185, 80, .5); }
 .rt-badge.state-pending { color: var(--yellow); border-color: rgba(210, 153, 34, .5); }
+.rt-badge.rate { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.rt-v-hit { color: #3fb950; font-weight: 600; }
+.rt-v-miss { color: #e5534b; font-weight: 600; }
+.rt-v-flat, .rt-v-pending { color: var(--muted); }
+.rt-review-note { font-size: 12px; color: var(--muted); margin: 6px 0 12px; line-height: 1.6; }
+.rt-review-chart { width: 100%; height: 220px; margin-bottom: 14px; }
+.rt-review-table th, .rt-review-table td { padding: 6px 10px; font-size: 13px; white-space: nowrap; }
+.rt-review-table .rt-news-title { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rt-news-title { color: var(--text); }
 .rt-role {
   font-size: 11px; padding: 1px 8px; border-radius: 999px; margin-left: 6px;
   color: var(--accent); border: 1px dashed var(--accent); background: var(--accent-soft);
