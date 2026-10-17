@@ -36,9 +36,11 @@
 | 🕒 图表时间范围 | 支持「全部 / 30 / 60 / 90 / 180 / 365 天」切换，默认 30 天。 |
 | 🌗 浅 / 深色主题 | 右上角一键切换并记忆，图表配色随主题重绘，无闪烁。 |
 | 🔄 行情限频拉取 | 游客模式每天仅实际调用一次数据源；当日数据已存在则提示无需重复获取。写入按品种分：场内覆盖式重写、场外合并写入（见 §4）。 |
-| 📰 资讯工作台（首页） | RSS / Atom 订阅驱动的资讯流：日期分组、区间与分类筛选、搜索、收藏；订阅源可增删启停、单个抓取，并支持 **OPML 批量导入**。抓取统一走 Cloudflare 中继（见 §8）。 |
-| 🗣 圆桌讨论 | 多 AI 席位（手动回填提示词 / LLM Key 自动）各自给出每日观点；**观点保存时自动在论坛建档一条存档帖**，方便后期回看历史与修订过程。席位卡支持**单卡折叠**与**全部折叠 / 全部展开**（折叠状态按席位 id 记在本地，刷新不丢）；卡片上可一键**查看存档**跳到该帖，万一存档没建成则改为**补建存档**。席位的「人格 / 风格提示词」拆成**独立的风格模板管理项**（内置 8 套 + 自定义，席位选模板、改模板即全局生效，见 §8）。 |
+| 📰 资讯工作台（首页） | RSS / Atom 订阅驱动的资讯流：日期分组、区间与分类筛选、搜索、收藏；订阅源可增删启停、单个抓取，并支持 **OPML 批量导入**。抓取统一走 Cloudflare 中继（见 §8）。**AI 结构化加工**（2026-10-17）：每日定时把资讯送 LLM 评分（重要度 1-5 / 推荐理由 / 标签 / 关联标的代码），条目卡显示评分徽标与「持仓相关」徽标，筛选栏可**只看相关**；管理员可手动点「AI 加工」立即补跑。 |
+| 🧠 资讯 → Agent 注入 | 圆桌席位提示词新增「近期相关资讯」节：近 72 小时、持仓相关（★）优先 + 市场级大事补位，共 10 条；**建议必须引用资讯条目编号**，无依据标「纯技术面判断」。同一份加工数据不再另算。 |
+| 🗣 圆桌讨论 | 多 AI 席位（手动回填提示词 / LLM Key 自动）各自给出每日观点；**观点保存时自动在论坛建档一条存档帖**，方便后期回看历史与修订过程。席位卡支持**单卡折叠**与**全部折叠 / 全部展开**（折叠状态按席位 id 记在本地，刷新不丢）；卡片上可一键**查看存档**跳到该帖，万一存档没建成则改为**补建存档**。席位的「人格 / 风格提示词」拆成**独立的风格模板管理项**（内置 8 套 + 自定义，席位选模板、改模板即全局生效，见 §8）。圆桌四个数据面板（今日大盘 / 账户概览 / 持仓总览 / 历史记录）均支持收起 / 展开。 |
 | 📮 周期结算帖 | **日 / 周 / 月 / 季 / 半年 / 年**六个周期各自自动把「区间结算 / 大盘指数 / 持仓明细 / 区间操作」算成一篇帖子发到论坛（署名「系统日报」，`author_type=system`）；仪表台页头可选周期手动补发。同周期固定一帖，内容没变不重复写（见 §8）。 |
+| 📰 市场概要帖 | 每日一篇论坛主题帖（署名「市场概要」，`author_type=news`）：今日大事 3-5 条（带来源）+ 对持仓的影响 + 明日关注，全部由当日高分资讯生成；与结算帖分工 = 一个算账、一个说事。 |
 | 📊 账户三指标 | 交易仪表台 KPI 与圆桌页同时展示**总市值 / 浮动盈亏 / 累计实现盈亏**，由 `app._account_totals` 统一计算，两处数字必然一致。 |
 
 ---
@@ -97,7 +99,7 @@ quant-web/
 ├── datasource.py     # 行情多源回退抓取（前复权）
 ├── requirements.txt  # 依赖：fastapi / uvicorn / sqlalchemy / pydantic / akshare
 ├── deploy.sh         # 部署 / 运维工具：本地验证 → 线上备份 → 同步 → 重启 → 健康检查（失败自动回退）
-├── scripts/          # 运维脚本：db_backup.sh / fetch_fund_nav.py（基金补数）/ sync_roundtable_forum.py（圆桌观点回填论坛存档）/ settle_report.py（周期结算帖：日/周/月/季/半年/年）
+├── scripts/          # 运维脚本：db_backup.sh / fetch_fund_nav.py（基金补数）/ sync_roundtable_forum.py（圆桌观点回填论坛存档）/ settle_report.py（周期结算帖：日/周/月/季/半年/年）/ news_score.py（资讯 AI 加工：评分/理由/标签/关联标的）/ news_digest.py（市场概要帖）
 └── static/
     ├── index.html    # 单页应用骨架（顶栏：关于 / 用户管理 / GitHub / 主题切换）
     ├── app.js        # 前端逻辑：登录、项目、图表、游客、主题
@@ -295,6 +297,8 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 | --- | --- | --- |
 | POST | `/api/report/settle` | 管理员：按周期生成结算帖并发布到论坛；body `{period, key?}`，返回 `created` / `unchanged` / `skipped` 三态与 `thread_id` |
 | POST | `/api/report/daily` | 兼容入口，等价于 `period=day` |
+| POST | `/api/report/news-digest` | 管理员：生成当日「市场概要」帖并发布到论坛；body `{date?, dry_run?}`，每天固定一帖、内容有变化才追加更新层 |
+| POST | `/api/news/score` | 管理员：立即对未加工资讯跑一遍 AI 结构化加工；body `{limit?}`（默认 40），大批量补跑用 `scripts/news_score.py` |
 
 > **结算 → 论坛（2026-10-17 起）**：把「仓位、收益变化 + 大盘指数」算成一篇帖子发到论坛，
 > 方便日后回看。与圆桌存档帖的分工：圆桌存档是**搬运**（席位观点原样落到论坛），
@@ -394,6 +398,36 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 > `text/html` 触发 Cloudflare HTML 改写），严格 XML 解析会抛 `junk after document element`；
 > `newsfetch._xml_root` 对这一种错法做了截断容错。
 
+**资讯 AI 加工层（2026-10-17）——一份数据，两个投影**
+
+资讯不再是「只给人看的页面」：`newsai.py` 定时把条目送 LLM 结构化加工，回写
+`ai_score`（重要度 1-5）/ `ai_reason`（一句话理由）/ `ai_tags`（标签）/
+`ai_codes`（关联标的代码，已归一化）/ `ai_dup_of`（同题主条目 id，多源报道合并）。
+加工结果三处消费，**同一份数据、不另算**：
+
+| 消费方 | 用什么 | 出口 |
+| --- | --- | --- |
+| 资讯页（人读） | 评分徽标 / 推荐理由 / 标签 / 「持仓相关」徽标 / 「只看相关」筛选 | 页面（`item_out` 直接下发，`related` 由后端按 `ai_codes ∩ 持仓代码` 计算） |
+| 圆桌席位（agent 读） | `select_news_for_prompt` 选条 → 提示词「近期相关资讯」节 | `_snapshot_prompt_text`（自动/手动两个通道都带） |
+| 论坛（编辑台） | `build_digest` 从当日高分资讯生成正文 | `_publish_news_digest` → 「市场概要」主题帖（`author_type=news`） |
+
+> **选条规则**：近 72h 窗口、重要度 ≥ 3、同题副本跳过；**持仓相关（代码命中）排最前并标 ★**，
+> 其余按重要度补市场级大事，合计最多 10 条。`news_inject_log` 记录每日注入过哪些条目：
+> **上次注入是更早日期才排除**（同日重跑/试跑仍带同一批），避免一个政策连读三天。
+>
+> **「建议须引资讯依据」是硬约束**：任务规格要求逐条持仓建议引用资讯条目编号，无依据标
+> 「纯技术面判断」——否则资讯塞进提示词也会被模型当背景噪音忽略。
+> 另开「新建标的观察」节：agent 可指出新方向，但只描述方向与理由，**不构成建仓建议**。
+>
+> **LLM 出站自动选路**：加工用的服务商读 `Setting → news.llm_provider`（默认 `deepseek`），
+> 配置走 AI 设置里同一套 `llm.*`；`app._llm_route` 探测 base_url 不可达（无 AAAA）时
+> **自动改走 rss-relay 的 POST 通道**（白名单已含 `api.deepseek.com`），调用方无感。
+> 2026-10-17 实测：VPS 上 274 条 backlog 经中继一次跑通（10 块 0 失败）。
+>
+> **已知边界**：持仓以场外基金为主时，新闻几乎不会出现基金代码，「持仓相关」徽标会很少亮；
+> 此时靠重要度排序的市场级资讯进提示词，以及概要帖的「持仓影响」段（LLM 语义关联）兜底。
+> 若要覆盖基金，需要「持仓 → 行业/指数关键词画像」，是明确的后续项。
+
 ---
 
 ## 九、部署（IPv6 VPS + systemd）
@@ -433,6 +467,8 @@ bash deploy.sh rollback [TS]         # 回退到指定备份（默认最近一�
 | `0 14 * * 0` | `/opt/quant-web/.venv/bin/python /opt/quant-web/scripts/settle_report.py --periods week` | 每**周日 22:00**（北京时间）发布「周报」，结算**上一个已走完的 ISO 周**。 |
 | `0 14 1 * *` | `/opt/quant-web/.venv/bin/python /opt/quant-web/scripts/settle_report.py --periods month,quarter,half,year` | 每**月 1 日 22:00**（北京时间）发布「月报 / 季报 / 半年报 / 年报」，各自结算上一个已走完的周期；非季末/半年末/年末月份只是判重后不重复写。四条任务共写日志 `/var/log/quant-settle.log`。 |
 | `30 13 * * 1-5` | `/usr/bin/python3 /opt/quant-web/scripts/fetch_fund_nav.py` | 交易日收盘后自动补**场外基金**净值。窗口 365 自然日、与主系统 `fund` 口径一致；复用 `datasource.fetch_hist`（不再自带第二套取数实现）；**合并写入**不删历史，并回写 `projects.last_fetch_date` 以免网页端当天重复拉取。日志 `/var/log/quant-fundnav.log`。 |
+| `50 12 * * *` | `/opt/quant-web/.venv/bin/python /opt/quant-web/scripts/news_score.py --limit 80` | **每日 20:50**（北京时间）资讯 AI 结构化加工：把未评分条目批量送 LLM（30 条/块），回写重要度 / 理由 / 标签 / 关联标的 / 同题合并。日志 `/var/log/quant-news-score.log`。 |
+| `20 13 * * *` | `/opt/quant-web/.venv/bin/python /opt/quant-web/scripts/news_digest.py` | **每日 21:20**（北京时间）发布「市场概要」帖到论坛（今日大事 / 持仓影响 / 明日关注）。必须晚于评分任务；两者共用 `/tmp/quant-news.lock` 串行，并错开 21:30 的基金补数。日志 `/var/log/quant-news-digest.log`。 |
 | `0 12 * * *` | `/opt/quant-web/scripts/db_backup.sh` | 线上库热备（`sqlite3 .backup` + `integrity_check`）。日志 `/var/log/quant-db-backup.log`。 |
 
 > ⚠️ **crontab 表达式的时区是服务器时区 `Etc/UTC`**（不是北京时间）：`30 13 * * 1-5` = 北京 21:30、
