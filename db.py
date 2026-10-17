@@ -163,6 +163,34 @@ class RoundtablePost(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class RtReview(Base):
+    """圆桌观点复盘（G3，2026-10-17）：把每日观点里的「标的 + 方向」判断抽取成结构化
+    记录，事后用真实行情（MarketPrice，股票/基金同一张表）机械判定兑现/落空。
+
+    设计纪律：**LLM 只负责文本→结构化抽取，判定全部机械**（方向 × T+N 实际收益），
+    否则复盘只是让模型再编一个故事，违背平台「可解释、人在回路」的底线。
+    判定四态：hit=兑现 / miss=落空 / flat=无效波动（|收益|<0.5%，不计入命中率分母）/
+    pending=行情未到期或净值未入库。hold/observe 方向无法用收益判对错，一律 flat。
+    """
+    __tablename__ = "rt_reviews"
+    __table_args__ = (UniqueConstraint("date", "seat_id", "code",
+                                       name="uq_rt_review_date_seat_code"),)
+    id = Column(Integer, primary_key=True)
+    date = Column(String(10), nullable=False)            # 观点日期 YYYY-MM-DD
+    seat_id = Column(Integer, ForeignKey("roundtable_seats.id"), nullable=False)
+    code = Column(String(16), nullable=False)            # 归一化代码（newsai.norm_code）
+    name = Column(String(64), default="")
+    direction = Column(String(8), default="")            # up / down / hold / observe
+    basis_news_ids = Column(String(80), default="")      # 判断依据的资讯条目 id（逗号分隔）
+    confidence = Column(String(16), default="")          # 观点自述置信度（可空）
+    ret_t1 = Column(Float, nullable=True)                # 基准日→T+1 收益 %
+    ret_t5 = Column(Float, nullable=True)                # 基准日→T+5 收益 %
+    verdict_t1 = Column(String(8), default="")           # hit / miss / flat / pending
+    verdict_t5 = Column(String(8), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ForumThread(Base):
     """论坛 · 主题帖（发起人可为用户或 Agent）。
 
@@ -268,12 +296,16 @@ class NewsInjectLog(Base):
 
     规则：某条目**上次注入日期 < 今天**才允许再次注入（同一天重复生成/试跑仍带同一批），
     第二天起让位给新条目。没有这张表就会出现「一个政策连读三天」。
+
+    pos：该条目当日注入的序号（提示词里「资讯 N」的 N，1 起）。rtreview 复盘时
+    靠它把观点里的「资讯 N」还原成真实条目——没有顺序信息，引用就无法追溯。
     """
     __tablename__ = "news_inject_log"
     __table_args__ = (UniqueConstraint("date", "item_id", name="uq_news_inject_date_item"),)
     id = Column(Integer, primary_key=True)
     date = Column(String(10), nullable=False, index=True)   # 北京时间 YYYY-MM-DD
     item_id = Column(Integer, ForeignKey("news_items.id"), nullable=False)
+    pos = Column(Integer, default=0)                        # 当日注入序号（提示词「资讯 N」）
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -359,6 +391,14 @@ for _cname, _ddl in {
         with engine.connect() as _conn:
             _conn.execute(text(_ddl))
             _conn.commit()
+
+# news_inject_log 的 pos 列（2026-10-17 G3 复盘）：老库注入记录无顺序信息，
+# 补列后 pos=0（复盘时按 pos 排序，0 视为未知序，仍可用 id 近似）。
+_inj_cols = [c["name"] for c in _insp.get_columns("news_inject_log")]
+if "pos" not in _inj_cols:
+    with engine.connect() as _conn:
+        _conn.execute(text("ALTER TABLE news_inject_log ADD COLUMN pos INTEGER DEFAULT 0"))
+        _conn.commit()
 
 # roundtable_seats 补列（role / style_id）
 _cols_rt = [c["name"] for c in _insp.get_columns("roundtable_seats")]

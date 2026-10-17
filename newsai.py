@@ -376,17 +376,21 @@ def last_inject_dates(db, item_ids) -> dict:
 
 
 def log_injections(db, date_s: str, item_ids) -> int:
-    """记录今日注入（幂等：已存在的 (date, item) 跳过）。返回新增条数。"""
+    """记录今日注入（幂等：已存在的 (date, item) 跳过）。返回新增条数。
+
+    item_ids 必须按注入顺序（提示词里「资讯 N」的 N 从 1 起）——pos 列供
+    rtreview 复盘时把观点里的「资讯 N」还原成真实条目，顺序错了引用就张冠李戴。
+    """
     ids = [i for i in (item_ids or []) if i]
     if not ids:
         return 0
     have = {(r.item_id) for r in
             db.query(NewsInjectLog.item_id).filter(NewsInjectLog.date == date_s).all()}
     n = 0
-    for iid in ids:
+    for pos, iid in enumerate(ids, 1):
         if iid in have:
             continue
-        db.add(NewsInjectLog(date=date_s, item_id=iid))
+        db.add(NewsInjectLog(date=date_s, item_id=iid, pos=pos))
         have.add(iid)
         n += 1
     db.commit()
