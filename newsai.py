@@ -23,6 +23,7 @@ app._llm_route 探测不可达时自动改走 rss-relay 的 POST 通道
 ⚠️ 中继域名在 Cloudflare 后面，UA 太朴素会被 1010 拦（llm.py 已用浏览器 UA）。
 """
 import json
+import os
 import re
 from datetime import datetime, timedelta
 
@@ -111,6 +112,65 @@ def norm_codes(raw) -> list:
         if c and c not in out:
             out.append(c)
     return out
+
+
+# ---------------- 0) 持仓行业画像（覆盖场外基金） ----------------
+# 新闻几乎不出现场外基金代码，ai_codes 精确匹配对 12/16 个持仓（基金）恒不命中。
+# 用一份「标的 → 行业 + 关键词」画像把匹配扩展到关键词层：新闻
+# 标题/摘要/标签命中某持仓的行业词，即算「与持仓相关」。
+#
+# 数据文件：quant-web/fund_profiles.json（与代码同目录，部署随仓库同步，
+# 改完即生效——按 mtime 缓存，无需重启）。格式：
+#     {"600406.SH": {"industry": "电力设备", "keywords": ["电网", "特高压"]}, ...}
+# 只收录**当前持仓**（匹配时会与用户真实持仓求交，已清仓的留着也不会误亮）。
+# 宽基（沪深300/A500 等）刻意只收指数全名，不收「A股/大盘」这类泛词——
+# 市场级噪音由选条的「市场大事补位」机制覆盖，不占 ★ 优先级。
+FUND_PROFILE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "fund_profiles.json")
+_PROFILE_CACHE = {"mtime": None, "data": {}}
+
+
+def load_fund_profiles() -> dict:
+    """读持仓行业画像。文件缺失/损坏 → {}（徽标降级为原来的代码精确匹配）。"""
+    try:
+        mt = os.path.getmtime(FUND_PROFILE_FILE)
+        if _PROFILE_CACHE["mtime"] != mt:
+            with open(FUND_PROFILE_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            _PROFILE_CACHE["mtime"] = mt
+            _PROFILE_CACHE["data"] = data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        pass
+    return _PROFILE_CACHE["data"]
+
+
+def profile_hits(text: str, profiles: dict = None) -> set:
+    """返回行业关键词命中 text 的持仓代码集合（已归一化）。
+
+    关键词大小写不敏感；任一关键词命中即算该标的命中（子串匹配）。
+    profiles 默认读文件缓存；传 {} 表示关闭画像（纯代码匹配）。
+    """
+    if profiles is None:
+        profiles = load_fund_profiles()
+    if not text or not profiles:
+        return set()
+    low = str(text).lower()
+    hits = set()
+    for code, p in profiles.items():
+        for kw in ((p or {}).get("keywords") or []):
+            if kw and str(kw).lower() in low:
+                c = norm_code(code)
+                if c:
+                    hits.add(c)
+                break
+    return hits
+
+
+def profile_industry(code: str, profiles: dict = None) -> str:
+    """取某标的的行业标签（画像里没有返回空串）。"""
+    if profiles is None:
+        profiles = load_fund_profiles()
+    return ((profiles.get(code) or {}).get("industry") or "")
 
 
 def _clip(s: str, n: int) -> str:
@@ -303,6 +363,7 @@ def select_news_for_prompt(db, holding_codes, today: str,
     返回 [{id, title, source, date, time, score, reason, codes, link, related}]。
     """
     codes = {norm_code(c) for c in (holding_codes or []) if norm_code(c)}
+    profiles = load_fund_profiles()
     start = datetime.utcnow() - timedelta(days=days)
     rows = (db.query(NewsItem)
             .filter(NewsItem.ai_score.isnot(None), NewsItem.ai_score >= min_score,
@@ -326,12 +387,15 @@ def select_news_for_prompt(db, holding_codes, today: str,
             continue                      # 更早的日期已注入过 → 不重复喂；今天注入过仍带上
         seen.add(r.id)
         item_codes = [norm_code(c) for c in (r.ai_codes or "").split(",") if norm_code(c)]
+        # 持仓相关 = 代码精确命中 ∪ 行业画像关键词命中（后者覆盖场外基金：
+        # 新闻不出现基金代码，但会出现「半导体」「医药」这类行业词）
+        text = f"{r.title or ''} {r.summary or ''} {r.ai_tags or ''}"
         picked.append({
             "id": r.id, "title": r.title or "", "source": r.source_name or "",
             "date": _fmt_cn(r.published_at, "%m-%d"), "time": _fmt_cn(r.published_at, "%H:%M"),
             "score": r.ai_score, "reason": r.ai_reason or "",
             "codes": item_codes, "link": r.link or "",
-            "related": bool(codes & set(item_codes)),
+            "related": bool(codes & (set(item_codes) | profile_hits(text, profiles))),
         })
 
     related = sorted([p for p in picked if p["related"]],
@@ -408,9 +472,14 @@ def build_digest(db, conf: dict, date_s: str, holdings: list,
         if it["codes"]:
             L.append(f"   关联标的：{'、'.join(it['codes'])}")
     L += ["", "# 我的持仓"]
+    profiles = load_fund_profiles()
     if holdings:
         for h in holdings:
-            L.append(f"- {h.get('name') or ''}（{h.get('code') or '—'}）")
+            # 带上行业画像：基金名称对编辑模型不透明（「中欧医疗健康混合C」≠ 医药），
+            # 行业标签让它能谈「对持仓的影响」
+            ind = profile_industry(h.get("code") or "", profiles)
+            suffix = f" · {ind}" if ind else ""
+            L.append(f"- {h.get('name') or ''}（{h.get('code') or '—'}{suffix}）")
     else:
         L.append("- 当前无持仓")
     L += ["", _DIGEST_SPEC]

@@ -399,7 +399,9 @@ def refresh_all(db, feed_id=None, limit: int = 60) -> dict:
 def item_out(it: NewsItem, feed_title: str = "", related: bool = False):
     """转成前端直接可用的形状：日期/时间在服务端算成北京时间，前端不做时区换算。
 
-    related 由调用方（app._news_items_payload）按「当前用户持仓代码 ∩ ai_codes」算好
+    related 由调用方（app._news_items_payload）按两条通道算好：
+    ① 持仓代码 ∩ ai_codes；② 持仓行业画像关键词命中（newsai.profile_hits，
+    覆盖场外基金——新闻不出现基金代码）。本函数只负责带出，不算。
     传入——本模块不碰 Project 表，保持「源数据管道」的职责边界。
     """
     dt = it.published_at

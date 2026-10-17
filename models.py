@@ -315,7 +315,7 @@ class NewsItemOut(BaseModel):
     ai_tags: str = ""
     ai_codes: str = ""                 # AI 提取的关联标的代码（逗号分隔）
     ai_dup_of: Optional[int] = None    # 同题主条目 id（多源合并）
-    related: int = 0                   # 是否与当前用户持仓相关（后端按持仓代码算）
+    related: int = 0                   # 是否与当前用户持仓相关（后端：代码 ∩ ai_codes ∪ 行业画像关键词）
 
 
 class NewsDigestReq(BaseModel):

@@ -3094,14 +3094,19 @@ def _news_items_payload(db, range_s="today", category="", q="", star_only=False,
     rows = (query.order_by(NewsItem.published_at.desc(), NewsItem.id.desc())
             .limit(max(1, min(limit, 1000))).all())
 
-    # 「与我的持仓相关」在后端算：持仓代码（当前用户）∩ 条目的 ai_codes（LLM 提取）。
+    # 「与我的持仓相关」在后端算，两条匹配通道：
+    #   ① 代码精确：持仓代码（当前用户）∩ 条目的 ai_codes（LLM 提取）；
+    #   ② 行业画像：持仓行业关键词命中 条目标题/摘要/标签（覆盖场外基金——
+    #      新闻不出现基金代码，但会出现「半导体」「医药」这类行业词）。
     # 两边都过 newsai.norm_code 归一化（sh 前缀 / .SH 后缀 / 大小写），否则永远匹配不上。
     codes = {newsai.norm_code(c) for c in (holding_codes or []) if newsai.norm_code(c)}
+    profiles = newsai.load_fund_profiles()
     items, related_n = [], 0
     for it, fd in rows:
         item_codes = {newsai.norm_code(c) for c in (it.ai_codes or "").split(",")
                       if newsai.norm_code(c)}
-        related = bool(codes and (codes & item_codes))
+        text = f"{it.title or ''} {it.summary or ''} {it.ai_tags or ''}"
+        related = bool(codes and (codes & (item_codes | newsai.profile_hits(text, profiles))))
         if related:
             related_n += 1
         if related_only and not related:
