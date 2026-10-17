@@ -922,6 +922,15 @@ th { color: var(--muted); font-weight: 600; }
   display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm);
   color: var(--muted); white-space: nowrap; cursor: pointer;
 }
+/* 筛选区折叠：默认只显示第一行（区间+分类），右上角 chevron 展开/收起搜索行 */
+.nf-toggle {
+  margin-left: auto; padding: 2px 8px; font-size: 13px; line-height: 1;
+  color: var(--muted); background: transparent; border: none; border-radius: var(--radius-sm);
+  cursor: pointer; user-select: none;
+}
+.nf-toggle:hover { color: var(--text); background: var(--subtle-bg); }
+.news-filter .nf-row-2 { display: none; }        /* 默认折叠：搜索行隐藏 */
+.news-filter.open .nf-row-2 { display: flex; }   /* 展开：显示搜索行 */
 
 /* --- 日期分组 --- */
 .news-day { margin-bottom: var(--sp-5); }

@@ -21,6 +21,8 @@ var newsState = {
   categories: [],
   stats: {},
   panel: "",          // "" | "manage"
+  // 筛选区折叠态：默认折叠单行；展开显示搜索/只看收藏。读 localStorage 持久化。
+  filterOpen: (() => { try { return localStorage.getItem("newsFilterOpen") === "1"; } catch (_) { return false; } })(),
   // 最近一次 OPML 导入的报告。存进 state 而不是直接写 DOM —— 导入后要刷新上方
   // 订阅源表格（newsOpenManage 会整块重绘），报告放 state 里才能一起活下来。
   opmlReport: null,
@@ -56,11 +58,13 @@ async function renderNews() {
         </div>
       </div>
 
-      <div class="news-filter panel">
+      <div class="news-filter panel" id="news-filter">
         <div class="nf-row">
           <span class="nf-ranges" id="news-ranges"></span>
           <span class="nf-sep"></span>
           <span class="nf-cats" id="news-cats"></span>
+          <button class="nf-toggle" id="news-filter-toggle" type="button"
+            title="${newsState.filterOpen ? "收起筛选" : "展开筛选（搜索 / 只看收藏 / 只看相关）"}">${newsState.filterOpen ? "▾" : "▸"}</button>
         </div>
         <div class="nf-row nf-row-2">
           <input id="news-q" class="nf-search" type="search" placeholder="搜索标题 / 摘要 / 来源…" />
@@ -95,6 +99,17 @@ async function renderNews() {
   qi.oninput = () => {
     clearTimeout(qt);
     qt = setTimeout(() => { newsState.q = qi.value.trim(); newsReload(); }, 300);
+  };
+  // 筛选区折叠：默认折叠单行，点 chevron 展开/收起搜索与只看收藏/相关
+  const ftoggle = document.getElementById("news-filter-toggle");
+  const fpanel = document.getElementById("news-filter");
+  if (newsState.filterOpen) fpanel.classList.add("open");
+  ftoggle.onclick = () => {
+    newsState.filterOpen = !newsState.filterOpen;
+    try { localStorage.setItem("newsFilterOpen", newsState.filterOpen ? "1" : "0"); } catch (_) {}
+    fpanel.classList.toggle("open", newsState.filterOpen);
+    ftoggle.textContent = newsState.filterOpen ? "▾" : "▸";
+    ftoggle.title = newsState.filterOpen ? "收起筛选" : "展开筛选（搜索 / 只看收藏 / 只看相关）";
   };
   const st = document.getElementById("news-starred");
   if (st) st.onchange = (e) => { newsState.starred = e.target.checked; newsReload(); };
