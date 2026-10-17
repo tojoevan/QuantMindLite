@@ -1071,7 +1071,8 @@ th { color: var(--muted); font-weight: 600; }
   .news-title { font-size: 16px; line-height: 1.4; }        /* 标题 14 → 16，更醒目 */
   .news-summary { font-size: 14px; line-height: 1.7; }      /* 摘要 13 → 14 */
   .news-meta { font-size: 12px; }                           /* meta 保持小字但不过缩 */
-  .nf-chip { font-size: 13px; padding: 5px 11px; }          /* 筛选 chip 12 → 13，点击区略增 */
+  .nf-chip { font-size: 14px; padding: 5px 10px; border-color: transparent; }   /* 去外框 + 字号 13→14（增大一号） */
+  .nf-chip.on { border-color: transparent; }                /* 选中态保留 accent-soft 软底作指示，仅去框 */
   /* 页头操作按钮（抓取最新/AI 加工/订阅管理/刷新）：移动端**去除外框**、改文字链接样式，
      字号放大；横向 padding 收紧、靠间距分隔；不改变任何行为。抓取最新(primary)保留填充以
      突出主操作，其余去框去底读起来像链接 */
