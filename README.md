@@ -376,6 +376,7 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 | GET / POST | `/api/news/feeds` | 订阅源列表 / 新增单个源 |
 | PATCH / DELETE | `/api/news/feeds/{fid}` | 改名分类、启停 / 删除（删除会**连带删除**该源已入库条目） |
 | POST | `/api/news/feeds/import-opml` | 管理员：批量导入 OPML（详见下） |
+| GET | `/api/news/feeds/export-opml` | 管理员：导出现有订阅源为 OPML 附件（按分类分组，只含启用的源） |
 | POST | `/api/news/fetch` | 管理员：抓取入库；带 `feed_id` 则只抓该源 |
 | GET / PUT | `/api/news/settings` | 管理员：中继地址与密钥（密钥只回 `has_key`，永不回显） |
 
@@ -383,6 +384,11 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 > （前端读文件或粘贴后上传）。刻意**不支持**「把地址交给服务端去取」——本机只有 IPv6
 > 出站，而 OPML 所在主机未必在中继白名单里。导入后默认**立即实抓一次**并逐条回报结果：
 > OPML 只是一份地址清单，它对「这些源还活不活」一无所知。
+>
+> **OPML 导出**：`GET /api/news/feeds/export-opml` 返回 OPML 2.0 附件
+> （`Content-Disposition: attachment`），按 category 分组、**只含启用的源**
+> （停用说明源有问题，导出去再导入只会得到一批待体检的僵尸源）。与导入对称，
+> 换机 / 备份 / 分享订阅清单用；导出文件可直接被本接口的导入端解析（闭环已验证）。
 
 > **源状态三档**：`ok` 正常 / `empty` **空源**（可访问但 0 条目）/ `error` 抓取失败。
 > 「空源」必须单列一档：HTTP 200 却不含任何 `<item>` 的僵尸源并不罕见

@@ -1124,7 +1124,10 @@ STYLE_INIT_FLAG = "rt.style_init_migrated"
 #   zhipu / qwen / doubao / siliconflow / openrouter → 401 鉴权错（链路正常，只差真 Key）
 #   openai → **403 unsupported_country_region_territory**：网络通，但按地区拒绝中国 IP，
 #            故实际不可用；保留只为完整性，以及将来换机房/加代理时能用
-#   deepseek / moonshot → Name or service not known（本机无 AAAA，必然失败）
+#   deepseek / moonshot → Name or service not known（本机无 AAAA，**直连**必然失败）；
+#            但经 rss-relay 中继（白名单已含二者）实测均为 401 鉴权错 —— 链路通，
+#            只差真 Key。deepseek 生产已配 Key 走中继正常跑（见新闻 AI 加工层）；
+#            moonshot 待用户配 Key，配上即可用（2026-10-17 复测：中继 3.9s 返 401）。
 # 内置服务商：**必须**是 OpenAI 兼容的 /chat/completions 协议（见 llm.py）。
 # 字段：label 中文名 / base_url 默认接口根 / model 默认模型 / host 可达性探测目标
 #      （默认不带端口 = 443；本地自建可写 host:port）/ group 设置页分组。
