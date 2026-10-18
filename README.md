@@ -556,6 +556,18 @@ server {
 - 会话采用 Bearer token（7 天有效期），支持登出吊销。
 - 管理员可处理用户的「忘记密码」申请并重置为随机密码。
 - 数据库文件 `quantweb.db` 已通过 `.gitignore` 排除，**不上传**至代码仓库，用户数据不外泄。
+- LLM / 中继密钥只存生产库 `settings` 表，接口只回 `has_key` 不回显；仓库内无任何硬编码密钥。
+
+**提交脱敏（本仓库公开，双闸防护）**
+
+| 闸 | 位置 | 行为 |
+| --- | --- | --- |
+| 本地 | `scripts/git-hooks/pre-commit`（随仓库分发，`git config core.hooksPath scripts/git-hooks` 激活） | 提交前硬阻断敏感文件类型（`.db` / `.env` / `.pem` / `.key` 等）与已知密钥格式（`sk-` / `ghp_` / `AKIA` / `PRIVATE KEY` / `Bearer <令牌>` 等）；新增行中出现服务器 / 内网地址时告警（`WARN_ONLY_IP=0` 可改硬阻断） |
+| 远端 | `.github/workflows/secret-scan.yml` | push / PR 触发 gitleaks 全历史扫描，每周一定时复查——本地钩子被 `--no-verify` 绕过时仍有兜底 |
+
+**万一泄露**：① 第一时间轮换所有可能暴露的密钥（生产库 `settings` 表 LLM Key、中继密钥、数据库密码）；
+② 已入库的历史用 `git filter-repo`（或 BFG Repo-Cleaner）重写后 force push；
+③ 本仓库 2026-10-19 做过全历史审计：无任何密钥 / 数据库文件入库，仅 deploy.sh 与文档含服务器地址（见部署章节的占位符说明）。
 
 ---
 
