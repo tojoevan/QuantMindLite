@@ -1109,11 +1109,26 @@ function rtRenderSettings() {
 
   // 可达性徽标：本服务器只有 IPv6 出口，IPv4-only 的服务商（如 DeepSeek）配了 Key 也调不通。
   // 不把这件事显式标出来，用户只会看到「点了没反应」。
+  // 可达性徽标三态（后端 reach_mode）：direct 直连可达 / relay 自动走中继（可用）/
+  // none 真不可用。本服务器只有 IPv6 出口，IPv4-only 的服务商（如 DeepSeek）
+  // 必然直连失败，但调用时会自动经中继（relay.kapibala.icu）转发——标红「不可达」
+  // 会把能用的服务商误判成坏的，所以有中继兜底的走琥珀色「经中继」中间态。
   const reachTag = (m) => {
-    if (!m || typeof m.reachable !== "boolean") return "";
-    return m.reachable
-      ? `<span class="rt-reach ok" title="本机可以直连该域名">可达</span>`
-      : `<span class="rt-reach bad" title="本机直连不可达（该域名无 IPv6 记录，本服务器只有 IPv6 出口）。调用时会自动经中继（relay.kapibala.icu）转发，通常不影响使用。">不可达</span>`;
+    if (!m) return "";
+    const mode = m.reach_mode || (m.reachable ? "direct" : "none");
+    if (mode === "direct") {
+      return `<span class="rt-reach ok" title="本机可以直连该域名">可达</span>`;
+    }
+    if (mode === "relay") {
+      return `<span class="rt-reach relay" title="本机无 IPv4 出口、无法直连该域名；调用时会自动经中继（relay.kapibala.icu）转发，可正常使用。">经中继</span>`;
+    }
+    // none：区分「本地地址中继帮不了」和「域名不在中继白名单」，title 说清差在哪
+    const host = m.host || "";
+    const local = /^(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.|.*\.local$)/.test(host);
+    const why = local
+      ? "本地/内网地址，公网中继无法转发——如需使用请在本机可达的网络环境下配置。"
+      : "本机无 IPv4 出口无法直连，且该域名不在中继白名单——将其加入 rss-relay 的 ALLOW_HOSTS 并部署 Worker 后即可经中继使用。";
+    return `<span class="rt-reach bad" title="${escapeHtml(why)}">不可达</span>`;
   };
 
   // TypeSafe 判断协议徽标（Jev）：只输出概率不生成正文，能力边界与 chat 协议不同
@@ -1203,7 +1218,7 @@ function rtRenderSettings() {
     </div>`;
 
   body.innerHTML = bar + newsProvBar + health + addRow + rows +
-    `<p class="rt-inline-note">「可达」= 本服务器能否直连该 base_url 的主机端口。本机只有 IPv6 出口，标「不可达」的服务商（如 DeepSeek / Moonshot，无 IPv6 记录）调用时会自动经中继（relay.kapibala.icu）转发，无需手动切换。<br>模型名各厂商改版较快，可直接在展开行里改成当前可用的型号；任何 OpenAI 兼容服务都可用上方「＋ 自定义服务商」接入（填名称 + base_url + model）。</p>`;
+    `<p class="rt-inline-note">可达性三态：<b>可达</b>＝本机能直连该域名；<b style="color:var(--amber,#b58900)">经中继</b>＝本机只有 IPv6 出口、无法直连，调用时自动经中继（relay.kapibala.icu）转发，可正常使用；<b style="color:var(--red)">不可达</b>＝本地/内网地址（中继转发不到）或域名不在中继白名单（加入 rss-relay 的 ALLOW_HOSTS 并部署后可转经中继）。<br>模型名各厂商改版较快，可直接在展开行里改成当前可用的型号；任何 OpenAI 兼容服务都可用上方「＋ 自定义服务商」接入（填名称 + base_url + model）。</p>`;
 
   // 资讯 AI 服务商切换
   const npSave = body.querySelector("#rt-news-provider-save");

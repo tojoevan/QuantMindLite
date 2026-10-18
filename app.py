@@ -1260,6 +1260,67 @@ def _host_reachable(target) -> bool:
     return ok
 
 
+# 中继（rss-relay）域名白名单镜像：与 rss-relay/wrangler.toml 的 ALLOW_HOSTS 保持一致。
+# ⚠️ 改 wrangler.toml 白名单后必须同步这里，否则设置页会把「白名单已放行、其实能用」的
+# 服务商错标成不可达。本表仅用于 UI 状态展示；真实出站路由不依赖它（_llm_route 只看可达性，
+# 白名单外的域名 Worker 侧会直接 403，调用方从健康度面板看得到）。
+RELAY_HOST = "relay.kapibala.icu"
+RELAY_ALLOWED_HOSTS = (
+    "aihot.news", "chinanews.com.cn", "wallstreetcn.com", "jiemian.com",
+    "eastmoney.com", "api.deepseek.com", "api.moonshot.cn",
+    "generativelanguage.googleapis.com", "qbitai.com",
+)
+
+
+def _relay_host_allowed(host: str) -> bool:
+    """host 是否命中中继白名单（与 Worker 的 ALLOW_HOSTS 同为后缀匹配）。"""
+    h = (host or "").strip().lower().rstrip(".")
+    return bool(h) and any(h == d or h.endswith("." + d) for d in RELAY_ALLOWED_HOSTS)
+
+
+def _is_local_host(host: str) -> bool:
+    """本地/内网地址：中继是公网 Worker，转发不到这些地址（如 ollama 127.0.0.1）。"""
+    h = (host or "").strip().lower().rstrip(".")
+    if not h:
+        return False
+    if h == "localhost" or h.endswith(".localhost") or h.endswith(".local"):
+        return True
+    if h.startswith("127.") or h.startswith("192.168.") or h.startswith("10."):
+        return True
+    if h.startswith("172."):
+        parts = h.split(".")
+        if len(parts) >= 2 and parts[1].isdigit() and 16 <= int(parts[1]) <= 31:
+            return True
+    return False
+
+
+def _relay_usable(db) -> bool:
+    """中继通道本身是否可用：relay 域名本机可达 + news.relay_url/key 已配置。
+
+    只读 settings 表与 _reach_cache（带 5 分钟缓存），开销可忽略。
+    """
+    if not _host_reachable((RELAY_HOST, 443)):
+        return False
+    conf = newsfetch.relay_conf(db)
+    return bool(conf.get("url") and conf.get("key"))
+
+
+def _reach_mode(direct_ok: bool, host: str, relay_ok: bool) -> str:
+    """服务商可达性三态（设置页徽标用）：
+
+    direct —— 本机直连可达；
+    relay  —— 直连不可达（典型：无 AAAA 的 IPv4-only 域名），但中继通道可用且该域名
+              已在中继白名单内 → 调用会自动走中继，现在就能用（如 DeepSeek / Moonshot）；
+    none   —— 真不可用：本地/内网地址（中继转发不到）、域名不在中继白名单、
+              或中继本身不可达（relay 挂了 / 没配中继密钥）。
+    """
+    if direct_ok:
+        return "direct"
+    if relay_ok and not _is_local_host(host) and _relay_host_allowed(host):
+        return "relay"
+    return "none"
+
+
 def _llm_route(db, base_url: str) -> dict:
     """LLM 出站路由：目标主机本机不可达（无 AAAA，如 DeepSeek/Moonshot）且中继
     已配置时，返回走 rss-relay POST 通道所需的参数；否则返回空 dict（直连）。
@@ -2035,9 +2096,12 @@ def rt_archive_post(body: RoundtableArchiveReq, u: User = Depends(get_current_us
 def rt_get_settings(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """LLM 设置（脱敏）：返回**内置 + 自定义**提供方的配置状态，绝不回传 Key 本身。
 
-    额外下发 `reachable`（本机到该 base_url 对应 host:port 的 TCP 可达性），供设置页提示
-    「这台机器连不上」——本 VPS 只有 IPv6 出口，IPv4-only 的服务商（如 DeepSeek）
-    在此必然失败，不提示的话用户只会看到「点了没反应」。
+    额外下发 `reachable`（本机到该 base_url 对应 host:port 的 TCP 可达性）与
+    `reach_mode`（三态：direct 直连可达 / relay 直连不可达但会自动走中继、可用 /
+    none 真不可用），供设置页把「有中继兜底的服务商」与「真连不上」区分开——
+    本 VPS 只有 IPv6 出口，IPv4-only 的服务商（如 DeepSeek）必然直连失败，
+    不提示的话用户只会看到「点了没反应」；但标成红色「不可达」同样误导，
+    因为它们在调用时会自动经中继转发、实际可用。
     同时下发 `group`（国内 / 海外 / 本地 / 自定义），设置页据此分组显示。
     探测并发执行且带 5 分钟缓存：首次打开典型 <1 秒，之后瞬时返回。
     """
@@ -2051,10 +2115,12 @@ def rt_get_settings(u: User = Depends(get_current_user), db: Session = Depends(g
         targets[n] = _reach_target(confs[n]["base_url"], dflt.get("host", ""))
     with ThreadPoolExecutor(max_workers=min(12, max(1, len(names)))) as ex:
         reach = dict(zip(names, ex.map(_host_reachable, [targets[n] for n in names])))
+    relay_ok = _relay_usable(db)
     providers = {}
     for n in names:
         dflt = PROVIDER_DEFAULTS.get(n) or {}
         conf = confs[n]
+        host = _host_of(conf["base_url"]) or (dflt.get("host") or "")
         providers[n] = {
             "label": dflt.get("label") or n,
             "group": dflt.get("group") or CUSTOM_GROUP,
@@ -2062,8 +2128,11 @@ def rt_get_settings(u: User = Depends(get_current_user), db: Session = Depends(g
             "configured": bool(conf["api_key"]),
             "base_url": conf["base_url"],
             "model": conf["model"] or dflt.get("model", ""),
-            "host": _host_of(conf["base_url"]) or (dflt.get("host") or ""),
+            "host": host,
             "reachable": reach.get(n, False),
+            # reach_mode 是「实际能否调通」的三态：direct / relay（自动走中继，可用）/ none。
+            # 只有 IPv6-only 的机器才需要这套；有 IPv4 的机器一切直连、relay 态不会出现。
+            "reach_mode": _reach_mode(reach.get(n, False), host, relay_ok),
             "protocol": conf.get("protocol", "openai"),
         }
     return {"providers": providers, "groups": PROVIDER_GROUPS + [CUSTOM_GROUP],

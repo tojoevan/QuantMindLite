@@ -549,18 +549,21 @@ th { color: var(--muted); font-weight: 600; }
 .rt-field.grow { flex: 1; }
 .rt-inline-note { color: var(--muted); font-size: 12px; line-height: 1.6; }
 
-/* 圆桌 AI 设置：服务商「本机可达性」徽标。
+/* 圆桌 AI 设置：服务商「本机可达性」徽标（三态）。
    本 VPS 只有 IPv6 出口，IPv4-only 的服务商（如 DeepSeek）必然连不上，
-   不显式标出来，用户配完 Key 只会看到「点了没反应」。边框用 currentColor，
-   暗/浅两种主题都自动跟随。 */
+   不显式标出来，用户配完 Key 只会看到「点了没反应」。但直接标红「不可达」
+   同样误导——它们在调用时会自动经中继转发、实际可用，所以中间加一态：
+   ok=直连可达 / relay=自动走中继（可用，琥珀色）/ bad=真不可用。
+   边框用 currentColor，暗/浅两种主题都自动跟随。 */
 .rt-reach {
   font-size: var(--fs-xs); font-weight: 500; padding: 0 6px;
   border-radius: var(--radius-pill); margin-left: var(--sp-1);
   white-space: nowrap; vertical-align: middle;
   border: var(--bd-w) solid currentColor;
 }
-.rt-reach.ok  { color: var(--green); }
-.rt-reach.bad { color: var(--red); }
+.rt-reach.ok    { color: var(--green); }
+.rt-reach.relay { color: var(--amber, #b58900); }
+.rt-reach.bad   { color: var(--red); }
 
 /* 生成健康度（AI 设置顶部，管理员）：LLM 调用成功率 / 失败分类 / 兜底次数。
    配色不用 .pos/.neg（那是行情涨红跌绿），成败语义独立：good/warn/bad。 */
