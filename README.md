@@ -374,7 +374,7 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/news/items` | 资讯流（区间 / 分类 / 搜索 / 只看收藏），返回条目、分类 chips 与统计 |
+| GET | `/api/news/items` | 资讯流（区间 / 分类 / 搜索 / 只看收藏 / 分页），返回条目、分类 chips、统计与分页信息（`total` / `page` / `page_size`） |
 | GET | `/api/guest/news/items` | 游客只读的同一份资讯流（不暴露订阅源地址与中继配置） |
 | GET / POST | `/api/news/feeds` | 订阅源列表 / 新增单个源 |
 | PATCH / DELETE | `/api/news/feeds/{fid}` | 改名分类、启停 / 删除（删除会**连带删除**该源已入库条目） |

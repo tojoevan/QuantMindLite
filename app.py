@@ -3256,7 +3256,7 @@ def _news_range_start(range_s: str):
 
 
 def _news_items_payload(db, range_s="today", category="", q="", star_only=False, limit=300,
-                        holding_codes=None, related_only=False) -> dict:
+                        holding_codes=None, related_only=False, page=1, page_size=20) -> dict:
     query = (db.query(NewsItem, NewsFeed)
              .join(NewsFeed, NewsItem.feed_id == NewsFeed.id)
              .filter(NewsFeed.enabled == 1))
@@ -3280,8 +3280,16 @@ def _news_items_payload(db, range_s="today", category="", q="", star_only=False,
     if star_only:
         query = query.filter(NewsItem.star == 1)
 
+    # 分页：先按当前筛选条件统计总数（total 供前端分页组件显示），再 offset/limit 截断。
+    # limit 参数保持旧语义（单次最多返回条数），page_size 是每页条数，取两者较小值。
+    # related_only 无法在 SQL 层过滤（依赖每条新闻的持仓相关实时计算），故 total 为
+    # 「当前 range/category/q/star_only 条件下的总条数」，与分页组件的页数一致。
+    total = int(query.count())
+    page_size = max(1, min(page_size, 100))
+    page = max(1, page)
+    take = max(1, min(limit, page_size))
     rows = (query.order_by(NewsItem.published_at.desc(), NewsItem.id.desc())
-            .limit(max(1, min(limit, 1000))).all())
+            .offset((page - 1) * page_size).limit(take).all())
 
     # 「与我的持仓相关」在后端算，两条匹配通道：
     #   ① 代码精确：持仓代码（当前用户）∩ 条目的 ai_codes（LLM 提取）；
@@ -3341,6 +3349,9 @@ def _news_items_payload(db, range_s="today", category="", q="", star_only=False,
     return {
         "items": items,
         "categories": cats,
+        "total": int(total),
+        "page": page,
+        "page_size": page_size,
         "stats": {
             "today": int(today_n),
             "feeds": int(feed_n),
@@ -3367,24 +3378,27 @@ def _news_feed_out(db, f: NewsFeed) -> NewsFeedOut:
 
 @app.get("/api/news/items")
 def news_items(range: str = "today", category: str = "", q: str = "",
-               starred: int = 0, related: int = 0,
+               starred: int = 0, related: int = 0, page: int = 1, page_size: int = 20,
                u: User = Depends(get_current_user),
                db: Session = Depends(get_db)):
     _ensure_default_feeds(db)
     codes = [h["code"] for h in _user_holdings(u, db) if h.get("code")]
     return _news_items_payload(db, range, category, q, bool(starred),
-                               holding_codes=codes, related_only=bool(related))
+                               holding_codes=codes, related_only=bool(related),
+                               page=page, page_size=page_size)
 
 
 @app.get("/api/guest/news/items")
 def guest_news_items(range: str = "today", category: str = "", q: str = "",
-                     starred: int = 0, related: int = 0, db: Session = Depends(get_db)):
+                     starred: int = 0, related: int = 0, page: int = 1, page_size: int = 20,
+                     db: Session = Depends(get_db)):
     """游客只读：与登录态同一份资讯流，不暴露订阅源地址与抓取配置。
 
     游客没有持仓 → related 恒为 0、也不按相关筛选（前端对游客不渲染该开关）。
     """
     _ensure_default_feeds(db)
-    data = _news_items_payload(db, range, category, q, bool(starred))
+    data = _news_items_payload(db, range, category, q, bool(starred),
+                               page=page, page_size=page_size)
     data["stats"].pop("relay_ready", None)
     return data
 

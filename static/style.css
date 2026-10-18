@@ -1025,6 +1025,25 @@ th { color: var(--muted); font-weight: 600; }
 }
 .news-foot-warn { color: var(--yellow); }
 
+/* --- 分页组件（行业通用：上一页/下一页 + 页码 + 共 N 条） --- */
+.news-pager {
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+  gap: 6px; margin: var(--sp-4) 0 2px; padding: 10px 4px;
+  font-size: var(--fs-sm);
+}
+.np-total { margin-right: 6px; color: var(--muted); font-size: var(--fs-xs); }
+.np-btn {
+  min-width: 30px; padding: 4px 10px; text-align: center;
+  font-size: var(--fs-sm); line-height: 1.4;
+  color: var(--muted); background: transparent;
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  cursor: pointer; user-select: none;
+}
+.np-btn:hover:not(:disabled) { color: var(--text); background: var(--subtle-bg); border-color: var(--border-strong); }
+.np-btn.on { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+.np-btn:disabled { opacity: .4; cursor: not-allowed; }
+.np-dots { padding: 4px 2px; color: var(--muted); user-select: none; }
+
 /* --- 订阅管理（管理员） --- */
 .nm-table td { vertical-align: middle; }
 .nm-url { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1106,6 +1125,12 @@ th { color: var(--muted); font-weight: 600; }
   /* 折叠按钮移动端放大：字号 18→22、保持大点击区，整行标题字号同步加大，避免小屏难点 */
   .news-page .nf-head { font-size: 15px; }
   .news-page .nf-toggle { font-size: 22px; padding: 8px 12px; }
+
+  /* 分页组件移动端：按钮去框、加大点击区，与筛选 chip 去框保持一致 */
+  .news-pager { gap: 4px; margin: var(--sp-3) 0 2px; }
+  .np-btn { min-width: 36px; padding: 8px 10px; font-size: 15px; border-color: transparent; }
+  .np-btn.on { border-color: transparent; }   /* 当前页保留 accent 软底作指示，仅去框 */
+  .np-total { font-size: 12px; }
 }
 
 /* ============ P9 · 新建标的支持基金 / 债券 ============ */

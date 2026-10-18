@@ -17,6 +17,9 @@ var newsState = {
   q: "",
   starred: false,
   related: false,       // 只看与我的持仓相关（后端按 ai_codes ∩ 持仓代码算）
+  page: 1,              // 当前页码（1 起）
+  pageSize: 20,        // 每页条数
+  total: 0,            // 当前筛选条件下的总条数（后端返回，分页组件显示用）
   items: [],
   categories: [],
   stats: {},
@@ -81,6 +84,7 @@ async function renderNews() {
 
       <div class="panel hidden" id="news-manage-panel"></div>
       <div id="news-list"><div class="panel"><span class="muted">加载中…</span></div></div>
+      <div class="news-pager" id="news-pager"></div>
       <div class="news-foot" id="news-foot"></div>
     </div>`;
 
@@ -89,6 +93,7 @@ async function renderNews() {
     const b = e.target.closest("[data-range]");
     if (!b) return;
     newsState.range = b.getAttribute("data-range");
+    newsState.page = 1;
     newsReload();
   };
   // 分类切换
@@ -97,6 +102,7 @@ async function renderNews() {
     if (!b) return;
     const c = b.getAttribute("data-cat");
     newsState.category = (newsState.category === c) ? "" : c;
+    newsState.page = 1;
     newsReload();
   };
   // 搜索（防抖）
@@ -104,7 +110,7 @@ async function renderNews() {
   let qt = null;
   qi.oninput = () => {
     clearTimeout(qt);
-    qt = setTimeout(() => { newsState.q = qi.value.trim(); newsReload(); }, 300);
+    qt = setTimeout(() => { newsState.q = qi.value.trim(); newsState.page = 1; newsReload(); }, 300);
   };
   // 筛选区折叠：默认整区折叠只留标题行，点 chevron 展开/收起全部筛选条件
   const ftoggle = document.getElementById("news-filter-toggle");
@@ -122,9 +128,9 @@ async function renderNews() {
   fhead.onclick = () => setFilterOpen(!newsState.filterOpen);
   ftoggle.onclick = (e) => { e.stopPropagation(); setFilterOpen(!newsState.filterOpen); };
   const st = document.getElementById("news-starred");
-  if (st) st.onchange = (e) => { newsState.starred = e.target.checked; newsReload(); };
+  if (st) st.onchange = (e) => { newsState.starred = e.target.checked; newsState.page = 1; newsReload(); };
   const rl2 = document.getElementById("news-related");
-  if (rl2) rl2.onchange = (e) => { newsState.related = e.target.checked; newsReload(); };
+  if (rl2) rl2.onchange = (e) => { newsState.related = e.target.checked; newsState.page = 1; newsReload(); };
 
   const rl = document.getElementById("news-reload");
   if (rl) rl.onclick = () => newsReload(true);
@@ -157,6 +163,8 @@ async function newsLoad() {
     category: newsState.category || "",
     q: newsState.q || "",
     starred: newsState.starred ? "1" : "0",
+    page: String(newsState.page),
+    page_size: String(newsState.pageSize),
   });
   if (newsState.related) qs.set("related", "1");
   const path = (isGuest ? "/api/guest/news/items?" : "/api/news/items?") + qs.toString();
@@ -177,11 +185,15 @@ async function newsReload(silent) {
   newsState.items = d.items || [];
   newsState.categories = d.categories || [];
   newsState.stats = d.stats || {};
+  newsState.total = d.total || 0;
+  if (d.page) newsState.page = d.page;
+  if (d.page_size) newsState.pageSize = d.page_size;
   // 区间 chip 每次都要重画：只改 newsState.range 的话高亮会停在上一次的选择上
   newsPaintRanges();
   newsPaintCats();
   newsPaintFilterSummary();
   newsPaintList();
+  newsPaintPager();
   newsPaintFoot();
 }
 
@@ -309,7 +321,7 @@ function newsPaintList() {
         if (it) it.star = r.star;
         btn.classList.toggle("on", !!r.star);
         btn.textContent = r.star ? "★" : "☆";
-        if (newsState.starred && !r.star) newsPaintList();
+        if (newsState.starred && !r.star) { newsPaintList(); newsPaintPager(); }
       } catch (e) {
         showToast("收藏失败：" + e.message);
       } finally {
@@ -317,6 +329,51 @@ function newsPaintList() {
       }
     };
   });
+}
+
+// 分页组件：上一页 / 下一页 + 页码（页数多时省略号折叠）+ 共 N 条
+function newsPaintPager() {
+  const box = document.getElementById("news-pager");
+  if (!box) return;
+  const total = newsState.total || 0;
+  const pageSize = newsState.pageSize || 20;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const cur = Math.min(newsState.page, pages);
+  // 同步一次真实页码（后端可能已把越界页码拉回）
+  if (cur !== newsState.page) { newsState.page = cur; }
+
+  const mk = (p, label, cls, disabled, title) =>
+    `<button class="np-btn${cls ? " " + cls : ""}" data-page="${p}"${disabled ? " disabled" : ""}${title ? ` title="${title}"` : ""}>${label}</button>`;
+
+  const parts = [];
+  parts.push(`<span class="np-total">共 ${total} 条</span>`);
+  parts.push(mk(cur - 1, "‹ 上一页", "", cur <= 1, "上一页"));
+  // 页码：1 … 当前页附近 … 末页（行业通用省略号折叠）
+  const window = 1;
+  const nums = new Set([1, pages]);
+  for (let p = Math.max(1, cur - window); p <= Math.min(pages, cur + window); p++) nums.add(p);
+  const sorted = [...nums].sort((a, b) => a - b);
+  let prev = 0;
+  sorted.forEach(p => {
+    if (p - prev > 1) parts.push(`<span class="np-dots">…</span>`);
+    parts.push(mk(p, String(p), p === cur ? "on" : "", false, `第 ${p} 页`));
+    prev = p;
+  });
+  parts.push(mk(cur + 1, "下一页 ›", "", cur >= pages, "下一页"));
+  box.innerHTML = parts.join("");
+
+  // 事件委托：上一页/下一页/页码
+  box.onclick = (e) => {
+    const b = e.target.closest("[data-page]");
+    if (!b || b.disabled) return;
+    const p = parseInt(b.getAttribute("data-page"), 10);
+    if (p === newsState.page || p < 1 || p > pages) return;
+    newsState.page = p;
+    newsReload();
+    // 翻页后回到列表顶部，避免停在旧页底部
+    const list = document.getElementById("news-list");
+    if (list) list.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 }
 
 function newsPaintFoot() {
