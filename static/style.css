@@ -1027,13 +1027,12 @@ th { color: var(--muted); font-weight: 600; }
 }
 .news-foot-warn { color: var(--yellow); }
 
-/* --- 分页组件（行业通用：上一页/下一页 + 页码 + 共 N 条） --- */
+/* --- 分页组件（行业通用：上一页/下一页 + 页码 + 跳转指定页） --- */
 .news-pager {
   display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
   gap: 6px; margin: var(--sp-4) 0 2px; padding: 10px 4px;
   font-size: var(--fs-sm);
 }
-.np-total { margin-right: 6px; color: var(--muted); font-size: var(--fs-xs); }
 .np-btn {
   min-width: 30px; padding: 4px 10px; text-align: center;
   font-size: var(--fs-sm); line-height: 1.4;
@@ -1146,7 +1145,6 @@ th { color: var(--muted); font-weight: 600; }
   .news-pager { gap: 4px; margin: var(--sp-3) 0 2px; }
   .np-btn { min-width: 36px; padding: 8px 10px; font-size: 15px; border-color: transparent; }
   .np-btn.on { border-color: transparent; }   /* 当前页保留 accent 软底作指示，仅去框 */
-  .np-total { font-size: 12px; }
   /* 跳转指定页移动端：输入框加高加大，方便触控 */
   .np-jump { margin-left: 2px; }
   .np-jump input[type="number"] { width: 60px; padding: 8px 6px; font-size: 15px; }

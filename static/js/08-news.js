@@ -346,7 +346,6 @@ function newsPaintPager() {
     `<button class="np-btn${cls ? " " + cls : ""}" data-page="${p}"${disabled ? " disabled" : ""}${title ? ` title="${title}"` : ""}>${label}</button>`;
 
   const parts = [];
-  parts.push(`<span class="np-total">共 ${total} 条</span>`);
   parts.push(mk(cur - 1, "‹ 上一页", "", cur <= 1, "上一页"));
   // 页码：1 … 当前页附近 … 末页（行业通用省略号折叠）
   const window = 1;
@@ -406,6 +405,8 @@ function newsPaintFoot() {
   if (!foot) return;
   const s = newsState.stats || {};
   const parts = [];
+  // 当前筛选条件下的总条数（分页组件已不含总数，这里统一收口到页脚统计区）
+  parts.push(`共 ${newsState.total || 0} 条`);
   parts.push(`订阅 ${s.feeds || 0} 个源`);
   parts.push(`今日 ${s.today || 0} 条`);
   if (s.last_fetched) parts.push(`最近抓取 ${newsFmtAgo(s.last_fetched)}`);
