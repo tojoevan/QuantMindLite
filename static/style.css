@@ -164,6 +164,11 @@ header .sub { color: var(--muted); font-size: 12px; }
 /* 面板正文被折叠（.hidden）后，h3 的 12px 下边距就变成面板底部的虚白，收掉，
    让折叠态是一条紧凑的标题栏。目前只命中圆桌的「持仓总览」「历史标的与操作记录」。 */
 .panel:has(> .hidden) > h3 { margin-bottom: 0; }
+/* 上一行的折叠态规则会误伤「AI 席位」面板：admin 的「新增席位」表单（#rt-add-seat-panel）
+   是常驻 hidden 子元素，:has(> .hidden) 恒命中，把 h3 与 #rt-seats 的间距永久清零（游客态
+   无此子元素，本来就是 12px）。这里按该面板独有结构恢复间距；:has() 内 id 的 specificity
+   高于 class，稳定覆盖上一行。 */
+.panel:has(> #rt-add-seat-panel) > h3 { margin-bottom: var(--sp-3); }
 .strat-note {
   background: var(--input-bg); border: 1px solid var(--border); color: var(--text);
   border-radius: 8px; padding: 9px 11px; font-size: 14px; width: 100%;
