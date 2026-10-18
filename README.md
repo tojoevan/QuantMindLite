@@ -170,7 +170,7 @@ uvicorn app:app --host 0.0.0.0 --port 8090 --reload
 | 游客标的代码 | `app.py` → `GUEST_STOCK_CODE` | `000002.SZ` | 游客模式公开只读的标的。 |
 | 服务端口 | `uvicorn` 启动参数 / `systemd` | `8090` | 可按需修改。 |
 | 数据库路径 | `db.py` → `DB_PATH` | `./quantweb.db` | 独立 SQLite 文件。 |
-| 行情回退顺序 | `datasource.py` | 腾讯（proxy.finance → web.ifzq）→ akshare → 东方财富 | 品种是**第一层路由**：场内走腾讯日线、场外基金走东财净值。A 股的 akshare/东财兜底在本 VPS 必然失败，已由 `QW_DEAD_FALLBACK` 默认短路（换到有 IPv4 的机器设 `=1` 恢复）。详见《A股行情失效复盘.md》。 |
+| 行情回退顺序 | `datasource.py` | 腾讯（proxy.finance → web.ifzq）→ akshare → 东方财富 | 品种是**第一层路由**：场内走腾讯日线、场外基金走东财净值。A 股的 akshare/东财兜底在本 VPS 必然失败，已由 `QW_DEAD_FALLBACK` 默认短路（换到有 IPv4 的机器设 `=1` 恢复）。详见《docs/A股行情失效复盘.md》。 |
 | 主题记忆 | 浏览器 `localStorage` → `qw_theme` | `dark` | 支持 `light` / `dark`。 |
 
 ---

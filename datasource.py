@@ -61,7 +61,7 @@ _HEADERS = {
 # 因此 A 股回退链（akshare → 东财直连）在此环境**必然失败**，只会白吃
 # akshare 的导入/请求超时。默认关闭；换到有 IPv4 的机器部署时
 # 设环境变量 QW_DEAD_FALLBACK=1 即可恢复。
-# 完整取证见 quant-web/A股行情失效复盘.md。
+# 完整取证见 docs/A股行情失效复盘.md。
 _DEAD_FALLBACK = os.environ.get("QW_DEAD_FALLBACK", "").strip().lower() in (
     "1", "true", "yes", "on")
 

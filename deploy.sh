@@ -335,7 +335,7 @@ cmd_deploy() {
 
   echo
   step "同步源码到 $REMOTE_DIR"
-  tar_sync "$LOCAL_DIR" "." '.venv' 'quantweb.db' '__pycache__' '*.pyc' '.DS_Store' '._*' '.git' \
+  tar_sync "$LOCAL_DIR" "." '.venv' 'quantweb.db' '__pycache__' '*.pyc' '.DS_Store' '._*' '.git' 'docs' \
     || die "同步失败"
   info "同步完成（共 ${DIFF_COUNT:-0} 处差异文件）"
 
