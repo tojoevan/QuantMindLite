@@ -1,5 +1,5 @@
-// 04-about-users —— 首页返回 / 关于页 / 管理员用户管理
-// 左上角标题：返回默认落地页（登录 → 圆桌；游客 → 交易仪表台）
+// 04-about-users —— 首页返回 / 关于页 / 管理员设置
+// 左上角标题：返回默认落地页（登录 → 圆桌；游客 → 资讯）
 function goHome() {
   showView(navDefault());
 }
@@ -71,7 +71,7 @@ function renderAbout() {
       <h2>安全</h2>
       <ul>
         <li>已启用多用户登录：用户名为邮箱地址，首个注册用户自动成为管理员。</li>
-        <li>普通用户仅能访问自己的项目；管理员额外拥有「用户管理」页面，可处理用户的“忘记密码”申请并重置为随机密码。</li>
+        <li>普通用户仅能访问自己的项目；管理员额外拥有「设置」页面，可处理用户的“忘记密码”申请并重置为随机密码。</li>
       </ul>
 
       <p class="about-foot">版本 v9 · 仅本地/自部署用途 · <a href="https://github.com/tojoevan/QuantMindLite" target="_blank" rel="noopener">GitHub 仓库</a></p>
@@ -79,16 +79,16 @@ function renderAbout() {
   const back = document.getElementById("about-back");
   if (back) back.onclick = backFromAbout;
 }
-// 页级导航（圆桌/论坛/交易仪表台/关于/用户管理）已统一收口到 06-pages.js 的 bindNav()；
+// 页级导航（圆桌/论坛/交易/关于/设置）已统一收口到 06-pages.js 的 bindNav()；
 // 此处仅保留非页级入口（主题切换）。
 document.getElementById("btn-theme").onclick = toggleTheme;
 
-// ===== 管理员：用户管理（密码重置） =====
+// ===== 管理员：设置（当前含用户管理分区；后续全局配置项作为新分区平级加入）=====
 async function renderUsers(flash) {
   if (!(me && me.is_admin)) { showAuth("login"); return; }
   document.getElementById("main").innerHTML = `
     <div class="panel">
-      <h3>用户管理 <span class="muted">仅管理员可见</span></h3>
+      <h3>设置 <span class="muted">仅管理员可见</span></h3>
       <div id="users-content"><span class="muted">加载中…</span></div>
     </div>`;
   try {
@@ -116,9 +116,9 @@ async function renderUsers(flash) {
         </div>
       </div>`).join("");
     document.getElementById("users-content").innerHTML = `
-      <h4>待重置申请</h4>
+      <h4>用户管理 · 待重置申请</h4>
       <div class="user-list">${reqHtml}</div>
-      <h4>全部用户</h4>
+      <h4>用户管理 · 全部用户</h4>
       <div class="user-list">${userHtml}</div>
       <div class="muted" style="margin-top:10px">点击「重置并生成密码」后，系统将该用户密码重置为随机密码并显示在下方，请通过邮件把新密码发送给对应用户。</div>
       <div class="muted" style="margin-top:6px">「删除」会<b>不可恢复</b>地移除该用户及其全部项目、行情、预测与反馈数据，并注销其会话；当前登录账户与唯一管理员不可删除。</div>
