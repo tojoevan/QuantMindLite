@@ -19,6 +19,8 @@ Thumbs.db
 # ----- 环境变量 / 密钥（若后续新增）-----
 .env
 *.secret
+# 本地部署配置（含服务器地址，禁止入库）
+deploy.local.sh
 
 # ----- 本地/项目元数据 -----
 .workbuddy/

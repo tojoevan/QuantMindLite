@@ -531,7 +531,7 @@ bash deploy.sh rollback [TS]         # 回退到指定备份（默认最近一�
 ```nginx
 server {
     listen 80;                      # 或 443 ssl（配证书）
-    server_name 你的域名或IP;       # 如 <生产服务器 IPv6（已脱敏）> 或域名
+    server_name 你的域名或IP;       # 如 <你的服务器 IPv6 地址> 或域名
 
     location / {
         proxy_pass http://127.0.0.1:8090;

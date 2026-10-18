@@ -4,7 +4,7 @@
 
 ## 一、问题定性
 
-生产环境（IPv6 VPS `<生产服务器 IPv6（已脱敏）>`）圆桌「LLM Key 自动」通道无法使用 DeepSeek：
+生产环境（IPv6 VPS，地址已脱敏）圆桌「LLM Key 自动」通道无法使用 DeepSeek：
 用户已配置 `llm.deepseek.*`（Key + `deepseek-flash`），但点击生成无结果。
 
 **这是拓扑性不可达，不是配置错误**：DeepSeek API 走 CloudFront 分发、不提供 IPv6；
@@ -31,7 +31,7 @@
 | 换可达服务商（智谱/通义/豆包/硅基流动/OpenRouter/Gemini） | 零 | 零 | 兜底可用，但用不了 DeepSeek |
 | **扩 rss-relay 支持 POST 转发（本方案）** | 小 | 低（纯应用层） | ✅ 选中：复用现有基础设施，顺带救活 Moonshot |
 | WARP 代理模式（本地 SOCKS5，不动默认路由） | 中 | 低-中 | 备选，等第二轮需求再评估 |
-| 经 <自有双栈 VPS（已脱敏）> 建隧道（tinyproxy/WireGuard） | 中 | 中 | 备选 |
+| 经自有双栈 VPS（地址脱敏）建隧道（tinyproxy/WireGuard） | 中 | 中 | 备选 |
 | 公共 NAT64/DNS64 | 极小 | **高**（全局解析改道免费公共网关） | 否决 |
 | 系统级 WARP 全接管 / 默认路由改道 | 大 | 高（动生产机网络，违反稳定性纪律） | 否决 |
 

@@ -22,8 +22,22 @@ set -euo pipefail
 # ---------------- 配置 ----------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_DIR="$SCRIPT_DIR"                    # 本地源码目录（取脚本所在目录，不再写死绝对路径）
-VPS_USER="root"
-VPS_HOST="<生产服务器 IPv6（已脱敏）>"          # IPv6 VPS
+
+# 服务器地址脱敏：不再硬编码，按以下优先级读取——
+#   1) 环境变量 VPS_USER / VPS_HOST（export 后运行）
+#   2) 仓库根目录 deploy.local.sh（已被 .gitignore 排除，禁止入库；首次部署复制
+#      README「部署」小节的模板创建一份填入真实地址）
+# 两者皆无则报错退出，避免把地址写进公开仓库。
+if [ -f "$SCRIPT_DIR/deploy.local.sh" ]; then
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/deploy.local.sh"
+fi
+VPS_USER="${VPS_USER:-root}"
+VPS_HOST="${VPS_HOST:-}"
+if [ -z "$VPS_HOST" ]; then
+  echo "错误：未配置 VPS_HOST。请 export VPS_HOST=<服务器地址>，或创建 deploy.local.sh（见 README 部署小节）。" >&2
+  exit 1
+fi
 VPS="$VPS_USER@$VPS_HOST"
 # rsync 的 remote 目标必须用方括号包住 IPv6，否则冒号会被当成 host/path 分隔符
 RSYNC_TARGET="$VPS_USER@[$VPS_HOST]"
