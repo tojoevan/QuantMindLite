@@ -249,13 +249,12 @@ function newsItemHtml(it, idx) {
           ${score}
           ${rel}
         </div>
-        <h3 class="news-title"><a href="${escapeHtml(it.link || "#")}" target="_blank" rel="noopener">${escapeHtml(it.title || "(无标题)")}</a></h3>
+        <h3 class="news-title"><a href="${escapeHtml(it.link || "#")}" target="_blank" rel="noopener">${escapeHtml(it.title || "(无标题)")}</a>${star}</h3>
         ${it.summary ? `<p class="news-summary ${long ? "clamp" : ""}">${escapeHtml(it.summary)}</p>` : ""}
         ${long ? `<button class="news-more" type="button">展开</button>` : ""}
         ${reason}
         ${tags}
       </div>
-      ${star}
     </article>`;
 }
 

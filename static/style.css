@@ -1006,13 +1006,13 @@ th { color: var(--muted); font-weight: 600; }
   border: var(--bd-w) solid var(--border); border-radius: var(--radius-sm);
 }
 .news-star {
-  flex: 0 0 auto; align-self: flex-start; width: 28px; height: 28px;
-  font-size: 14px; line-height: 1; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-left: 6px; padding: 2px; font-size: 15px; line-height: 1; cursor: pointer;
   color: var(--muted); background: transparent;
-  border: var(--bd-w) solid var(--border); border-radius: var(--radius-sm);
+  border: none; border-radius: var(--radius-sm); vertical-align: -1px;
 }
-.news-star:hover { color: var(--text); border-color: var(--border-strong); }
-.news-star.on { color: var(--yellow); border-color: var(--yellow); }
+.news-star:hover { color: var(--text); background: var(--subtle-bg); }
+.news-star.on { color: var(--yellow); }
 
 /* --- 页脚统计 --- */
 .news-foot {
@@ -1088,6 +1088,7 @@ th { color: var(--muted); font-weight: 600; }
 
   /* G-UX（2026-10-18）：iPhone 等小屏资讯页可读性 — 仅字号/间距调整，不动结构与功能 */
   .news-title { font-size: 16px; line-height: 1.4; }        /* 标题 14 → 16，更醒目 */
+  .news-star { font-size: 18px; margin-left: 4px; }        /* 收藏星标 15→18，移动端更好点 */
   .news-summary { font-size: 14px; line-height: 1.7; }      /* 摘要 13 → 14 */
   .news-meta { font-size: 12px; }                           /* meta 保持小字但不过缩 */
   .nf-chip { font-size: 14px; padding: 5px 10px; border-color: transparent; }   /* 去外框 + 字号 13→14（增大一号） */
