@@ -207,24 +207,12 @@ async function renderDashboard() {
   }).join("") || `<tr><td colspan="7" class="muted">暂无交易记录</td></tr>`;
 
   const newBtn = isGuest ? "" : `<button class="btn primary sm" id="dash-new">＋ 新建标的</button>`;
-  // 发布结算帖：与定时任务同一个后端接口，幂等，可随时手动补发/重发。
-  // 周期可选 —— 周/月/季/半年/年一律结算「最近一个**已结束**的周期」（如 10 月里发月结 = 9 月）。
-  const reportBtn = (!isGuest && me && me.is_admin)
-    ? `<select class="sel-sm" id="dash-report-period" title="结算周期（自动任务已覆盖，这里用于手动补发）">
-         <option value="day">日报</option>
-         <option value="week">周报</option>
-         <option value="month">月报</option>
-         <option value="quarter">季报</option>
-         <option value="half">半年报</option>
-         <option value="year">年报</option>
-       </select>
-       <button class="btn ghost sm" id="dash-report">发布结算到论坛</button>` : "";
   main.innerHTML = `
     <div class="page">
       ${banner}
       <div class="page-head">
         <div><h1>交易仪表台</h1><p class="page-sub">持仓总览 · 盈亏汇总 · 最近交易记录</p></div>
-        <div class="page-head-actions">${reportBtn}${newBtn}<button class="btn ghost sm" id="dash-reload">刷新</button></div>
+        <div class="page-head-actions">${newBtn}<button class="btn ghost sm" id="dash-reload">刷新</button></div>
       </div>
 
       <div class="kpi-grid">
@@ -257,8 +245,6 @@ async function renderDashboard() {
 
   const rl = document.getElementById("dash-reload");
   if (rl) rl.onclick = () => renderDashboard();
-  const rep = document.getElementById("dash-report");
-  if (rep) rep.onclick = () => publishDailyReport(rep);
   const nw = document.getElementById("dash-new");
   if (nw) nw.onclick = openProjectModal;          // 侧栏删除后，新建入口挪到仪表台页头
   const lg = document.getElementById("dash-login");
@@ -270,38 +256,6 @@ async function renderDashboard() {
   main.querySelectorAll("#dash-pos .pin-btn").forEach(btn => {
     btn.onclick = (e) => { e.stopPropagation(); togglePin(parseInt(btn.getAttribute("data-pin"), 10)); };
   });
-}
-
-// ===== 周期结算帖：手动发布（后端同一个接口，幂等）=====
-// 定时任务已覆盖日/周/月/季/半年/年（见 scripts/settle_report.py 与 README「定时任务」）；
-// 这里用于随时补发、数据补全后重发，或提前看一眼某个周期结算长什么样。
-// 响应三态：skipped（窗口内无持仓也无操作）/ unchanged（内容没变，不刷屏）/ created|updated（已入论坛）。
-async function publishDailyReport(btn) {
-  const sel = document.getElementById("dash-report-period");
-  const period = (sel && sel.value) || "day";
-  const label = (sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text : "日报");
-  if (!confirm(`确认手动生成并发布${label}到论坛？\n内容将对外可见；定时任务已覆盖该周期，此操作用于补发或重看。`)) return;
-  const old = btn ? btn.textContent : "";
-  if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
-  if (sel) sel.disabled = true;
-  try {
-    const r = await API("POST", "/api/report/settle", { period });
-    if (r && r.skipped) {
-      showToast(r.message || `${label}窗口内无数据，未发布`);
-      return;
-    }
-    showToast(r && r.created ? `${label}已发布到论坛`
-      : (r && r.unchanged ? `${label}内容未变化，未重复发布` : `${label}已更新到论坛`));
-    if (r && r.thread_id) {
-      // 直接以详情态进入论坛：showView 一并处理顶栏高亮与 URL（#/forum/<id>）
-      await showView("forum", r.thread_id);
-    }
-  } catch (e) {
-    showToast("发布失败：" + (e.message || e));
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = old; }
-    if (sel) sel.disabled = false;
-  }
 }
 
 // ===== 论坛（P3 已落地，实现在 07-forum.js：列表 / 详情 / 发帖 / 回复）=====
