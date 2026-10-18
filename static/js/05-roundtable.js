@@ -92,7 +92,7 @@ async function renderRoundtable() {
         </div>
       </div>
       <div class="panel">
-        <h3>AI 席位 <span class="muted">接入方式：LLM Key 自动（后端直调）· 手动回填（复制提示词外部咨询）· MCP（待接）；每日观点自动在论坛建档存档</span>
+        <h3>AI 席位 <span class="muted">接入方式：LLM Key 自动 / 手动回填 / MCP（待接）· 观点每日自动存档论坛</span>
           <button class="btn-mini ghost" id="rt-seat-collapse" title="折叠所有席位卡，只看标题与状态">全部折叠</button>
           <button class="btn-mini ghost" id="rt-seat-expand" title="展开所有席位卡，阅读完整观点">全部展开</button>
           ${rtState.admin ? `<button class="btn-mini ghost" id="rt-add-seat-toggle" style="margin-left:8px">+ 新增席位</button>` : ""}
