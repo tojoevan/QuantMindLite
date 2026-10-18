@@ -5,16 +5,10 @@ function goHome() {
 }
 document.getElementById("brand-link").addEventListener("click", goHome);
 
-// 从「关于」页返回上一视图（无历史则回默认落地页）
-function backFromAbout() {
-  backToPrev();
-}
-
 // ===== 关于：项目框架与设计（右侧页面，非弹窗） =====
 function renderAbout() {
   document.getElementById("main").innerHTML = `
     <div class="about-page">
-      <button class="btn-mini ghost" id="about-back">← 返回</button>
       <h1>关于 · 慢量化</h1>
       <p class="about-sub">项目框架、设计思路与相关内容</p>
 
@@ -76,10 +70,8 @@ function renderAbout() {
 
       <p class="about-foot">版本 v9 · 仅本地/自部署用途 · <a href="https://github.com/tojoevan/QuantMindLite" target="_blank" rel="noopener">GitHub 仓库</a></p>
     </div>`;
-  const back = document.getElementById("about-back");
-  if (back) back.onclick = backFromAbout;
 }
-// 页级导航（圆桌/论坛/交易/关于/设置）已统一收口到 06-pages.js 的 bindNav()；
+// 页级导航（圆桌/论坛/交易/设置/关于）已统一收口到 06-pages.js 的 bindNav()；
 // 此处仅保留非页级入口（主题切换）。
 document.getElementById("btn-theme").onclick = toggleTheme;
 

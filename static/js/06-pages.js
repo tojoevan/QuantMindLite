@@ -4,7 +4,6 @@
 
 // ===== 视图路由 =====
 let currentView = { name: null, arg: null };
-let prevView = { name: null, arg: null };
 
 // 默认落地页：资讯工作台（登录与游客一致；圆桌/论坛/仪表台为二级页）
 function navDefault() { return "news"; }
@@ -101,13 +100,12 @@ async function showView(name, arg, opts) {
   if (name === "users" && !(me && me.is_admin)) {
     if (!currentView.name) showView(navDefault(), null, { replace: true });
     else resetHash();
-    showToast("仅管理员可访问用户管理");
+    showToast("仅管理员可访问设置");
     return;
   }
 
   const prevKey = viewKey(currentView);
   if (isMobile()) closeMenu();
-  if (name === "about") prevView = currentView;   // 关于页提供「返回上一视图」
   switch (name) {
     case "news":
       currentView = { name, arg: null }; markNavActive(name); await renderNews(); break;
@@ -129,13 +127,6 @@ async function showView(name, arg, opts) {
       break;
   }
   applyHash(prevKey, opts);   // 视图 → URL：刷新/后退/直链都停在当前页
-}
-
-// 从「关于」返回上一视图（无历史则回默认落地页）
-function backToPrev() {
-  const p = prevView && prevView.name && prevView.name !== "about" ? prevView : null;
-  if (p) showView(p.name, p.arg);
-  else showView(navDefault());
 }
 
 // ===== 数字格式化（仪表台共用）=====
