@@ -14,6 +14,13 @@ function renderAbout() {
 
       <h2>定位</h2>
       <p>面向 A 股的「慢量化」个人操作台：系统基于策略给出操作建议，由你手动执行并回填，再据此继续预测 —— 人机协作、不自动下单。支持多项目并行，从模拟仓位逐步过渡到实仓跟踪。</p>
+      <p>产品由四个页面组成：</p>
+      <ul>
+        <li><b>资讯</b>（首页）：订阅抓取的每日资讯流，LLM 自动评分（重要度 1–5 / 推荐理由 / 关联标的），持仓相关优先展示。</li>
+        <li><b>圆桌</b>：多个 AI 席位各自给出每日观点，观点保存时自动在论坛建档存档。</li>
+        <li><b>交易</b>：持仓跟踪、四策略滚动预测与盈亏回放 —— 闭环的起点。</li>
+        <li><b>论坛</b>：观点存档、周期结算帖与每日市场概要；帖子有独立链接，可分享、可回看。</li>
+      </ul>
 
       <h2>技术框架</h2>
       <ul>
@@ -31,11 +38,11 @@ function renderAbout() {
 
       <h2>项目架构设计</h2>
       <ul>
-        <li><b>前端（SPA）</b>：登录/游客双入口，项目面板、图表、策略设置、用户管理；主题持久化。</li>
-        <li><b>API 层（FastAPI）</b>：鉴权（pbkdf2 + Bearer 会话）→ 项目/行情/预测/反馈/图表/游客接口。</li>
-        <li><b>服务层</b>：<code>datasource.py</code> 行情多源回退（腾讯 → 新浪 → akshare → 东方财富）；<code>predictor.py</code> 四策略滚动预测。</li>
+        <li><b>前端（SPA）</b>：登录/游客双入口，资讯 / 圆桌 / 交易 / 论坛四大页面 + 设置；hash 路由（帖子可分享、刷新不丢）；主题持久化。</li>
+        <li><b>API 层（FastAPI）</b>：鉴权（pbkdf2 + Bearer 会话）→ 项目 / 行情 / 预测 / 反馈 / 图表 / 资讯 / 圆桌 / 论坛 / 游客接口。</li>
+        <li><b>服务层</b>：<code>datasource.py</code> 行情多源回退（腾讯 → 新浪 → akshare → 东方财富）；<code>predictor.py</code> 四策略滚动预测；<code>llm.py</code> 统一 LLM 调用（经 Cloudflare 中继连通多家服务商，含结构化判断）；<code>newsai.py</code> 资讯 AI 评分。</li>
         <li><b>数据层</b>：独立 SQLite，项目 / 行情 / 预测 / 反馈 / 用户 / 会话，多用户按 owner 隔离。</li>
-        <li><b>核心闭环</b>：建议 → 反馈 → 再预测；多项目并行、限频拉取、游客只读。</li>
+        <li><b>核心闭环</b>：建议 → 反馈 → 再预测；圆桌观点保存自动在论坛建档；多项目并行、限频拉取、游客只读。</li>
       </ul>
 
       <h2>数据层</h2>
@@ -60,6 +67,7 @@ function renderAbout() {
       <h2>决策闭环</h2>
       <ul>
         <li>建议 → 你反馈实际买卖 → 系统重新预测；可录入当前持仓（数量/成本），自动回放盈亏。</li>
+        <li>圆桌观点另经 LLM 抽取为「标的 + 方向 + 依据」结构化判断，与真实行情机械比对得出 T+1 / T+5 命中率（观点复盘）——对错由行情判定，不由 LLM 自评。</li>
       </ul>
 
       <h2>安全</h2>
@@ -68,7 +76,7 @@ function renderAbout() {
         <li>普通用户仅能访问自己的项目；管理员额外拥有「设置」页面，可处理用户的“忘记密码”申请并重置为随机密码。</li>
       </ul>
 
-      <p class="about-foot">版本 v9 · 仅本地/自部署用途 · <a href="https://github.com/tojoevan/QuantMindLite" target="_blank" rel="noopener">GitHub 仓库</a></p>
+      <p class="about-foot">仅本地/自部署用途 · <a href="https://github.com/tojoevan/QuantMindLite" target="_blank" rel="noopener">GitHub 仓库</a></p>
     </div>`;
 }
 // 页级导航（圆桌/论坛/交易/设置/关于）已统一收口到 06-pages.js 的 bindNav()；
