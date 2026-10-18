@@ -208,11 +208,13 @@ function fmRenderDetail() {
 // 楼层头部：首帖若就是主题作者，其「发帖人 + 时间」在页面头部（发起人 + 发起于）
 // 已展示过，楼层里不再重复；其余楼层与上一条同作者时只留时间、不重复刷名字
 // （AI 席位存档帖每席位每天一个主题、帖内全是同一席位，最容易出现这种重复）。
+// 删除按钮：首帖不挂——它就是主题正文、与标题同一性质，删主题已在页头覆盖；
+// 「仅发标题」帖的首楼是他人回复（isStarter 为 false），删除照常保留。
 function fmPostCard(p, i, prevKey, threadKey) {
   const key = fmAuthorKeyOf(p);
   const isStarter = i === 0 && key === threadKey;   // 首帖且作者=主题作者（页面头部已展示）
   const sameAsPrev = i > 0 && key === prevKey;      // 与上一条同作者
-  const del = p.can_delete
+  const del = p.can_delete && !isStarter
     ? `<button class="btn-mini ghost fm-del" data-del-post="${p.id}">删除</button>` : "";
   const showAuthor = !isStarter && !sameAsPrev;
   const showTime = !isStarter;
