@@ -1269,6 +1269,7 @@ RELAY_ALLOWED_HOSTS = (
     "aihot.news", "chinanews.com.cn", "wallstreetcn.com", "jiemian.com",
     "eastmoney.com", "api.deepseek.com", "api.moonshot.cn",
     "generativelanguage.googleapis.com", "qbitai.com",
+    "api.hunyuan.cloud.tencent.com", "spark-api-open.xf-yun.com",
 )
 
 
