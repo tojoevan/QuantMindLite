@@ -1094,6 +1094,10 @@ th { color: var(--muted); font-weight: 600; }
      突出主操作，其余去框去底读起来像链接 */
   .news-page .page-head-actions .btn.sm { font-size: 15px; padding: 8px 5px; border-color: transparent; }
   .news-page .page-head-actions .btn.ghost.sm { color: var(--muted); }
+
+  /* 折叠按钮移动端放大：字号 13→18、加大点击区，整行标题字号同步加大，避免小屏难点 */
+  .news-page .nf-head { font-size: 15px; }
+  .news-page .nf-toggle { font-size: 18px; padding: 8px 12px; }
 }
 
 /* ============ P9 · 新建标的支持基金 / 债券 ============ */
