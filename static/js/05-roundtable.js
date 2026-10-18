@@ -795,6 +795,14 @@ function rtShowTextModal(title, text, hint, editable, onSave) {
 
 // ---- 自动通道：调用 LLM 生成 ----
 async function rtGenerate(seatIds) {
+  // 防误触：生成会调用 LLM（产生费用）并同步到论坛存档。
+  if (seatIds && seatIds.length === 1) {
+    const seat = (rtState.seats || []).find(s => s.id === seatIds[0]);
+    const name = seat ? seat.name : "该席位";
+    if (!confirm(`确认为「${name}」生成观点？\n将调用 LLM 生成内容并同步到论坛存档。`)) return;
+  } else {
+    if (!confirm("确认生成今日讨论？\n将为全部自动席位调用 LLM 生成观点，并同步到论坛存档。")) return;
+  }
   // 折叠状态下卡片头部的「生成」按钮仍可点，但结果会藏在折叠区里 —— 先把要生成的席位展开。
   // 「生成今日讨论」传 null（全部），刻意不展开：那是用户自己选择只看概览，状态徽标已足够提示。
   if (seatIds && seatIds.length) seatIds.forEach(id => rtFoldSeat(id, false));

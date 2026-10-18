@@ -280,6 +280,7 @@ async function publishDailyReport(btn) {
   const sel = document.getElementById("dash-report-period");
   const period = (sel && sel.value) || "day";
   const label = (sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text : "日报");
+  if (!confirm(`确认手动生成并发布${label}到论坛？\n内容将对外可见；定时任务已覆盖该周期，此操作用于补发或重看。`)) return;
   const old = btn ? btn.textContent : "";
   if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
   if (sel) sel.disabled = true;

@@ -3188,6 +3188,47 @@ def report_news_digest(body: Optional[NewsDigestReq] = None,
     return _publish_news_digest(db, date_s, dry_run=dry_run)
 
 
+# 资讯任务互斥锁：与 cron 脚本（news_fetch/news_score/news_digest/rt_review）共用
+# /tmp/quant-news.lock，确保「页面手动触发」与「定时任务」不会并发写同一个 SQLite 库。
+# API 是同步请求，等锁超时设短（10s），拿不到直接 423，提示稍后再试。
+_NEWS_LOCK_PATH = "/tmp/quant-news.lock"
+_NEWS_LOCK_WAIT = 10.0
+_NEWS_LOCK_RETRY = 0.5
+
+
+class NewsTaskBusy(Exception):
+    """另一个资讯任务（定时或手动）正在运行，本次触发被拒绝。"""
+
+
+def _news_task_lock():
+    """上下文管理器：获取资讯任务锁，拿不到抛 NewsTaskBusy。"""
+    import contextlib
+    import fcntl
+
+    @contextlib.contextmanager
+    def _lock():
+        fd = open(_NEWS_LOCK_PATH, "w")
+        deadline = time.time() + _NEWS_LOCK_WAIT
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.time() >= deadline:
+                        fd.close()
+                        raise NewsTaskBusy()
+                    time.sleep(_NEWS_LOCK_RETRY)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            fd.close()
+
+    return _lock()
+
+
 @app.post("/api/news/score")
 def news_score(body: Optional[NewsScoreReq] = None,
                u: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -3195,16 +3236,22 @@ def news_score(body: Optional[NewsScoreReq] = None,
 
     评分结果同时服务三处：席位提示词注入、资讯页徽标、市场概要帖。
     同步执行、单次最多 --limit 条（默认 40）；大批量补跑请用 scripts/news_score.py。
+
+    与定时任务共用 /tmp/quant-news.lock 串行，避免并发写库（423 = 另一个任务在跑）。
     """
     if not u.is_admin:
         raise HTTPException(403, "forbidden")
-    conf = news_llm_conf(db)
-    limit = (body.limit if body else None) or 40
-    stats = newsai.score_items(db, conf, limit=limit, log=logger.info)
-    unit = "条" if conf.get("protocol") == "systemone" else "块"
-    stats["message"] = (f"加工 {stats['scored']} 条（选中 {stats['picked']} 条，"
-                        f"{stats['failed']} {unit}失败）")
-    return stats
+    try:
+        with _news_task_lock():
+            conf = news_llm_conf(db)
+            limit = (body.limit if body else None) or 40
+            stats = newsai.score_items(db, conf, limit=limit, log=logger.info)
+            unit = "条" if conf.get("protocol") == "systemone" else "块"
+            stats["message"] = (f"加工 {stats['scored']} 条（选中 {stats['picked']} 条，"
+                              f"{stats['failed']} {unit}失败）")
+            return stats
+    except NewsTaskBusy:
+        raise HTTPException(423, "另一个资讯任务（定时或手动）正在运行，请稍后再试。")
 
 
 # ---------------- 资讯工作台（RSS 订阅 · 中继抓取 · 列表） ----------------
@@ -3604,17 +3651,24 @@ def news_delete_feed(fid: int, u: User = Depends(get_current_user),
 @app.post("/api/news/fetch")
 def news_fetch(body: Optional[NewsFetchReq] = None, u: User = Depends(get_current_user),
                db: Session = Depends(get_db)):
-    """抓取并入库。管理员手动触发；后续可挂 systemd timer 定时调本接口。"""
+    """抓取并入库。管理员手动触发；后续可挂 systemd timer 定时调本接口。
+
+    与定时任务共用 /tmp/quant-news.lock 串行，避免并发写库（423 = 另一个任务在跑）。
+    """
     if not u.is_admin:
         raise HTTPException(403, "forbidden")
-    _ensure_default_feeds(db)
-    conf = newsfetch.relay_conf(db)
-    if not (conf.get("url") and conf.get("key")):
-        raise HTTPException(400, "尚未配置中继（订阅管理 → 中继设置）。本机 VPS 只有 IPv6 出站，"
-                                 "不走中继将无法访问绝大多数资讯源。")
-    fid = body.feed_id if body else None
-    limit = (body.limit if body and body.limit else 60)
-    return newsfetch.refresh_all(db, feed_id=fid, limit=limit)
+    try:
+        with _news_task_lock():
+            _ensure_default_feeds(db)
+            conf = newsfetch.relay_conf(db)
+            if not (conf.get("url") and conf.get("key")):
+                raise HTTPException(400, "尚未配置中继（订阅管理 → 中继设置）。本机 VPS 只有 IPv6 出站，"
+                                         "不走中继将无法访问绝大多数资讯源。")
+            fid = body.feed_id if body else None
+            limit = (body.limit if body and body.limit else 60)
+            return newsfetch.refresh_all(db, feed_id=fid, limit=limit)
+    except NewsTaskBusy:
+        raise HTTPException(423, "另一个资讯任务（定时或手动）正在运行，请稍后再试。")
 
 
 @app.get("/api/news/settings")

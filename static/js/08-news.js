@@ -435,6 +435,7 @@ function newsFmtAgo(iso) {
 
 // ---------- 抓取 ----------
 async function newsFetchNow() {
+  if (!confirm("确认抓取最新资讯？\n将立即访问全部启用中的订阅源并入库，与定时任务共用同一把锁。")) return;
   const btn = document.getElementById("news-fetch");
   if (btn) { btn.disabled = true; btn.textContent = "抓取中…"; }
   try {
@@ -457,6 +458,7 @@ async function newsFetchNow() {
 // 与 cron 的 scripts/news_score.py 同一逻辑；这里是「刚抓完想立刻看到徽标」的手动入口。
 // 加工结果同时服务：本页徽标 / 圆桌席位提示词注入 / 论坛市场概要帖。
 async function newsScoreNow() {
+  if (!confirm("确认执行 AI 加工？\n将立即对未加工的资讯跑一遍 AI 结构化评分（重要度/理由/标签/关联标的），与定时任务共用同一把锁。")) return;
   const btn = document.getElementById("news-score");
   if (btn) { btn.disabled = true; btn.textContent = "加工中…"; }
   try {
@@ -573,6 +575,9 @@ async function newsOpenManage() {
 
   box.querySelectorAll("[data-ffetch]").forEach(b => {
     b.onclick = async () => {
+      const nameEl = b.closest("tr")?.querySelector("b");
+      const name = nameEl ? nameEl.textContent : "该订阅源";
+      if (!confirm(`确认立即抓取「${name}」？\n将访问该源并入库最新条目。`)) return;
       b.disabled = true; b.textContent = "…";
       try {
         const r = await API("POST", "/api/news/fetch", { feed_id: parseInt(b.getAttribute("data-ffetch"), 10) });
