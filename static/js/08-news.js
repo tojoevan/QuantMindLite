@@ -48,7 +48,7 @@ async function renderNews() {
       <div class="page-head">
         <div>
           <h1>资讯工作台</h1>
-          <p class="page-sub">RSS 订阅 · AI 关键信息${newsIsAdmin() ? " · 每日 20:50 自动评分" : ""}<span id="news-last-fetched-sub"></span></p>
+          <p class="page-sub">RSS订阅${newsIsAdmin() ? " · 每日 AI 评分 20:50" : ""}<span id="news-last-fetched-sub"></span></p>
         </div>
         <div class="page-head-actions">
           ${newsIsAdmin() ? `<button class="btn primary sm" id="news-fetch">抓取最新</button>` : ``}
