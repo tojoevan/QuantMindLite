@@ -1037,12 +1037,15 @@ th { color: var(--muted); font-weight: 600; }
   font-size: var(--fs-sm);
 }
 .np-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 2px;
   min-width: 30px; padding: 4px 10px; text-align: center;
   font-size: var(--fs-sm); line-height: 1.4;
   color: var(--muted); background: transparent;
   border: 1px solid transparent; border-radius: var(--radius-sm);
   cursor: pointer; user-select: none;
 }
+.np-arrow { font-size: 15px; line-height: 1; }
+.np-label { font-size: var(--fs-sm); }
 .np-btn:hover:not(:disabled) { color: var(--text); background: var(--subtle-bg); border-color: var(--border-strong); }
 .np-btn.on { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
 .np-btn:disabled { opacity: .4; cursor: not-allowed; }
@@ -1148,10 +1151,13 @@ th { color: var(--muted); font-weight: 600; }
   .news-pager { gap: 4px; margin: var(--sp-3) 0 2px; }
   .np-btn { min-width: 36px; padding: 8px 10px; font-size: 15px; border-color: transparent; }
   .np-btn.on { border-color: transparent; }   /* 当前页保留 accent 软底作指示，仅去框 */
-  /* 跳转指定页移动端：输入框加高加大，方便触控 */
-  .np-jump { margin-left: 2px; }
-  .np-jump input[type="number"] { width: 60px; padding: 8px 6px; font-size: 15px; }
-  .np-jump .np-btn { padding: 8px 10px; font-size: 15px; }
+  /* 移动端窄屏：上一页/下一页只留箭头（隐藏文字），保证分页组件单行不折行 */
+  .np-label { display: none; }
+  .np-arrow { font-size: 18px; }
+  /* 跳转指定页移动端：压缩输入框与按钮宽度，避免挤到第二行 */
+  .np-jump { margin-left: 0; gap: 2px; }
+  .np-jump input[type="number"] { width: 44px; padding: 8px 4px; font-size: 14px; }
+  .np-jump .np-btn { min-width: 0; padding: 8px 6px; font-size: 14px; }
 }
 
 /* ============ P9 · 新建标的支持基金 / 债券 ============ */

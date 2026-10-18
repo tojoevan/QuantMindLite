@@ -331,7 +331,7 @@ function newsPaintList() {
   });
 }
 
-// 分页组件：上一页 / 下一页 + 页码（页数多时省略号折叠）+ 共 N 条
+// 分页组件：上一页 / 下一页 + 页码（页数多时省略号折叠）+ 跳转指定页
 function newsPaintPager() {
   const box = document.getElementById("news-pager");
   if (!box) return;
@@ -346,7 +346,8 @@ function newsPaintPager() {
     `<button class="np-btn${cls ? " " + cls : ""}" data-page="${p}"${disabled ? " disabled" : ""}${title ? ` title="${title}"` : ""}>${label}</button>`;
 
   const parts = [];
-  parts.push(mk(cur - 1, "‹ 上一页", "", cur <= 1, "上一页"));
+  // 上一页/下一页用「箭头 + 文字」结构，移动端窄屏时 CSS 只留箭头（.np-label 隐藏），保证单行
+  parts.push(mk(cur - 1, '<span class="np-arrow">‹</span><span class="np-label">上一页</span>', "", cur <= 1, "上一页"));
   // 页码：1 … 当前页附近 … 末页（行业通用省略号折叠）
   const window = 1;
   const nums = new Set([1, pages]);
@@ -358,7 +359,7 @@ function newsPaintPager() {
     parts.push(mk(p, String(p), p === cur ? "on" : "", false, `第 ${p} 页`));
     prev = p;
   });
-  parts.push(mk(cur + 1, "下一页 ›", "", cur >= pages, "下一页"));
+  parts.push(mk(cur + 1, '<span class="np-arrow">›</span><span class="np-label">下一页</span>', "", cur >= pages, "下一页"));
   // 跳转指定页：输入页码回车或点「跳转」
   parts.push(`<span class="np-jump">
     <input type="number" id="news-pager-jump" min="1" max="${pages}" placeholder="页码" aria-label="跳转到指定页" />
