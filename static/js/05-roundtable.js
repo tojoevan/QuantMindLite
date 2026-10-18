@@ -51,6 +51,8 @@ const rtAdmin = () => !!(me && me.is_admin);
 async function renderRoundtable() {
   if (isGuest || !token) { showAuth("login"); return; }
   rtState.admin = rtAdmin();
+  // 折叠集合（含席位卡与下方两个类席位卡面板），模板里据此决定初始 collapsed 态
+  const _fold = rtFoldSet();
   document.getElementById("main").innerHTML = `
     <div class="rt-page">
       <div class="rt-head">
@@ -123,16 +125,29 @@ async function renderRoundtable() {
             </div>
           </form>
         </div>` : ""}
-      <div class="panel" id="rt-analysis-panel">
-        <h3>观点分析 <span class="muted">汇总全部席位观点 · 配置的 LLM 交叉分析</span>
-          ${rtState.admin ? `<button class="btn-mini" id="rt-analyze-run">开始分析</button>` : ""}
-          <button class="btn-mini ghost" id="rt-analysis-toggle">收起</button>
-        </h3>
-        <div id="rt-analysis-body"><span class="muted">加载中…</span></div>
+      <div class="rt-seat${_fold.has("rt-analysis-panel") ? " collapsed" : ""}" id="rt-analysis-panel">
+        <div class="rt-seat-head">
+          <div class="rt-seat-title">
+            <button class="rt-seat-caret" type="button" aria-expanded="${_fold.has("rt-analysis-panel") ? "false" : "true"}" title="${_fold.has("rt-analysis-panel") ? "展开观点分析" : "折叠观点分析"}"></button>
+            <span class="rt-seat-name">观点分析</span>
+            <span class="muted">汇总全部席位观点 · 配置的 LLM 交叉分析</span>
+          </div>
+          <div class="rt-seat-actions">
+            ${rtState.admin ? `<button class="btn-mini" id="rt-analyze-run">开始分析</button>` : ""}
+          </div>
+        </div>
+        <div class="rt-seat-body" id="rt-analysis-body"><span class="muted">加载中…</span></div>
       </div>
-      <div class="panel" id="rt-review-panel">
-        <h3>观点复盘 <span class="muted">席位建议的「命中率 / 趋势 / 引用资讯信息量」——判定全部机械（方向 × 真实收益），不在页面做任何「对错」自评</span><button class="btn-mini ghost" id="rt-review-toggle">收起</button></h3>
-        <div id="rt-review-body"><span class="muted">加载中…</span></div>
+      <div class="rt-seat${_fold.has("rt-review-panel") ? " collapsed" : ""}" id="rt-review-panel">
+        <div class="rt-seat-head">
+          <div class="rt-seat-title">
+            <button class="rt-seat-caret" type="button" aria-expanded="${_fold.has("rt-review-panel") ? "false" : "true"}" title="${_fold.has("rt-review-panel") ? "展开观点复盘" : "折叠观点复盘"}"></button>
+            <span class="rt-seat-name">观点复盘</span>
+            <span class="muted">席位建议的「命中率 / 趋势 / 引用资讯信息量」——判定全部机械（方向 × 真实收益），不在页面做任何「对错」自评</span>
+          </div>
+          <div class="rt-seat-actions"></div>
+        </div>
+        <div class="rt-seat-body" id="rt-review-body"><span class="muted">加载中…</span></div>
       </div>
     </div>`;
   document.getElementById("rt-generate-all").onclick = () => rtGenerate(null);
@@ -152,8 +167,11 @@ async function renderRoundtable() {
   document.getElementById("rt-holdings-toggle").onclick = () => rtPanelFold("rt-holdings-body", "rt-holdings-toggle");
   document.getElementById("rt-indices-toggle").onclick = () => rtPanelFold("rt-indices", "rt-indices-toggle");
   document.getElementById("rt-kpi-toggle").onclick = () => rtPanelFold("rt-kpi", "rt-kpi-toggle");
-  document.getElementById("rt-review-toggle").onclick = () => rtPanelFold("rt-review-body", "rt-review-toggle");
-  document.getElementById("rt-analysis-toggle").onclick = () => rtPanelFold("rt-analysis-body", "rt-analysis-toggle");
+  // 观点分析 / 观点复盘两个类席位卡面板：折叠走 caret（与席位卡一致），不再用「收起」按钮
+  const aCaret = document.querySelector("#rt-analysis-panel .rt-seat-caret");
+  if (aCaret) aCaret.onclick = () => rtFoldAux("rt-analysis-panel", !document.getElementById("rt-analysis-panel").classList.contains("collapsed"));
+  const rCaret = document.querySelector("#rt-review-panel .rt-seat-caret");
+  if (rCaret) rCaret.onclick = () => rtFoldAux("rt-review-panel", !document.getElementById("rt-review-panel").classList.contains("collapsed"));
   const analyzeRun = document.getElementById("rt-analyze-run");
   if (analyzeRun) analyzeRun.onclick = () => rtAnalyze();
   document.getElementById("rt-seat-collapse").onclick = () => rtFoldAll(true);
@@ -412,12 +430,29 @@ function rtFoldSave(set) {
 
 // 只改一张卡片的 DOM（不碰存储），供单个/批量两条路径复用。
 // 箭头朝向由 .rt-seat.collapsed 驱动（CSS 三角），这里只维护 title 与 aria。
-function rtApplyFold(card, folded) {
+// label 默认「该席位观点」（席位卡用），观点分析/复盘面板传各自名称。
+function rtApplyFold(card, folded, label) {
+  label = label || "该席位观点";
   card.classList.toggle("collapsed", folded);
   const caret = card.querySelector(".rt-seat-caret");
   if (caret) {
-    caret.title = folded ? "展开该席位观点" : "折叠该席位观点";
+    caret.title = folded ? `展开${label}` : `折叠${label}`;
     caret.setAttribute("aria-expanded", folded ? "false" : "true");
+  }
+}
+
+// 观点分析 / 观点复盘两个「类席位卡」面板的折叠：复用同一套 localStorage 折叠集合
+// （rtFoldSet/rtFoldSave），折叠态与席位卡完全一致的视觉与持久化行为。
+function rtFoldAux(id, folded) {
+  const card = document.getElementById(id);
+  if (!card) return;
+  const set = rtFoldSet();
+  if (folded) set.add(id); else set.delete(id);
+  rtFoldSave(set);
+  rtApplyFold(card, folded, id === "rt-analysis-panel" ? "观点分析" : "观点复盘");
+  // 复盘面板的 echarts 在折叠（display:none）时建图会得到 0 尺寸，展开后需 resize 重绘
+  if (!folded && id === "rt-review-panel" && typeof rtReviewChart !== "undefined" && rtReviewChart) {
+    setTimeout(() => { try { rtReviewChart.resize(); } catch (e) {} }, 0);
   }
 }
 
@@ -512,7 +547,7 @@ function rtRenderSeats() {
         </div>
         <div class="rt-seat-actions">${actions}</div>
       </div>
-      <div class="rt-seat-body ${post ? "" : "empty"}">${post ? escapeHtml(post.content) : "尚未生成：点击右上角按钮开始"}</div>
+      <div class="rt-seat-body md-body ${post ? "" : "empty"}">${post ? mdRender(post.content) : "尚未生成：点击右上角按钮开始"}</div>
       ${meta ? `<div class="rt-seat-meta">${meta}</div>` : ""}`;
     wrap.appendChild(card);
     const caretBtn = card.querySelector(".rt-seat-caret");
@@ -554,7 +589,7 @@ function rtRenderAnalysis() {
   ].filter(Boolean).join(" · ");
   el.innerHTML = `
     <div class="rt-review-note">分析基于 ${escapeHtml(a.date || rtState.date || "")} 全部启用席位的观点，由配置的 LLM 交叉汇总；只呈现共识与分歧，不判定对错。</div>
-    <div class="rt-analysis-text">${escapeHtml(a.content || "")}</div>
+    <div class="md-body">${mdRender(a.content || "")}</div>
     <div class="rt-seat-meta">${meta}</div>`;
 }
 

@@ -99,3 +99,54 @@ const today = () => new Date().toISOString().slice(0, 10);
 const escapeHtml = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;");
+
+// ---- Markdown 渲染（LLM 输出 / 论坛帖子统一入口）----
+// 背景：席位观点、观点分析、论坛存档帖大多是 LLM 生成的 markdown（## 小节、- 列表、
+// 表格），以前按纯文本 pre-wrap 展示，"##" 直接露在屏幕上。这里收拢成唯一入口：
+//   marked（本地 vendor，GFM）→ HTML；DOMPurify 兜底净化 → 容器加 .md-body 类。
+// 净化不是走过场：prompt 里注入了抓取的资讯正文，LLM 输出可能夹带原始 HTML/脚本，
+// 论坛帖子也允许任意登录用户发言，渲染前必须过白名单。
+// breaks:true——LLM 习惯用单换行分段，与旧版 pre-wrap 的观感一致，不会把几行粘成一段。
+if (typeof window.marked !== "undefined" && window.marked.setOptions) {
+  window.marked.setOptions({ breaks: true, gfm: true });
+}
+if (typeof window.DOMPurify !== "undefined" && window.DOMPurify.addHook) {
+  // 外链统一新窗口打开（markdown 里的资讯引用链接），只加属性不动内容
+  window.DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    if (node.tagName === "A" && node.getAttribute("href")) {
+      node.setAttribute("target", "_blank");
+      node.setAttribute("rel", "noopener");
+    }
+  });
+}
+
+// markdown 文本 → 安全 HTML。库缺失/异常时降级为转义文本 + <br>（绝不死链也不露原始 HTML）。
+const mdRender = (text) => {
+  const src = String(text == null ? "" : text);
+  if (!src.trim()) return "";
+  let html;
+  try {
+    if (typeof window.marked === "undefined" || !window.marked.parse) {
+      return escapeHtml(src).replace(/\n/g, "<br>");
+    }
+    html = window.marked.parse(src);
+  } catch (e) {
+    return escapeHtml(src).replace(/\n/g, "<br>");
+  }
+  try {
+    if (typeof window.DOMPurify !== "undefined" && window.DOMPurify.sanitize) {
+      html = window.DOMPurify.sanitize(html);
+    }
+  } catch (e) { /* 净化失败时退回未净化 HTML 的概率极低，但不因此让正文消失 */ }
+  // marked 的 <table> 无外层包裹：窄屏下宽表格会撑破卡片。补一层 .table-wrap（项目既有
+  // 的横向滚动容器）。DOMPurify 之后再包——它只可能动 table 内部，不会拆这层 div。
+  return String(html).replace(/<table>/g, '<div class="table-wrap"><table>')
+                     .replace(/<\/table>/g, "</table></div>");
+};
+
+// 把元素填为 markdown 渲染结果并打上 .md-body 标记（样式与行为挂钩在这个类上）
+const mdFill = (el, text) => {
+  if (!el) return;
+  el.classList.add("md-body");
+  el.innerHTML = mdRender(text);
+};

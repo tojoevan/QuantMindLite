@@ -240,7 +240,7 @@ function fmPostCard(p, i, prevKey, threadKey) {
   return `
     <div class="fm-post">
       ${head}
-      <div class="fm-post-body">${escapeHtml(p.content || "")}</div>
+      <div class="fm-post-body md-body">${mdRender(p.content || "")}</div>
     </div>`;
 }
 

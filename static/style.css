@@ -506,11 +506,6 @@ th { color: var(--muted); font-weight: 600; }
 }
 .rt-seat-body.empty { color: var(--muted); }
 .rt-seat-meta { color: var(--muted); font-size: 12px; }
-/* 观点分析正文：与席位观点同为行式结构（LLM 输出的 ## 小节靠 prewrap 保留换行）。
-   刻意不复用 .rt-seat-body——那条带 dashed 上边框与 min-height，是「卡片内单条观点」
-   的样式；这里是面板级汇总正文，只要干净的 prewrap。 */
-.rt-analysis-text { white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.75; color: var(--text); }
-.rt-analysis-text + .rt-seat-meta { margin-top: 10px; }
 /* 席位卡折叠：标题行最左侧的箭头即开关；折叠后只留标题行（名称 / 角色 / 状态徽标），
    席位多时可一次扫完。折叠状态存 localStorage，生成/改名触发的重渲染不会把它冲掉。
    箭头用 CSS 三角而不是 ▸/▾ 字形：不受字体回退影响，任何 DPI 都清晰。 */
@@ -1204,3 +1199,51 @@ th { color: var(--muted); font-weight: 600; }
   margin-left: 5px; padding: 1px 6px; font-size: 11px;
   background: var(--accent-soft); color: var(--accent); border-radius: var(--radius-sm);
 }
+
+/* ---- Markdown 渲染正文（席位观点 / 观点分析 / 论坛帖子统一）----
+   .md-body 挂在使用 renderMarkdown() 的容器上。库缺失或异常时渲染函数已降级为
+   转义文本 + <br>，所以这里只管「正常 markdown」的排版，不必兜底裸文本。
+   设计贴合现有 token：字号/行高沿用 .rt-seat-body / .fm-post-body，标题、列表、
+   表格、代码块都走面板同款配色，不与全站视觉脱节。 */
+.md-body { white-space: normal; word-break: break-word; line-height: 1.75; color: var(--text); }
+/* 同时挂了 .rt-seat-body / .fm-post-body 的容器原本是 pre-wrap，这里用更高
+   特异性把它压回 normal（避免 markdown 块元素被当长串折行）。 */
+.rt-seat-body.md-body, .fm-post-body.md-body { white-space: normal; }
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+.md-body p { margin: 0 0 0.6em; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4, .md-body h5 {
+  margin: 0.95em 0 0.45em; line-height: 1.35; font-weight: 600; color: var(--text);
+}
+.md-body h1 { font-size: 1.3em; }
+.md-body h2 { font-size: 1.18em; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.md-body h3 { font-size: 1.06em; }
+.md-body h4, .md-body h5 { font-size: 1em; }
+.md-body ul, .md-body ol { margin: 0.4em 0 0.7em; padding-left: 1.5em; }
+.md-body li { margin: 0.22em 0; }
+.md-body li > ul, .md-body li > ol { margin: 0.2em 0; }
+.md-body a { color: var(--accent); text-decoration: underline; }
+.md-body strong { font-weight: 600; }
+.md-body em { font-style: italic; }
+.md-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88em;
+  background: var(--subtle-bg); padding: 1px 5px; border-radius: 4px;
+  border: 1px solid var(--border);
+}
+.md-body pre {
+  background: var(--subtle-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; overflow-x: auto; margin: 0.6em 0;
+}
+.md-body pre code { background: none; border: none; padding: 0; font-size: 0.85em; }
+.md-body blockquote {
+  margin: 0.5em 0; padding: 4px 12px; color: var(--muted);
+  border-left: 3px solid var(--accent); background: var(--accent-soft);
+  border-radius: 0 6px 6px 0;
+}
+.md-body blockquote p { margin: 0.3em 0; }
+.md-body hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
+/* 表格：renderMarkdown 已在外层包了 .table-wrap（窄屏横向滚动），这里只排单元格。 */
+.md-body table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 0.4em 0; }
+.md-body th, .md-body td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+.md-body th { background: var(--subtle-bg); font-weight: 600; }
+.md-body img { max-width: 100%; border-radius: 6px; }
