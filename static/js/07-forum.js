@@ -62,9 +62,15 @@ async function fmEnsureSeats() {
   catch (e) { fmState.seats = []; }
 }
 
-// ===== 入口（由 06-pages.js 的 showView("forum") 调用）=====
-async function renderForum() {
+// ===== 入口（由 06-pages.js 的 showView("forum", tid?) 调用）=====
+// tid 有值 → 帖子详情态（hash #/forum/<id>，刷新/后退/分享都不丢）；
+// 无值 → 列表态（hash #/forum）
+async function renderForum(tid) {
   if (isGuest || !token) { showAuth("login"); return; }
+  if (tid != null && Number.isFinite(tid)) {
+    await fmOpenThreadDetail(tid);
+    return;
+  }
   fmState.view = "list";
   fmState.thread = null;
   await fmEnsureSeats();
@@ -136,11 +142,21 @@ function fmThreadCard(t) {
 }
 
 // ===== 详情视图 =====
+// 进入主题详情的统一入口：走 showView 把 #/forum/<id> 写进 URL，
+// 顶栏高亮 / 历史栈 / 刷新 / 分享全部由路由器保证。
+// （hash 未变时 showView 不会新增历史，回复后重渲染、点「刷新」都安全。）
 async function fmOpenThread(tid) {
+  await showView("forum", tid);
+}
+
+// 详情态渲染：由 renderForum(tid) 调用（hash 命中 #/forum/<id> 时）
+async function fmOpenThreadDetail(tid) {
   try {
     fmState.thread = await API("GET", `/api/forum/threads/${tid}`);
   } catch (e) {
     showToast("帖子加载失败：" + e.message);
+    // 加载失败（帖子不存在/无权限）：回列表，并用 replace 纠正 URL，不在历史里留坏条目
+    showView("forum", null, { replace: true });
     return;
   }
   fmState.view = "detail";
@@ -151,7 +167,7 @@ async function fmOpenThread(tid) {
 function fmRenderDetail() {
   const main = document.getElementById("main");
   const d = fmState.thread;
-  if (!d || !d.thread) { renderForum(); return; }
+  if (!d || !d.thread) { showView("forum"); return; }
   const t = d.thread;
   const posts = d.posts || [];
   const del = t.can_delete ? `<button class="btn ghost sm" id="fm-del-thread">删除主题</button>` : "";
@@ -188,7 +204,7 @@ function fmRenderDetail() {
     </div>`;
 
   const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
-  bind("fm-back", () => { fmState.view = "list"; fmLoadThreads().then(fmRenderList); });
+  bind("fm-back", () => showView("forum"));   // 返回列表：URL 同步回 #/forum，浏览器可后退回本帖
   bind("fm-reload-detail", () => fmOpenThread(t.id));
   bind("fm-del-thread", () => fmDeleteThread(t.id));
   bind("fm-reply-send", fmSubmitReply);
@@ -261,10 +277,8 @@ function fmOpenNewThread() {
       content: document.getElementById("fm-new-content").value || "",
     }, fmParseIdentity(document.getElementById("fm-identity-new")));
     const d = await API("POST", "/api/forum/threads", payload);
-    await fmLoadThreads();
-    fmState.thread = d;
-    fmState.view = "detail";
-    fmRenderDetail();
+    await fmLoadThreads();                 // 刷新列表缓存，返回列表能看到新帖
+    await showView("forum", d.thread.id);  // 以详情态进入，URL 同步为 #/forum/<id>
     showToast("帖子已发布");
     return true;
   });
@@ -276,10 +290,7 @@ async function fmDeleteThread(tid) {
   try {
     await API("DELETE", `/api/forum/threads/${tid}`);
     showToast("主题已删除");
-    fmState.thread = null;
-    fmState.view = "list";
-    await fmLoadThreads();
-    fmRenderList();
+    await showView("forum");   // 回列表并纠正 URL（#/forum/<id> → #/forum）
   } catch (e) { showToast("删除失败：" + e.message); }
 }
 

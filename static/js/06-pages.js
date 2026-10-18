@@ -11,7 +11,7 @@ function navDefault() { return "news"; }
 
 // ===== URL 路由（hash 同步）=====
 // 存在理由：此前视图状态只在内存里，刷新必然回 navDefault()，后退/收藏/分享也都不可用。
-// 形态：#/news、#/roundtable、#/forum、#/dashboard、#/about、#/users、#/project/12
+// 形态：#/news、#/roundtable、#/forum、#/forum/19（帖子详情）、#/dashboard、#/about、#/users、#/project/12
 // 用 hash 而非真实路径：后端 StaticFiles(html=True) 只对 / 返回 index.html，
 // 真实路径（/roundtable）会 404，需要同时改 FastAPI 与线上 nginx；hash 零后端改动，
 // 且同样支持刷新/后退/收藏/分享。
@@ -38,6 +38,13 @@ function parseHash() {
   if (name === "project") {
     const id = parseInt(parts[1], 10);
     return Number.isFinite(id) ? { name, arg: id } : null;
+  }
+  if (name === "forum") {
+    // 论坛详情进 hash：#/forum/<tid> —— 刷新/后退/收藏/分享都停在当前帖。
+    // #/forum（无参）或参数非法 → 列表态（arg=null）
+    if (parts[1] == null) return { name, arg: null };
+    const id = parseInt(parts[1], 10);
+    return Number.isFinite(id) ? { name, arg: id } : { name, arg: null };
   }
   return { name, arg: null };
 }
@@ -109,7 +116,8 @@ async function showView(name, arg, opts) {
     case "roundtable":
       currentView = { name, arg: null }; markNavActive(name); await renderRoundtable(); break;
     case "forum":
-      currentView = { name, arg: null }; markNavActive(name); await renderForum(); break;
+      // arg = 主题 id：有值进帖子详情（#/forum/<id>），无值进列表（#/forum）
+      currentView = { name, arg: arg ?? null }; markNavActive(name); await renderForum(arg ?? null); break;
     case "about":
       currentView = { name, arg: null }; markNavActive(name); renderAbout(); break;
     case "users":
@@ -293,8 +301,8 @@ async function publishDailyReport(btn) {
     showToast(r && r.created ? `${label}已发布到论坛`
       : (r && r.unchanged ? `${label}内容未变化，未重复发布` : `${label}已更新到论坛`));
     if (r && r.thread_id) {
-      await showView("forum");
-      if (typeof fmOpenThread === "function") await fmOpenThread(r.thread_id);
+      // 直接以详情态进入论坛：showView 一并处理顶栏高亮与 URL（#/forum/<id>）
+      await showView("forum", r.thread_id);
     }
   } catch (e) {
     showToast("发布失败：" + (e.message || e));

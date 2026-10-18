@@ -628,12 +628,11 @@ function rtRenderReview() {
   }
 }
 
-// 跳到该观点的论坛存档帖：先走 showView("forum") 再定位帖子——
-// 保证顶栏高亮与 URL 同步（直接把 main 换成详情会让导航与实际页面不一致）。
+// 跳到该观点的论坛存档帖：直接以详情态进入论坛视图——
+// showView 会同时搞定顶栏高亮与 URL（#/forum/<id>），刷新/后退都不丢
 async function rtOpenForumThread(tid) {
   if (!tid) return;
-  await showView("forum");
-  await fmOpenThread(tid);
+  await showView("forum", tid);
 }
 
 // 补建论坛存档：保存观点时的自动同步失败是静默的（观点已独立入库、接口仍返回成功），
