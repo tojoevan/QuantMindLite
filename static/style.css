@@ -456,9 +456,11 @@ th { color: var(--muted); font-weight: 600; }
 /* 每个 AI 席位独占一行（整行卡片）：原 auto-fit minmax(300px,1fr) 在宽屏会并排三列，
    讨论正文被挤成窄条。改单列后正文获得整行宽度。 */
 .rt-seats { display: grid; grid-template-columns: 1fr; gap: 14px; }
-/* 「观点复盘」面板嵌套在「AI 席位」panel 内（卡片套卡片）：.panel 自带的
+/* 「观点分析」「观点复盘」面板嵌套在「AI 席位」panel 内（卡片套卡片）：.panel 自带的
    margin-bottom 在嵌套场景下不产生与上方席位卡的间隔，只有 margin-top 起作用。
-   间距与席位卡网格 gap 取一致（14px），视觉节奏统一。 */
+   两个嵌套面板的顶部间隔统一取席位卡网格 gap（14px），视觉节奏一致；观点分析的
+   margin-bottom 清零，防止它与观点复盘的 margin-top 相邻折叠成 16px 破坏该节奏。 */
+#rt-analysis-panel { margin-top: 14px; margin-bottom: 0; }
 #rt-review-panel { margin-top: 14px; }
 .rt-seat {
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
