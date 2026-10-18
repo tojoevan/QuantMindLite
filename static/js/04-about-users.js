@@ -80,8 +80,10 @@ async function renderUsers(flash) {
   if (!(me && me.is_admin)) { showAuth("login"); return; }
   document.getElementById("main").innerHTML = `
     <div class="page">
+      <div class="page-head">
+        <div><h1>设置</h1><p class="page-sub">用户管理 · 全局配置 · 仅管理员可见</p></div>
+      </div>
       <div class="panel">
-        <h3>设置 <span class="muted">仅管理员可见</span></h3>
         <div id="users-content"><span class="muted">加载中…</span></div>
       </div>
     </div>`;
