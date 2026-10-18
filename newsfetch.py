@@ -1,6 +1,6 @@
 """资讯工作台 · RSS/Atom 抓取与解析（纯标准库）。
 
-为什么要中继：quant-web 所在 VPS（IPv6-only，地址见本地 deploy.local.sh，已脱敏）只有 IPv6 出站、无 IPv4
+为什么要中继：quant-web 所在 VPS（IPv6-only）只有 IPv6 出站、无 IPv4
 路由，而绝大多数资讯源只有 A 记录，直连必然失败。故统一经 Cloudflare 中继
 （relay.kapibala.icu，见 ../rss-relay）取回原文。
 
