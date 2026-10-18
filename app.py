@@ -56,7 +56,7 @@ import newsfetch
 import newsai
 import rtreview
 
-app = FastAPI(title="慢量化操作台", version="0.1.0")
+app = FastAPI(title="慢量化", version="0.1.0")
 
 
 # ---- 静态资源禁用缓存：部署后浏览器立即拉取新前端，避免旧 app.js 缓存 ----

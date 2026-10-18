@@ -15,7 +15,7 @@ function renderAbout() {
   document.getElementById("main").innerHTML = `
     <div class="about-page">
       <button class="btn-mini ghost" id="about-back">← 返回</button>
-      <h1>关于 · 慢量化操作台</h1>
+      <h1>关于 · 慢量化</h1>
       <p class="about-sub">项目框架、设计思路与相关内容</p>
 
       <h2>定位</h2>
