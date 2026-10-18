@@ -822,7 +822,7 @@ th { color: var(--muted); font-weight: 600; }
    computed marginTop=0px、按钮与标题 rectGap=0。标题位于 .page-head 内，
    margin 必须带 .page-head 前缀（0,2,0）才能生效。 */
 .fm-detail-title { font-size: 22px; line-height: 1.45; word-break: break-word; }
-.page-head .fm-detail-title { margin: var(--sp-5) 0 var(--sp-1); }
+.page-head .fm-detail-title { margin: var(--sp-4) 0 var(--sp-1); }
 .fm-posts { display: flex; flex-direction: column; gap: var(--sp-3); margin-bottom: var(--sp-4); }
 .fm-post { background: var(--panel-2); border: var(--bd-w) solid var(--border); border-radius: var(--radius-lg); padding: 12px var(--sp-4); }
 .fm-post-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: 8px; }
