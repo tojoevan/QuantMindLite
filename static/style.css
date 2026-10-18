@@ -817,7 +817,9 @@ th { color: var(--muted); font-weight: 600; }
 .fm-del:hover { color: var(--red); border-color: var(--red); background: rgba(248,81,73,.08); }
 
 /* 详情：主题头 + 楼层 */
-.fm-detail-title { font-size: 22px; margin: 10px 0 4px; line-height: 1.45; word-break: break-word; }
+/* 标题上间距必须是「块级」：返回按钮是独立控件，与标题内容块之间按 --sp-4 分隔；
+   早年手打 10px 不在间距刻度上，导致按钮与标题贴得太近 */
+.fm-detail-title { font-size: 22px; margin: var(--sp-4) 0 var(--sp-1); line-height: 1.45; word-break: break-word; }
 .fm-posts { display: flex; flex-direction: column; gap: var(--sp-3); margin-bottom: var(--sp-4); }
 .fm-post { background: var(--panel-2); border: var(--bd-w) solid var(--border); border-radius: var(--radius-lg); padding: 12px var(--sp-4); }
 .fm-post-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: 8px; }
