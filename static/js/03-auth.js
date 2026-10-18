@@ -64,7 +64,7 @@ function renderUserChip() {
   const chip = document.getElementById("user-chip");
   if (!me) { chip.classList.add("hidden"); return; }
   chip.classList.remove("hidden");
-  chip.innerHTML = `<span class="uc-email">${escapeHtml(me.email)}</span>`
+  chip.innerHTML = `<span class="uc-email">${escapeHtml((me.email || "").split("@")[0] || me.email)}</span>`
     + (me.is_admin ? `<span class="uc-badge">管理员</span>` : ``)
     + `<button id="btn-logout" class="btn-mini ghost">退出</button>`;
   document.getElementById("btn-logout").onclick = () => { doLogout(); enterGuest(); };
