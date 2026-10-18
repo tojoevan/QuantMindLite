@@ -360,6 +360,11 @@ function newsPaintPager() {
     prev = p;
   });
   parts.push(mk(cur + 1, "下一页 ›", "", cur >= pages, "下一页"));
+  // 跳转指定页：输入页码回车或点「跳转」
+  parts.push(`<span class="np-jump">
+    <input type="number" id="news-pager-jump" min="1" max="${pages}" placeholder="页码" aria-label="跳转到指定页" />
+    <button class="np-btn" type="button" id="news-pager-go" title="跳转到指定页">跳转</button>
+  </span>`);
   box.innerHTML = parts.join("");
 
   // 事件委托：上一页/下一页/页码
@@ -374,6 +379,26 @@ function newsPaintPager() {
     const list = document.getElementById("news-list");
     if (list) list.scrollIntoView({ behavior: "smooth", block: "start" });
   };
+  // 跳转指定页
+  const jumpInput = box.querySelector("#news-pager-jump");
+  const goBtn = box.querySelector("#news-pager-go");
+  if (jumpInput && goBtn) {
+    const doJump = () => {
+      const p = parseInt(jumpInput.value, 10);
+      if (!p || p < 1 || p > pages) {
+        jumpInput.value = "";
+        jumpInput.focus();
+        return;
+      }
+      if (p === newsState.page) return;
+      newsState.page = p;
+      newsReload();
+      const list = document.getElementById("news-list");
+      if (list) list.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    goBtn.onclick = doJump;
+    jumpInput.onkeydown = (e) => { if (e.key === "Enter") doJump(); };
+  }
 }
 
 function newsPaintFoot() {
