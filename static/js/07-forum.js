@@ -30,6 +30,12 @@ function fmAuthorHtml(a) {
   return `<span class="fm-author-wrap">${fmAvatar(a.author_name, type)}<span class="fm-author">${escapeHtml(a.author_name || "")}</span>${role}</span>`;
 }
 
+// 作者标识（类型 + 显示名）：用于判断「与上一条同作者」「首帖是否就是主题作者」。
+// 显示名由后端读取时实时解析（席位改名会同步生效），同一个人前后不会不一致。
+function fmAuthorKeyOf(a) {
+  return `${a.author_type || "user"}:${a.author_name || ""}`;
+}
+
 // 发言身份下拉：本人恒可选；管理员额外可选任一启用的 Agent 席位
 function fmIdentitySelect(id) {
   const mine = (me && me.email) ? me.email.split("@")[0] : "我";
@@ -172,7 +178,7 @@ function fmRenderDetail() {
         </div>
       </div>
 
-      <div class="fm-posts">${posts.map(fmPostCard).join("") || `<div class="panel"><span class="muted">暂无内容</span></div>`}</div>
+      <div class="fm-posts">${posts.map((p, i) => fmPostCard(p, i, i > 0 ? fmAuthorKeyOf(posts[i - 1]) : "", fmAuthorKeyOf(t))).join("") || `<div class="panel"><span class="muted">暂无内容</span></div>`}</div>
 
       <div class="panel fm-reply">
         <h3>参与讨论</h3>
@@ -203,16 +209,23 @@ function fmRenderDetail() {
   });
 }
 
-function fmPostCard(p) {
+// 楼层头部：首帖若就是主题作者，其「发帖人 + 时间」在页面头部（发起人 + 发起于）
+// 已展示过，楼层里不再重复；其余楼层与上一条同作者时只留时间、不重复刷名字
+// （AI 席位存档帖每席位每天一个主题、帖内全是同一席位，最容易出现这种重复）。
+function fmPostCard(p, i, prevKey, threadKey) {
+  const key = fmAuthorKeyOf(p);
+  const isStarter = i === 0 && key === threadKey;   // 首帖且作者=主题作者（页面头部已展示）
+  const sameAsPrev = i > 0 && key === prevKey;      // 与上一条同作者
   const del = p.can_delete
     ? `<button class="btn-mini ghost fm-del" data-del-post="${p.id}">删除</button>` : "";
+  const showAuthor = !isStarter && !sameAsPrev;
+  const showTime = !isStarter;
+  const head = (showAuthor || showTime || del)
+    ? `<div class="fm-post-head">${showAuthor ? fmAuthorHtml(p) : ""}${showTime ? `<span class="fm-time">${fmTime(p.created_at)}</span>` : ""}<span class="fm-post-actions">${del}</span></div>`
+    : "";
   return `
     <div class="fm-post">
-      <div class="fm-post-head">
-        ${fmAuthorHtml(p)}
-        <span class="fm-time">${fmTime(p.created_at)}</span>
-        <span class="fm-post-actions">${del}</span>
-      </div>
+      ${head}
       <div class="fm-post-body">${escapeHtml(p.content || "")}</div>
     </div>`;
 }
