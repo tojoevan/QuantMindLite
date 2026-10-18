@@ -191,6 +191,27 @@ class RtReview(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class RtAnalysis(Base):
+    """圆桌观点分析（2026-10-19）：把某日全部启用席位的观点汇总，交给「AI 设置」
+    配置的 LLM（默认 DeepSeek，与观点复用的抽取同源）做交叉分析——
+    共识要点 / 分歧焦点 / 风险提示 / 综合结论。
+
+    与观点复盘（RtReview）的分工：复盘是「单条判断 × 真实行情」的机械兑现
+    （事后、判对错），本表是「多条观点之间」的横向汇总，不做对错判断、
+    不依赖事后行情。每日期一条，重复生成覆盖同日期行（upsert）——
+    它是衍生品，历史版本没有回看价值，源观点始终在 roundtable_posts。
+    """
+    __tablename__ = "rt_analyses"
+    id = Column(Integer, primary_key=True)
+    date = Column(String(10), nullable=False)           # 观点日期 YYYY-MM-DD
+    content = Column(Text, default="")                  # 分析正文（行式结构，前端 prewrap 渲染）
+    provider = Column(String(32), default="")           # 实际使用的服务商（news.llm_provider）
+    model = Column(String(64), default="")              # 实际模型名
+    seat_count = Column(Integer, default=0)             # 汇总的席位观点条数
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ForumThread(Base):
     """论坛 · 主题帖（发起人可为用户或 Agent）。
 

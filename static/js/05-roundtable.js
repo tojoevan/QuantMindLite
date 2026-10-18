@@ -41,7 +41,7 @@ const RT_MODES = {
   mcp:    { label: "MCP 待接", cls: "mode-mcp" },
 };
 function rtModeInfo(m) { return RT_MODES[m] || RT_MODES.manual; }
-let rtState = { date: null, snap: null, seats: [], styles: [], posts: {}, settings: null, history: null, admin: false, llmStats: null };
+let rtState = { date: null, snap: null, seats: [], styles: [], posts: {}, settings: null, history: null, admin: false, llmStats: null, analysis: null };
 const rtAdmin = () => !!(me && me.is_admin);
 
 // P7：首页已改为「资讯工作台」，圆桌是二级页。
@@ -123,6 +123,13 @@ async function renderRoundtable() {
             </div>
           </form>
         </div>` : ""}
+      <div class="panel" id="rt-analysis-panel">
+        <h3>观点分析 <span class="muted">汇总全部席位观点 · 配置的 LLM 交叉分析</span>
+          ${rtState.admin ? `<button class="btn-mini" id="rt-analyze-run">开始分析</button>` : ""}
+          <button class="btn-mini ghost" id="rt-analysis-toggle">收起</button>
+        </h3>
+        <div id="rt-analysis-body"><span class="muted">加载中…</span></div>
+      </div>
       <div class="panel" id="rt-review-panel">
         <h3>观点复盘 <span class="muted">席位建议的「命中率 / 趋势 / 引用资讯信息量」——判定全部机械（方向 × 真实收益），不在页面做任何「对错」自评</span><button class="btn-mini ghost" id="rt-review-toggle">收起</button></h3>
         <div id="rt-review-body"><span class="muted">加载中…</span></div>
@@ -146,6 +153,9 @@ async function renderRoundtable() {
   document.getElementById("rt-indices-toggle").onclick = () => rtPanelFold("rt-indices", "rt-indices-toggle");
   document.getElementById("rt-kpi-toggle").onclick = () => rtPanelFold("rt-kpi", "rt-kpi-toggle");
   document.getElementById("rt-review-toggle").onclick = () => rtPanelFold("rt-review-body", "rt-review-toggle");
+  document.getElementById("rt-analysis-toggle").onclick = () => rtPanelFold("rt-analysis-body", "rt-analysis-toggle");
+  const analyzeRun = document.getElementById("rt-analyze-run");
+  if (analyzeRun) analyzeRun.onclick = () => rtAnalyze();
   document.getElementById("rt-seat-collapse").onclick = () => rtFoldAll(true);
   document.getElementById("rt-seat-expand").onclick = () => rtFoldAll(false);
   const addSeatToggle = document.getElementById("rt-add-seat-toggle");
@@ -186,18 +196,23 @@ async function renderRoundtable() {
 
 async function rtLoadAll() {
   try {
-    const [seats, posts, snap, hist, review] = await Promise.all([
+    const [seats, posts, snap, hist, review, analysis] = await Promise.all([
       API("GET", "/api/roundtable/seats"),
       API("GET", "/api/roundtable/posts"),
       API("GET", "/api/roundtable/snapshot"),
       API("GET", "/api/roundtable/history").catch(() => null),
       API("GET", "/api/roundtable/review/stats").catch(() => null),
+      API("GET", "/api/roundtable/analysis").catch(() => null),
     ]);
     rtState.seats = seats || [];
     rtState.snap = snap;
     rtState.date = snap ? snap.date : null;
     rtState.history = hist;
     rtState.review = review;
+    // API() 返回完整响应体（01-core.js 直接 r.json()，不解包）：GET 的 {date, analysis}
+    // 要取内层，与 POST 后 rtState.analysis = r.analysis 的赋值保持同构——
+    // 少了这层解包，rtRenderAnalysis 会拿到外壳、全部字段 undefined（空壳渲染）。
+    rtState.analysis = (analysis && analysis.analysis) || null;
     rtState.posts = {};
     (posts || []).forEach(p => { rtState.posts[p.seat_id] = p; });
     if (rtState.admin) {
@@ -225,6 +240,7 @@ function rtRenderAll() {
   rtRenderHoldings();
   rtRenderHistory();
   rtRenderSeats();
+  rtRenderAnalysis();
   rtRenderReview();
   if (rtState.admin) {
     rtRenderManage();
@@ -515,6 +531,49 @@ function rtRenderSeats() {
   wrap.querySelectorAll("[data-gen]").forEach(b => b.onclick = () => rtGenerate([parseInt(b.getAttribute("data-gen"), 10)]));
   wrap.querySelectorAll("[data-thread]").forEach(b => b.onclick = () => rtOpenForumThread(parseInt(b.getAttribute("data-thread"), 10)));
   wrap.querySelectorAll("[data-archive]").forEach(b => b.onclick = () => rtArchiveSeat(parseInt(b.getAttribute("data-archive"), 10)));
+}
+
+// ---- 观点分析面板：汇总当日全部席位观点，交配置的 LLM（默认 DeepSeek）交叉分析 ----
+// 与观点复盘的分工：复盘是「单条判断 × 真实行情」的机械兑现（事后、判对错），
+// 这里是「多条观点之间」的横向汇总（共识/分歧/风险/综合结论），不做对错判断。
+// 分析由管理员手动触发（调 LLM 有费用），结果按日期覆盖保存，所有登录用户可见。
+function rtRenderAnalysis() {
+  const el = document.getElementById("rt-analysis-body");
+  if (!el) return;
+  const a = rtState.analysis;
+  if (!a) {
+    el.innerHTML = `<span class="muted">${rtState.admin
+      ? "暂无分析结果——点击「开始分析」汇总当日全部席位观点。"
+      : "暂无分析结果（管理员可手动触发汇总分析）。"}</span>`;
+    return;
+  }
+  const meta = [
+    `${a.seat_count || 0} 条席位观点`,
+    `${escapeHtml(a.provider || "—")} · ${escapeHtml(a.model || "—")}`,
+    `更新于 ${escapeHtml((a.updated_at || "").replace("T", " ").slice(0, 19))}`,
+  ].filter(Boolean).join(" · ");
+  el.innerHTML = `
+    <div class="rt-review-note">分析基于 ${escapeHtml(a.date || rtState.date || "")} 全部启用席位的观点，由配置的 LLM 交叉汇总；只呈现共识与分歧，不判定对错。</div>
+    <div class="rt-analysis-text">${escapeHtml(a.content || "")}</div>
+    <div class="rt-seat-meta">${meta}</div>`;
+}
+
+async function rtAnalyze() {
+  // 防误触：分析要调用 LLM（产生费用），与「生成今日讨论」同一约定。
+  if (!confirm("确认汇总分析当日全部 AI 席位观点？\n将调用配置的 LLM（默认 DeepSeek）生成交叉分析。")) return;
+  const btn = document.getElementById("rt-analyze-run");
+  const label = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "分析中…"; }
+  try {
+    const r = await API("POST", "/api/roundtable/analyze", { date: rtState.date });
+    rtState.analysis = (r && r.analysis) || null;
+    rtRenderAnalysis();
+    showToast("观点分析完成");
+  } catch (e) {
+    showToast("分析失败：" + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
 }
 
 // ---- 观点复盘面板（G3）：席位命中率 / 趋势 / 引用资讯信息量 / 样本明细 ----

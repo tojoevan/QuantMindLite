@@ -504,6 +504,11 @@ th { color: var(--muted); font-weight: 600; }
 }
 .rt-seat-body.empty { color: var(--muted); }
 .rt-seat-meta { color: var(--muted); font-size: 12px; }
+/* 观点分析正文：与席位观点同为行式结构（LLM 输出的 ## 小节靠 prewrap 保留换行）。
+   刻意不复用 .rt-seat-body——那条带 dashed 上边框与 min-height，是「卡片内单条观点」
+   的样式；这里是面板级汇总正文，只要干净的 prewrap。 */
+.rt-analysis-text { white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.75; color: var(--text); }
+.rt-analysis-text + .rt-seat-meta { margin-top: 10px; }
 /* 席位卡折叠：标题行最左侧的箭头即开关；折叠后只留标题行（名称 / 角色 / 状态徽标），
    席位多时可一次扫完。折叠状态存 localStorage，生成/改名触发的重渲染不会把它冲掉。
    箭头用 CSS 三角而不是 ▸/▾ 字形：不受字体回退影响，任何 DPI 都清晰。 */

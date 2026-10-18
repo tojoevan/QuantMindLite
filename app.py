@@ -32,6 +32,7 @@ from db import (
     User, Session as SessionModel, PasswordResetRequest,
     RoundtableSeat, RoundtablePost, RoundtableStyle, ForumThread, ForumPost, Setting,
     NewsFeed, NewsItem, NewsInjectLog, NewsDigest, SettleReport, LLMCallLog,
+    RtAnalysis,
 )
 from models import (
     ProjectCreate, ProjectOut, ProjectUpdate, PricePoint, PredictionCreate, PredictionOut,
@@ -39,7 +40,7 @@ from models import (
     RoundtableSeatCreate, RoundtableSeatUpdate, RoundtableSeatOut,
     RoundtablePostIn, RoundtablePostOut, RoundtableSettingsIn, RoundtableGenerateReq,
     RoundtableArchiveReq,
-    RoundtableReviewReq,
+    RoundtableReviewReq, RoundtableAnalyzeReq,
     RoundtableStyleCreate, RoundtableStyleUpdate, RoundtableStyleOut,
     ForumThreadCreate, ForumPostCreate, ForumPostOut, ForumThreadOut, ForumThreadDetail,
     NewsFeedCreate, NewsFeedUpdate, NewsFeedOut, NewsItemOut, NewsFetchReq, NewsSettingsIn,
@@ -1428,6 +1429,12 @@ PROMPT_OUTPUT_SPEC = """# 输出格式（严格遵守，不要使用表格）
 
 _LLM_SYSTEM = "你是严谨的A股投研助手。严格基于用户给出的持仓与行情快照作答，不臆测快照之外的数据，并严格遵守用户指定的输出格式。"
 
+# 观点分析（多席位观点交叉汇总）的 system 提示词：与席位生成的差别是——输入是
+# 「多位分析师的独立观点」而非行情快照，任务是找共识/分歧，不自作行情判断。
+_LLM_ANALYZE_SYSTEM = ("你是严谨的A股投研助手，擅长汇总多位分析师的独立判断。"
+                       "严格基于用户给出的各席位观点作答，不臆测观点之外的数据，"
+                       "不引入你自己的行情判断，并严格遵守用户指定的输出格式。")
+
 # 圆桌席位「接入方式」取值：
 #   manual = 手动回填（复制提示词 → 外部咨询 → 粘贴反馈）
 #   auto   = LLM Key 自动（后端直调 LLM 生成）
@@ -2264,6 +2271,120 @@ def rt_review_run(body: Optional[RoundtableReviewReq] = None,
         r = rtreview.daily(db, conf)
         mode = "daily"
     return {"ok": True, "mode": mode, "result": r}
+
+
+@app.get("/api/roundtable/analysis")
+def rt_analysis_get(date: Optional[str] = None, u: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    """观点分析结果（登录用户可读；缺省返回当日）。
+
+    没有记录时 analysis=null（面板显示空态提示，不报错）——与 review/stats 一致：
+    面板数据缺失不影响圆桌其他部分。
+    """
+    date_s = date or _cn_today()
+    row = (db.query(RtAnalysis)
+           .filter(RtAnalysis.date == date_s)
+           .order_by(RtAnalysis.updated_at.desc(), RtAnalysis.id.desc())
+           .first())
+    analysis = None
+    if row:
+        analysis = {
+            "date": row.date, "content": row.content or "",
+            "provider": row.provider or "", "model": row.model or "",
+            "seat_count": row.seat_count or 0,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+    return {"date": date_s, "analysis": analysis}
+
+
+@app.post("/api/roundtable/analyze")
+def rt_analyze_run(body: Optional[RoundtableAnalyzeReq] = None,
+                   u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """管理员手动触发观点分析：汇总当日全部启用席位的观点，交「AI 设置」配置的
+    LLM（默认 DeepSeek，与观点复用的抽取同源）做交叉分析，按日期覆盖入库。
+
+    与观点复盘的本质分工：复盘是「单条判断 × 真实行情」的机械兑现（事后、判对错），
+    这里是「多条观点之间」的横向汇总（共识/分歧/风险/综合结论），不做对错判断。
+    auto 生成与 manual 粘贴的观点一视同仁——分析看的是「各位分析师怎么看」，
+    不关心这条观点是谁敲进去的。
+    """
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    date_s = (body.date if body and body.date else _cn_today())
+    rows = (db.query(RoundtablePost, RoundtableSeat.name)
+            .join(RoundtableSeat, RoundtableSeat.id == RoundtablePost.seat_id)
+            .filter(RoundtablePost.date == date_s, RoundtableSeat.enabled == 1)
+            .order_by(RoundtableSeat.sort, RoundtableSeat.id).all())
+    posts = [(name or "", p.content or "") for p, name in rows if (p.content or "").strip()]
+    if not posts:
+        raise HTTPException(400, f"{date_s} 还没有任何席位观点，请先「生成今日讨论」或回填手动席位")
+    # 服务商名单独取一次（news_llm_conf 不回传该字段），供 llm_call_log 归因
+    provider = (newsfetch.get_setting(db, NEWS_LLM_PROVIDER_KEY) or "deepseek").strip() or "deepseek"
+    try:
+        conf = news_llm_conf(db)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    blocks = "\n\n".join(f"【{name}】\n{content.strip()[:4000]}" for name, content in posts)
+    prompt = (
+        f"以下是 {date_s} 各 AI 席位对当前大盘与持仓的独立分析（共 {len(posts)} 条）。\n\n"
+        f"{blocks}\n\n"
+        "请基于以上全部观点做交叉汇总分析（不要引入观点之外的行情数据，不要大段复述原文），输出：\n"
+        "## 共识要点\n（多数席位一致看法的 2-4 条，每条一行）\n"
+        "## 分歧焦点\n（各席位看法不一致之处，逐条注明哪方怎么看，2-4 条）\n"
+        "## 风险提示\n（被多个席位共同提及、最需警惕的 2-3 条）\n"
+        "## 综合结论\n（一段话，150 字以内，权衡多数派意见后的倾向性判断）"
+    )
+    stats = _llm_stats_base(None, {"name": "观点分析（汇总）", "provider": provider},
+                            conf.get("model") or "", conf)
+    try:
+        content = chat_complete(
+            conf["base_url"], conf["api_key"], conf["model"],
+            [{"role": "system", "content": _LLM_ANALYZE_SYSTEM},
+             {"role": "user", "content": prompt}],
+            # 输出被格式约定压在 ~600 字内：900 起步、2000 封顶（防个别模型啰嗦截断）；
+            # 思考型模型若超预算，llm.py 内的自动关思考兜底会兜住。timeout 放宽到 90s
+            # （汇总 prompt 长、经中继时多一跳）。
+            max_tokens=2000, timeout=90,
+            via_relay=conf.get("via_relay") or "",
+            relay_key=conf.get("relay_key") or "",
+            disable_thinking=bool(conf.get("disable_thinking")),
+            stats=stats,
+        )
+    except Exception as e:
+        try:
+            _log_llm_call(db, None, "观点分析（汇总）", stats, ok=False, error=str(e))
+        except Exception as le:
+            logger.warning("llm_call_log 写入失败: %s", le)
+            db.rollback()
+        raise HTTPException(400, f"LLM 调用失败：{e}")
+    content = (content or "").strip()
+    if not content:
+        try:
+            _log_llm_call(db, None, "观点分析（汇总）", stats, ok=False, error="模型返回为空")
+        except Exception as le:
+            logger.warning("llm_call_log 写入失败: %s", le)
+            db.rollback()
+        raise HTTPException(400, "LLM 返回为空，请重试或更换服务商")
+    _log_llm_call(db, None, "观点分析（汇总）", stats, ok=True)
+    # upsert：同日期一条，重复生成覆盖内容（衍生品不做历史版本，源观点始终在 roundtable_posts）
+    row = db.query(RtAnalysis).filter(RtAnalysis.date == date_s).first()
+    if row:
+        row.content = content
+        row.provider = provider
+        row.model = conf.get("model") or ""
+        row.seat_count = len(posts)
+    else:
+        row = RtAnalysis(date=date_s, content=content, provider=provider,
+                         model=conf.get("model") or "", seat_count=len(posts))
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"ok": True, "date": date_s, "analysis": {
+        "date": row.date, "content": row.content or "",
+        "provider": row.provider or "", "model": row.model or "",
+        "seat_count": row.seat_count or 0,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }}
 
 
 @app.put("/api/roundtable/settings")

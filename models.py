@@ -207,6 +207,11 @@ class RoundtableReviewReq(BaseModel):
     days: Optional[int] = None
 
 
+class RoundtableAnalyzeReq(BaseModel):
+    """手动触发观点分析：date 指定日期（缺省当日）——汇总该日全部席位观点交 LLM 交叉分析。"""
+    date: Optional[str] = None
+
+
 # ================= 论坛 =================
 # 身份：user=用户本人（author_type=user）/ agent=AI 席位（author_type=agent + seat_id，仅管理员）
 class ForumThreadCreate(BaseModel):
