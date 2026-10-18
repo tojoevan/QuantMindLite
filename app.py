@@ -1167,10 +1167,7 @@ PROVIDER_DEFAULTS = {
     # TypeSafe 结构化判断（非 chat completions 协议，走 llm.systemone_judge）：
     # 只输出判断概率（~20 tokens/次），不生成自然语言。用于资讯重要度初筛等
     # 纯判断场景；市场概要等生成任务切到它会明确报错（见 newsai.build_digest）。
-    # ⚠️ ai.xiaohaima-edu.com 是 Sub2API 聚合中转平台（非官方），共享 Key 有配额限制；
-    # 官方端点是 api.typesafe.ai（2026-10-18 实测：有 AAAA、IPv6 直连可达，但 Key 不通用——
-    # 中转的 sk- Key 打官方 401，官方 Key 为 jv_live_ 格式）。官方定价 $0.042/1M input、
-    # output 免费。拿到官方 Key 后用下面的 jev-official 条目即可切换。
+    # ⚠️ ai.xiaohaima-edu.com 是 Sub2API 聚合中转平台（非官方），共享 Key 有配额限制。
     "jev":         {"label": "Jev TypeSafe", "base_url": "https://ai.xiaohaima-edu.com",
                     "model": "jev-latest", "host": "ai.xiaohaima-edu.com", "group": "国内",
                     "protocol": "systemone"},
@@ -1185,11 +1182,6 @@ PROVIDER_DEFAULTS = {
                     "model": "grok-3-mini", "host": "api.x.ai", "group": "海外"},
     "mistral":     {"label": "Mistral",    "base_url": "https://api.mistral.ai/v1",
                     "model": "mistral-large-latest", "host": "api.mistral.ai", "group": "海外"},
-    # Jev 官方端点（TypeSafe AI，typesafe.ai）：协议与 jev 相同，Key 不通用。
-    # 本机 IPv6 直连可达（AAAA: 2606:4700::6812:192e，2026-10-18 实测），无需中继。
-    "jev-official": {"label": "Jev TypeSafe（官方）", "base_url": "https://api.typesafe.ai",
-                     "model": "jev-latest", "host": "api.typesafe.ai", "group": "海外",
-                     "protocol": "systemone"},
     "groq":        {"label": "Groq",       "base_url": "https://api.groq.com/openai/v1",
                     "model": "llama-3.3-70b-versatile", "host": "api.groq.com", "group": "海外"},
     # ---- 本地 / 自建（host 带端口，探测按实际端口而不是 443）----
