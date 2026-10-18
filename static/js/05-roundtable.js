@@ -1116,6 +1116,12 @@ function rtRenderSettings() {
       : `<span class="rt-reach bad" title="本机直连不可达（该域名无 IPv6 记录，本服务器只有 IPv6 出口）。调用时会自动经中继（relay.kapibala.icu）转发，通常不影响使用。">不可达</span>`;
   };
 
+  // TypeSafe 判断协议徽标（Jev）：只输出概率不生成正文，能力边界与 chat 协议不同
+  const protoTag = (m) => {
+    if (!m || m.protocol !== "systemone") return "";
+    return `<span class="rt-reach ok" style="color:var(--accent,#2563eb)" title="TypeSafe 判断协议（/v1/systemone）：只输出结构化判断概率（如资讯重要度），不生成自然语言。可用于资讯 AI 评分；不能作为圆桌席位、不能生成市场概要。">判断协议</span>`;
+  };
+
   const rowHtml = (p, m) => {
     m = m || {};
     const c = cur[p] || m;
@@ -1126,6 +1132,7 @@ function rtRenderSettings() {
     <div class="rt-settings-row${open ? " open" : ""}" data-provider="${p}">
       <div class="row rt-prov-head">
         <span class="rt-prov-name" title="${escapeHtml(p)}">${escapeHtml(m.label || p)}${custom ? ` <span class="muted">自定义</span>` : ""}</span>
+        ${protoTag(m)}
         ${reachTag(m)}
         <span class="rt-prov-state${configured ? " on" : ""}">${configured ? "已配置" : "未配置"}</span>
         <span class="rt-prov-url muted" title="${escapeHtml(c.base_url || m.base_url || "")}">${escapeHtml(c.base_url || m.base_url || "")}</span>
@@ -1166,6 +1173,23 @@ function rtRenderSettings() {
       <button class="btn-mini ghost" id="rt-add-provider-toggle">＋ 自定义服务商</button>
     </div>`;
 
+  // 资讯 AI 服务商选择（与圆桌席位独立）：资讯评分/市场概要用。
+  // Jev（判断协议）只做评分更便宜；市场概要需生成式模型，切到 Jev 后该功能会明确报错。
+  const newsProv = (rtState.settings && rtState.settings.news_llm_provider) || "deepseek";
+  const newsProvOpts = Object.keys(provs).map(p => {
+    const m = provs[p] || {};
+    const conf = (cur[p] || {}).configured;
+    const proto = m.protocol === "systemone" ? "（判断协议·仅评分）" : "";
+    return `<option value="${escapeHtml(p)}"${p === newsProv ? " selected" : ""}${conf ? "" : " disabled"}>${escapeHtml(m.label || p)}${conf ? "" : "（未配置）"}${proto}</option>`;
+  }).join("");
+  const newsProvBar = `
+    <div class="rt-settings-bar">
+      <span class="rt-inline-note">资讯 AI 服务商（资讯评分 / 市场概要用，与圆桌席位独立）：</span>
+      <select id="rt-news-provider-sel" class="mini-select" style="max-width:220px">${newsProvOpts}</select>
+      <button class="btn-mini" id="rt-news-provider-save">切换</button>
+      <span class="rt-inline-note muted">当前：${escapeHtml((provs[newsProv] || {}).label || newsProv)}${newsProv === "jev" ? " · 仅支持评分，市场概要需切回生成式服务商" : ""}</span>
+    </div>`;
+
   const health = rtHealthHtml();
 
   const addRow = `
@@ -1178,8 +1202,25 @@ function rtRenderSettings() {
       </div>
     </div>`;
 
-  body.innerHTML = bar + health + addRow + rows +
+  body.innerHTML = bar + newsProvBar + health + addRow + rows +
     `<p class="rt-inline-note">「可达」= 本服务器能否直连该 base_url 的主机端口。本机只有 IPv6 出口，标「不可达」的服务商（如 DeepSeek / Moonshot，无 IPv6 记录）调用时会自动经中继（relay.kapibala.icu）转发，无需手动切换。<br>模型名各厂商改版较快，可直接在展开行里改成当前可用的型号；任何 OpenAI 兼容服务都可用上方「＋ 自定义服务商」接入（填名称 + base_url + model）。</p>`;
+
+  // 资讯 AI 服务商切换
+  const npSave = body.querySelector("#rt-news-provider-save");
+  if (npSave) npSave.onclick = async () => {
+    const sel = body.querySelector("#rt-news-provider-sel");
+    const provider = sel.value;
+    npSave.disabled = true;
+    try {
+      await API("POST", "/api/roundtable/news-provider", { provider });
+      showToast("已切换资讯 AI 服务商：" + provider);
+      rtReloadSettings();
+    } catch (err) {
+      showToast("切换失败：" + err.message);
+    } finally {
+      npSave.disabled = false;
+    }
+  };
 
   // 折叠 / 展开（重渲染而非就地显隐：折叠态统一由 rtProvOpen 决定，避免有输入值时状态错位）
   body.querySelectorAll("[data-toggle-prov]").forEach(b => b.onclick = () => {

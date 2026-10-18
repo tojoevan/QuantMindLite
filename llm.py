@@ -16,6 +16,9 @@ reasoning_content 与正文**共享 max_tokens**。长提示词下思考会发�
   - reasoning_effort：部分厂商支持，可压低思考量（未全覆盖验证）；
   - 自动兜底：思考未关却超预算时，自动降级重试一次（关思考），防呆不依赖配置。
     兜底成功会打 warning，调用方从 stats["thinking_fallback"] 得知。
+
+TypeSafe 判断协议（2026-10-18）：systemone_judge() 走 /v1/systemone
+（小海马 Jev），只输出结构化判断概率（~20 tokens/次），不生成自然语言。
 """
 import json
 import logging
@@ -185,3 +188,106 @@ def chat_complete(base_url: str, api_key: str, model: str, messages: list,
             time.sleep(1.5 * (attempt + 1))
     _finish(False, str(last_err))
     raise last_err if last_err else RuntimeError("LLM 调用失败")
+
+
+def systemone_judge(base_url: str, api_key: str, model: str, state: str,
+                    questions: dict, timeout: int = 60, retries: int = 1,
+                    via_relay: str = "", relay_key: str = "",
+                    stats: dict = None) -> dict:
+    """TypeSafe 结构化判断（/v1/systemone 协议，小海马 Jev，非 chat completions）。
+
+    questions: {问题 key: instructions 字符串}，如
+        {"importance": "这条资讯对A股投资者是否重要？"}。
+    返回 {问题 key: 0~1 概率 float}。失败抛 RuntimeError。
+
+    与 chat_complete 的分工：本协议只做判断（输出 20 tokens 级的概率），
+    不生成自然语言——reason/tags 等生成物由调用方本地规则补齐（见 newsai）。
+    stats：可选出参 dict，回填 ok/prompt_tokens/completion_tokens/duration_ms/
+        via_relay/error（键位与 chat_complete 对齐，便于统一落库）。
+    本机实测：ai.xiaohaima-edu.com 有 AAAA 可直连；via_relay 分支仅为协议一致性保留。
+    """
+    t0 = time.time()
+    if stats is None:
+        stats = {}
+    stats.setdefault("model", model)
+    stats.setdefault("via_relay", 1 if via_relay else 0)
+    stats["thinking"] = "n/a"
+
+    def _finish(ok: bool, err: str = ""):
+        stats["ok"] = 1 if ok else 0
+        if err:
+            stats["error"] = err[:500]
+        stats["duration_ms"] = int((time.time() - t0) * 1000)
+        log.info("systemone model=%s ok=%s dur=%sms relay=%s err=%s",
+                 model, ok, stats["duration_ms"], stats["via_relay"], err[:120])
+
+    url = base_url.rstrip("/") + "/v1/systemone"
+    payload = {
+        "state": state,
+        "model": model,
+        "questions": {k: {"type": "noul", "instructions": str(v)}
+                      for k, v in (questions or {}).items()},
+    }
+    if not payload["questions"]:
+        raise RuntimeError("systemone 调用缺少 questions")
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + (api_key or ""),
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36",
+    }
+    if via_relay:
+        url = via_relay.rstrip("/") + "/post?url=" + urllib.parse.quote(url, safe="")
+        headers["x-relay-key"] = relay_key or ""
+
+    def _post(verify: bool) -> dict:
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx(verify)) as resp:
+            j = json.loads(resp.read().decode("utf-8", "ignore"))
+        answers = j.get("answers") or {}
+        if not answers:
+            err = j.get("error") or {}
+            raise RuntimeError(f"systemone 返回无 answers：{err.get('message') or str(j)[:200]}")
+        usage = j.get("usage") or {}
+        stats["prompt_tokens"] = usage.get("input_tokens") or 0
+        stats["completion_tokens"] = usage.get("output_tokens") or 0
+        out = {}
+        for k, v in answers.items():
+            if isinstance(v, dict) and v.get("noul") is not None:
+                try:
+                    out[k] = float(v["noul"])
+                except (TypeError, ValueError):
+                    raise RuntimeError(f"systemone 答案 {k} 的概率无法解析：{v}")
+            else:
+                raise RuntimeError(f"systemone 答案 {k} 形态异常：{v}")
+        return out
+
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            result = _post(verify=True)
+            _finish(True)
+            return result
+        except ssl.SSLError:
+            try:
+                result = _post(verify=False)
+                _finish(True)
+                return result
+            except Exception as e:
+                last_err = e
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "ignore")[:300]
+            except Exception:
+                pass
+            if 400 <= e.code < 500 and e.code != 429:
+                _finish(False, f"LLM HTTP {e.code}: {body}")
+                raise RuntimeError(f"LLM HTTP {e.code}: {body}")
+            last_err = RuntimeError(f"LLM HTTP {e.code}: {body}")
+        except Exception as e:
+            last_err = e
+        if attempt < retries:
+            time.sleep(1.5 * (attempt + 1))
+    _finish(False, str(last_err))
+    raise last_err if last_err else RuntimeError("systemone 调用失败")

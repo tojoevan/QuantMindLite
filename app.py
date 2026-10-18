@@ -1164,6 +1164,13 @@ PROVIDER_DEFAULTS = {
                     "model": "yi-lightning", "host": "api.lingyiwanwu.com", "group": "国内"},
     "baichuan":    {"label": "百川智能",   "base_url": "https://api.baichuan-ai.com/v1",
                     "model": "Baichuan4-Turbo", "host": "api.baichuan-ai.com", "group": "国内"},
+    # TypeSafe 结构化判断（非 chat completions 协议，走 llm.systemone_judge）：
+    # 只输出判断概率（~20 tokens/次），不生成自然语言。用于资讯重要度初筛等
+    # 纯判断场景；市场概要等生成任务切到它会明确报错（见 newsai.build_digest）。
+    # ⚠️ ai.xiaohaima-edu.com 是 Sub2API 聚合中转平台（非官方），共享 Key 有配额限制。
+    "jev":         {"label": "Jev TypeSafe", "base_url": "https://ai.xiaohaima-edu.com",
+                    "model": "jev-latest", "host": "ai.xiaohaima-edu.com", "group": "国内",
+                    "protocol": "systemone"},
     # ---- 海外 ----
     "openai":      {"label": "OpenAI",     "base_url": "https://api.openai.com/v1",
                     "model": "gpt-4o-mini", "host": "api.openai.com", "group": "海外"},
@@ -1466,11 +1473,30 @@ def _get_llm_conf(db, provider: str) -> dict:
         "api_key": rows.get(f"llm.{provider}.api_key") or "",
         "base_url": rows.get(f"llm.{provider}.base_url") or dflt.get("base_url", ""),
         "model": rows.get(f"llm.{provider}.model") or "",
+        # 协议：openai（默认，/chat/completions）或 systemone（/v1/systemone，
+        # TypeSafe 判断，仅 jev 内置）。自定义服务商按 openai 处理。
+        "protocol": dflt.get("protocol", "openai"),
     }
 
 
 # 资讯 AI 加工（评分 / 市场概要）用的服务商：默认 deepseek，可在设置里覆盖。
 NEWS_LLM_PROVIDER_KEY = "news.llm_provider"
+
+
+def _check_seat_provider(db, provider: str):
+    """圆桌席位的服务商校验：systemone 协议（Jev）不能做席位——它只输出判断
+    概率、不生成观点正文。放在保存入口挡掉，而不是等生成时才报错。
+    """
+    p = (provider or "").strip()
+    if not p:
+        return
+    if (PROVIDER_DEFAULTS.get(p) or {}).get("protocol") == "systemone":
+        raise HTTPException(
+            400, f"服务商「{p}」是 TypeSafe 判断协议（/v1/systemone），只能做资讯评分等"
+                 f"结构化判断、不能生成观点正文。圆桌席位请选其他服务商；"
+                 f"资讯 AI 服务商可在「AI 设置」顶部单独切换。")
+    if p not in PROVIDER_DEFAULTS and not _get_llm_conf(db, p).get("base_url"):
+        raise HTTPException(400, f"未知服务商「{p}」：请先在「AI 设置」添加自定义服务商")
 
 
 def news_llm_conf(db) -> dict:
@@ -1695,6 +1721,7 @@ def rt_create_seat(body: RoundtableSeatCreate, u: User = Depends(get_current_use
         raise HTTPException(403, "forbidden")
     if body.mode not in RT_MODES:
         raise HTTPException(400, RT_MODE_HINT)
+    _check_seat_provider(db, body.provider or "deepseek")
     style_id = _check_style_ref(db, body.style_id)
     max_sort = db.query(RoundtableSeat.sort).order_by(RoundtableSeat.sort.desc()).first()
     s = RoundtableSeat(name=body.name.strip() or "新席位", persona=body.persona,
@@ -1714,6 +1741,8 @@ def rt_update_seat(sid: int, body: RoundtableSeatUpdate, u: User = Depends(get_c
     s = db.get(RoundtableSeat, sid)
     if not s:
         raise HTTPException(404, "席位不存在")
+    if body.provider is not None:
+        _check_seat_provider(db, body.provider)
     # style_id 单独处理：允许「改回自定义」（传 0 或负数即清除引用），
     # 不能用通用的 `is not None` 判断——那样前端就没法把席位切回自定义了。
     if body.style_id is not None:
@@ -2035,8 +2064,32 @@ def rt_get_settings(u: User = Depends(get_current_user), db: Session = Depends(g
             "model": conf["model"] or dflt.get("model", ""),
             "host": _host_of(conf["base_url"]) or (dflt.get("host") or ""),
             "reachable": reach.get(n, False),
+            "protocol": conf.get("protocol", "openai"),
         }
-    return {"providers": providers, "groups": PROVIDER_GROUPS + [CUSTOM_GROUP]}
+    return {"providers": providers, "groups": PROVIDER_GROUPS + [CUSTOM_GROUP],
+            "news_llm_provider": (newsfetch.get_setting(db, NEWS_LLM_PROVIDER_KEY) or "deepseek")}
+
+
+@app.post("/api/roundtable/news-provider")
+def rt_set_news_provider(body: dict, u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """设置「资讯 AI 服务商」（评分/概要用）：写入 Setting news.llm_provider。
+
+    与圆桌席位服务商独立——资讯侧可用 Jev（TypeSafe 判断）省钱，圆桌仍用生成式。
+    校验：服务商必须已知且已配 Key（没配 Key 切过去，定时任务只会天天报错）。
+    """
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    provider = (body.get("provider") or "").strip()
+    if not provider:
+        raise HTTPException(400, "provider 不能为空")
+    if provider not in _known_providers(db):
+        raise HTTPException(400, f"未知服务商「{provider}」")
+    conf = _get_llm_conf(db, provider)
+    if not conf.get("api_key"):
+        raise HTTPException(400, f"服务商「{provider}」未配置 API Key，请先在同一面板填写")
+    newsfetch.put_setting(db, NEWS_LLM_PROVIDER_KEY, provider)
+    db.commit()
+    return {"ok": True, "news_llm_provider": provider}
 
 
 @app.get("/api/roundtable/llm-stats")
@@ -3078,8 +3131,9 @@ def news_score(body: Optional[NewsScoreReq] = None,
     conf = news_llm_conf(db)
     limit = (body.limit if body else None) or 40
     stats = newsai.score_items(db, conf, limit=limit, log=logger.info)
+    unit = "条" if conf.get("protocol") == "systemone" else "块"
     stats["message"] = (f"加工 {stats['scored']} 条（选中 {stats['picked']} 条，"
-                        f"{stats['failed']} 块失败）")
+                        f"{stats['failed']} {unit}失败）")
     return stats
 
 

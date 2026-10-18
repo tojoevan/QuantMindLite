@@ -45,6 +45,16 @@ DIGEST_REVIEW = True        # 生成后同一把 Key 再调一次做审稿（交
                             # provider）；审阅失败/解析失败一律降级用原稿，不阻塞发布
 SUMMARY_SNIP = 150          # 送评分时摘要截断长度（原文可能几千字，烧 token）
 
+# TypeSafe 判断协议（Jev /v1/systemone，2026-10-18）：逐条判断重要度概率，
+# 概率→1-5 分映射；reason/tags/codes 由本地规则补（该协议不生成自然语言）。
+# 成本对比（40 条/天）：DeepSeek 批量评分 ≈ in 14000 + out 2400；
+# Jev 逐条 ≈ in 16000 + out 800（out 便宜一个量级，但 in 不省——省在输出侧）。
+SYSTEMONE_IMPORTANCE_Q = (
+    "这条资讯对A股投资者是否重要？重要=影响市场整体或多数板块的重大政策/事件，"
+    "或与具体行业、个股直接相关的重要消息；不重要=关联度低或与投资无关。"
+)
+SYSTEMONE_SCORE_MAP = [(0.85, 5), (0.65, 4), (0.45, 3), (0.25, 2)]  # 低于 0.25 → 1 分
+
 SCORE_SYSTEM = (
     "你是严谨的A股投研资讯分析助手。你的任务是把一批资讯条目结构化："
     "评估其对 A 股市场 / 投资者决策的重要度，提取关联标的代码，并识别多源同题报道。"
@@ -310,6 +320,10 @@ def score_items(db, conf: dict, limit: int = 60, days: int = SCORE_WINDOW_DAYS,
     if not rows:
         return {"picked": 0, "scored": 0, "chunks": 0, "failed": 0, "dry_run": dry_run}
 
+    # TypeSafe 判断协议（Jev）：逐条判断，本地规则补 tags/codes（见函数内注释）
+    if conf.get("protocol") == "systemone":
+        return _score_items_systemone(db, conf, rows, dry_run=dry_run, log=log)
+
     payload = [{
         "id": r.id, "title": r.title or "", "summary": r.summary or "",
         "source": r.source_name or "", "time": _fmt_cn(r.published_at),
@@ -362,6 +376,92 @@ def score_items(db, conf: dict, limit: int = 60, days: int = SCORE_WINDOW_DAYS,
 
 
 # ---------------- 2) 注入选条 + 提示词块 ----------------
+def _score_items_systemone(db, conf: dict, rows: list,
+                           dry_run: bool = False, log=print) -> dict:
+    """TypeSafe 协议（Jev）逐条评分。与 chat 路径的差异：
+
+    - 无批量：每条一次 systemone 调用（该协议单 state 单次，questions 是固定 key）；
+    - 只判断重要度：reason 用「概率 + 本地命中」的模板话术，不生成自然语言；
+    - tags/codes 全本地：codes 走 profile_hits（持仓行业关键词），tags 取命中行业的标签；
+    - dup_of 跳过：逐条模式无法做两两同题比对（chat 路径的批量 JSON 才有这个信息）；
+    - 单条失败不影响其他条（per-item try），4 路并发（单次 ~1s，串行 40 条要 40s+）。
+    """
+    from llm import systemone_judge
+    from concurrent.futures import ThreadPoolExecutor
+
+    stats = {"picked": len(rows), "scored": 0, "chunks": 1, "failed": 0, "dry_run": dry_run}
+    profiles = load_fund_profiles()
+    model = conf.get("model") or ""
+    if not model:
+        raise RuntimeError("未指定 model：请在「AI 设置」为该服务商填写模型名"
+                           "（Jev 默认 jev-latest）")
+
+    def _one(r):
+        state = (f"标题：{r.title or ''}\n来源：{r.source_name or ''}"
+                 f"\n摘要：{_clip(r.summary or '', SUMMARY_SNIP)}")
+        st = {}
+        probs = systemone_judge(
+            conf["base_url"], conf["api_key"], model, state,
+            {"importance": SYSTEMONE_IMPORTANCE_Q}, timeout=60,
+            via_relay=conf.get("via_relay") or "",
+            relay_key=conf.get("relay_key") or "", stats=st)
+        prob = float(probs.get("importance") or 0.0)
+        score = 1
+        for th, s in SYSTEMONE_SCORE_MAP:
+            if prob >= th:
+                score = s
+                break
+        text = f"{r.title or ''} {r.summary or ''}"
+        codes = sorted(profile_hits(text, profiles))
+        tags = []
+        for c in codes:
+            ind = profile_industry(c, profiles)
+            if ind and ind not in tags:
+                tags.append(ind)
+        reason = f"AI 判断重要度 {prob:.2f}"
+        if codes:
+            reason += f"；关联持仓 {len(codes)} 只"
+        return {"id": r.id, "score": score, "reason": reason[:120],
+                "tags": tags[:4], "codes": codes, "dup_of": None, "prob": prob}
+
+    def _commit(p):
+        it = db.get(NewsItem, p["id"])
+        if it is None:
+            return 0
+        it.ai_score = p["score"]
+        it.ai_reason = p["reason"]
+        it.ai_tags = ",".join(p["tags"])
+        it.ai_codes = ",".join(p["codes"])
+        return 1
+
+    if dry_run:
+        for r in rows:
+            try:
+                p = _one(r)
+                log(f"  [dry-run] #{p['id']} {p['score']}分 prob={p['prob']:.2f} "
+                    f"tags={p['tags']} codes={p['codes']} {p['reason']}")
+                stats["scored"] += 1
+            except Exception as e:
+                stats["failed"] += 1
+                log(f"  FAIL #{r.id}：{e}")
+        return stats
+
+    results = []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(_one, r): r for r in rows}
+        for fut, r in futs.items():
+            try:
+                results.append(fut.result())
+            except Exception as e:
+                stats["failed"] += 1
+                log(f"  FAIL #{r.id} {_clip(r.title or '', 30)}：{e}")
+    n = 0
+    for p in results:
+        n += _commit(p)
+    db.commit()
+    stats["scored"] = n
+    log(f"  OK（TypeSafe 逐条）：{n} 条落库，{stats['failed']} 条失败")
+    return stats
 def last_inject_dates(db, item_ids) -> dict:
     """{item_id: 最近一次注入日期}。没有记录的不出现。"""
     if not item_ids:
@@ -679,6 +779,14 @@ def build_digest(db, conf: dict, date_s: str, holdings: list,
       5. 同 Key 二次审阅：过度推断/时点错误/素材遗漏/持仓覆盖/数字一致性六项校对
     """
     from llm import chat_complete
+
+    # TypeSafe 判断协议（Jev）只输出概率、不生成正文——市场概要是长文生成任务，
+    # 切到它会静默产出空内容。明确报错并指路，而不是让用户看到「点了没反应」。
+    if conf.get("protocol") == "systemone":
+        raise RuntimeError(
+            "市场概要需要生成式模型：当前资讯 AI 服务商是 TypeSafe 判断协议"
+            "（Jev，只输出结构化判断概率、不生成正文）。请到「AI 设置 → 资讯 AI "
+            "服务商」切回 deepseek 或自定义服务商；资讯评分可继续用 Jev 省钱。")
 
     items = select_digest_items(
         db, date_s, holding_codes=[h.get("code") or "" for h in (holdings or [])])
