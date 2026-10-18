@@ -79,9 +79,11 @@ document.getElementById("btn-theme").onclick = toggleTheme;
 async function renderUsers(flash) {
   if (!(me && me.is_admin)) { showAuth("login"); return; }
   document.getElementById("main").innerHTML = `
-    <div class="panel">
-      <h3>设置 <span class="muted">仅管理员可见</span></h3>
-      <div id="users-content"><span class="muted">加载中…</span></div>
+    <div class="page">
+      <div class="panel">
+        <h3>设置 <span class="muted">仅管理员可见</span></h3>
+        <div id="users-content"><span class="muted">加载中…</span></div>
+      </div>
     </div>`;
   try {
     const [reqs, users] = await Promise.all([
