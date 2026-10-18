@@ -3215,6 +3215,27 @@ NEWS_DEFAULT_FEEDS = [
         "title": "AIHOT 精选",
         "category": "AI 动态",
     },
+    # 财联社电报（RSSHub 公共实例，多实例容灾）—— 2026-10-19 实测可用
+    {
+        "url": "https://hub.slarker.me/cls/telegraph",
+        "backup_urls": "https://rsshub.liumingye.cn/cls/telegraph,https://rsshub.ktachibana.party/cls/telegraph,https://rsshub.cups.moe/cls/telegraph,https://rsshub-balancer.virworks.moe/cls/telegraph",
+        "title": "财联社电报",
+        "category": "财经",
+    },
+    # 财联社红色电报（重要快讯，RSSHub 公共实例，多实例容灾）—— 2026-10-19 实测可用
+    {
+        "url": "https://hub.slarker.me/cls/telegraph/red",
+        "backup_urls": "https://rsshub.liumingye.cn/cls/telegraph/red,https://rsshub.ktachibana.party/cls/telegraph/red,https://rsshub.cups.moe/cls/telegraph/red,https://rsshub-balancer.virworks.moe/cls/telegraph/red",
+        "title": "财联社红色电报",
+        "category": "财经",
+    },
+    # 澎湃新闻首页头条（RSSHub 公共实例，多实例容灾）—— 2026-10-19 实测可用
+    {
+        "url": "https://hub.slarker.me/thepaper/featured",
+        "backup_urls": "https://rsshub.liumingye.cn/thepaper/featured,https://rsshub.ktachibana.party/thepaper/featured,https://rsshub.cups.moe/thepaper/featured,https://rsshub-balancer.virworks.moe/thepaper/featured",
+        "title": "澎湃首页头条",
+        "category": "时政",
+    },
 ]
 
 # OPML 导入的体积上限。OPML 只是地址清单，正常几 KB；给 2 MB 足够覆盖超大订阅列表，

@@ -252,6 +252,7 @@ class NewsFeed(Base):
     id = Column(Integer, primary_key=True)
     title = Column(String(200), default="")             # 源名称（抓取后由 feed 自报覆盖）
     url = Column(String(600), nullable=False)           # Feed URL（唯一）
+    backup_urls = Column(Text, default="")               # 备用 URL（逗号分隔，多实例容灾；主 URL 失败时依次尝试）
     site_url = Column(String(600), default="")          # 站点主页
     category = Column(String(32), default="")           # 人工分类：AI 动态 / 科技 / 政策 …
     enabled = Column(Integer, default=1)                # 0 / 1

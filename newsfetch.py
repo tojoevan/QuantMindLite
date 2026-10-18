@@ -317,6 +317,21 @@ def _norm(title, link, guid, raw_desc, published, author, category) -> dict:
 
 
 # ---------------- 入库 ----------------
+def feed_urls(feed: NewsFeed) -> list:
+    """返回该源的候选 URL 列表（主 URL + 备用 URL）。
+
+    多实例容灾：RSSHub 公共实例可能单个失效，把同内容的不同实例 URL 放在
+    backup_urls（逗号分隔），主 URL 抓取失败时依次尝试备用，提高源可用性。
+    """
+    urls = [feed.url]
+    backups = (feed.backup_urls or "").split(",")
+    for b in backups:
+        b = b.strip()
+        if b and b not in urls:
+            urls.append(b)
+    return urls
+
+
 def refresh_feed(db, feed: NewsFeed, limit: int = 60, retries: int = 1) -> dict:
     """抓取单个源并入库。返回统计；异常不抛出，写进 last_error 后返回。
 
@@ -324,18 +339,32 @@ def refresh_feed(db, feed: NewsFeed, limit: int = 60, retries: int = 1) -> dict:
     rss_partener.xml 约 780KB，经中继稳定 14-25s，单次请求常撞读超时；
     读超时放宽到 30s 并重试一次，大概率就过。定时抓取每天跑，没必要因
     一次抖动就把源记成 error。
+
+    多实例容灾（2026-10-19）：主 URL（feed.url）失败后，依次尝试
+    feed.backup_urls 中的备用 URL；全部失败才记 error，并把最后一个错误
+    写入 last_error。成功时若用的是备用 URL，会在 last_error 里注明
+    「主源失败，备用 N 成功」便于排障（last_status 仍为 ok）。
     """
     conf = relay_conf(db)
     now = datetime.utcnow()
     raw, msg = None, ""
-    for attempt in range(retries + 1):
-        try:
-            raw = http_get(feed.url, conf, timeout=30)
+    used_url = feed.url
+    urls = feed_urls(feed)
+    for idx, url in enumerate(urls):
+        for attempt in range(retries + 1):
+            try:
+                raw = http_get(url, conf, timeout=30)
+                used_url = url
+                break
+            except Exception as e:
+                msg = f"{type(e).__name__}: {e}"[:400]
+                if attempt < retries:
+                    time.sleep(2)
+        if raw is not None:
             break
-        except Exception as e:
-            msg = f"{type(e).__name__}: {e}"[:400]
-            if attempt < retries:
-                time.sleep(2)
+        # 主 URL 失败，继续尝试备用 URL（每个备用 URL 也带 retries 重试）
+        if idx < len(urls) - 1:
+            msg = f"{msg}（主源失败，尝试备用 {idx + 1}）"[:400]
     if raw is None:
         feed.last_fetched = now
         feed.last_status = "error"
@@ -386,7 +415,11 @@ def refresh_feed(db, feed: NewsFeed, limit: int = 60, retries: int = 1) -> dict:
     feed.last_fetched = now
     if entries:
         feed.last_status = "ok"
-        feed.last_error = ""
+        # 多实例容灾：若主 URL 失败、备用 URL 成功，在 last_error 里留痕便于排障
+        if used_url != feed.url:
+            feed.last_error = f"主源失败，备用 URL 成功（{used_url}）"
+        else:
+            feed.last_error = ""
     else:
         # 解析成功但一条内容都没有 = **僵尸源**，不能记 ok。
         # 典型样本：新浪财经 RSS（rss.sina.com.cn/*）—— HTTP 200、Content-Type text/xml、

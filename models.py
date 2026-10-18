@@ -268,6 +268,7 @@ class NewsFeedCreate(BaseModel):
     url: str
     title: str = ""
     category: str = ""
+    backup_urls: str = ""
 
 
 class NewsOpmlIn(BaseModel):
@@ -286,12 +287,14 @@ class NewsFeedUpdate(BaseModel):
     category: Optional[str] = None
     enabled: Optional[int] = None
     sort: Optional[int] = None
+    backup_urls: Optional[str] = None
 
 
 class NewsFeedOut(BaseModel):
     id: int
     title: str = ""
     url: str = ""
+    backup_urls: str = ""
     site_url: str = ""
     category: str = ""
     enabled: int = 1
