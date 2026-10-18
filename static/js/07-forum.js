@@ -116,15 +116,12 @@ function fmRenderList() {
   main.querySelectorAll("[data-open]").forEach(el => {
     el.onclick = () => fmOpenThread(parseInt(el.getAttribute("data-open"), 10));
   });
-  main.querySelectorAll("[data-del-thread]").forEach(btn => {
-    btn.onclick = (ev) => { ev.stopPropagation(); fmDeleteThread(parseInt(btn.getAttribute("data-del-thread"), 10)); };
-  });
 }
 
+// 列表卡不再放「删除」——删主题只保留详情页头一个入口（2026-10-18 方案B），
+// 避免同一动作两个入口、且存档帖列表满屏删除按钮
 function fmThreadCard(t) {
   const agentTag = t.agent_count ? `<span class="fm-stat">Agent ${t.agent_count}</span>` : "";
-  const del = t.can_delete
-    ? `<button class="btn-mini ghost fm-del" data-del-thread="${t.id}">删除</button>` : "";
   return `
     <article class="fm-thread" data-open="${t.id}">
       <div class="fm-thread-title">${escapeHtml(t.title || "")}</div>
@@ -134,7 +131,6 @@ function fmThreadCard(t) {
         <span class="fm-stat">回复 ${t.reply_count || 0}</span>
         ${agentTag}
         <span class="fm-time">最近活跃 ${fmTime(t.updated_at || t.created_at)}</span>
-        <span class="fm-meta-actions">${del}</span>
       </div>
     </article>`;
 }
