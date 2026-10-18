@@ -48,7 +48,7 @@ async function renderNews() {
       <div class="page-head">
         <div>
           <h1>资讯工作台</h1>
-          <p class="page-sub">RSS 订阅 · AI 关键信息${newsIsAdmin() ? " · 每日 20:50 自动评分" : ""}</p>
+          <p class="page-sub">RSS 订阅 · AI 关键信息${newsIsAdmin() ? " · 每日 20:50 自动评分" : ""}<span id="news-last-fetched-sub"></span></p>
         </div>
         <div class="page-head-actions">
           ${newsIsAdmin() ? `<button class="btn primary sm" id="news-fetch">抓取最新</button>` : ``}
@@ -332,6 +332,10 @@ function newsPaintFoot() {
   if (s.feed_empties) parts.push(`<span class="news-foot-warn">${s.feed_empties} 个源无内容</span>`);
   if (!isGuest && s.relay_ready === false) parts.push(`<span class="news-foot-warn">中继未配置</span>`);
   foot.innerHTML = parts.join('<span class="nf-sep"></span>');
+
+  // 页头副标题同步显示最近抓取时间（复用同一份 stats）
+  const sub = document.getElementById("news-last-fetched-sub");
+  if (sub) sub.textContent = s.last_fetched ? " · 最近抓取 " + newsFmtAgo(s.last_fetched) : "";
 }
 
 // 后端给的是 UTC ISO（带 Z），这里换算成「x 分钟前」（北京时间）
