@@ -59,17 +59,23 @@ async function renderNews() {
       </div>
 
       <div class="news-filter panel" id="news-filter">
-        <div class="nf-row">
-          <span class="nf-ranges" id="news-ranges"></span>
-          <span class="nf-sep"></span>
-          <span class="nf-cats" id="news-cats"></span>
+        <div class="nf-head">
+          <span class="nf-title">筛选</span>
+          <span class="nf-summary" id="news-filter-summary"></span>
           <button class="nf-toggle" id="news-filter-toggle" type="button"
-            title="${newsState.filterOpen ? "收起筛选" : "展开筛选（搜索 / 只看收藏 / 只看相关）"}">${newsState.filterOpen ? "▾" : "▸"}</button>
+            title="${newsState.filterOpen ? "收起筛选" : "展开筛选（区间 / 分类 / 搜索 / 只看收藏 / 只看相关）"}">${newsState.filterOpen ? "▾" : "▸"}</button>
         </div>
-        <div class="nf-row nf-row-2">
-          <input id="news-q" class="nf-search" type="search" placeholder="搜索标题 / 摘要 / 来源…" />
-          ${isGuest ? "" : `<label class="nf-star"><input type="checkbox" id="news-starred" /> 只看收藏</label>`}
-          ${isGuest ? "" : `<label class="nf-star" title="只显示关联到我持仓标的的资讯"><input type="checkbox" id="news-related" /> 只看相关</label>`}
+        <div class="nf-body">
+          <div class="nf-row">
+            <span class="nf-ranges" id="news-ranges"></span>
+            <span class="nf-sep"></span>
+            <span class="nf-cats" id="news-cats"></span>
+          </div>
+          <div class="nf-row nf-row-2">
+            <input id="news-q" class="nf-search" type="search" placeholder="搜索标题 / 摘要 / 来源…" />
+            ${isGuest ? "" : `<label class="nf-star"><input type="checkbox" id="news-starred" /> 只看收藏</label>`}
+            ${isGuest ? "" : `<label class="nf-star" title="只显示关联到我持仓标的的资讯"><input type="checkbox" id="news-related" /> 只看相关</label>`}
+          </div>
         </div>
       </div>
 
@@ -100,17 +106,21 @@ async function renderNews() {
     clearTimeout(qt);
     qt = setTimeout(() => { newsState.q = qi.value.trim(); newsReload(); }, 300);
   };
-  // 筛选区折叠：默认折叠单行，点 chevron 展开/收起搜索与只看收藏/相关
+  // 筛选区折叠：默认整区折叠只留标题行，点 chevron 展开/收起全部筛选条件
   const ftoggle = document.getElementById("news-filter-toggle");
   const fpanel = document.getElementById("news-filter");
+  const fhead = fpanel.querySelector(".nf-head");
   if (newsState.filterOpen) fpanel.classList.add("open");
-  ftoggle.onclick = () => {
-    newsState.filterOpen = !newsState.filterOpen;
-    try { localStorage.setItem("newsFilterOpen", newsState.filterOpen ? "1" : "0"); } catch (_) {}
-    fpanel.classList.toggle("open", newsState.filterOpen);
-    ftoggle.textContent = newsState.filterOpen ? "▾" : "▸";
-    ftoggle.title = newsState.filterOpen ? "收起筛选" : "展开筛选（搜索 / 只看收藏 / 只看相关）";
+  // 整行标题可点（含 chevron）：点标题行任意位置展开/收起整个筛选区
+  const setFilterOpen = (open) => {
+    newsState.filterOpen = open;
+    try { localStorage.setItem("newsFilterOpen", open ? "1" : "0"); } catch (_) {}
+    fpanel.classList.toggle("open", open);
+    ftoggle.textContent = open ? "▾" : "▸";
+    ftoggle.title = open ? "收起筛选" : "展开筛选（区间 / 分类 / 搜索 / 只看收藏 / 只看相关）";
   };
+  fhead.onclick = () => setFilterOpen(!newsState.filterOpen);
+  ftoggle.onclick = (e) => { e.stopPropagation(); setFilterOpen(!newsState.filterOpen); };
   const st = document.getElementById("news-starred");
   if (st) st.onchange = (e) => { newsState.starred = e.target.checked; newsReload(); };
   const rl2 = document.getElementById("news-related");
@@ -170,6 +180,7 @@ async function newsReload(silent) {
   // 区间 chip 每次都要重画：只改 newsState.range 的话高亮会停在上一次的选择上
   newsPaintRanges();
   newsPaintCats();
+  newsPaintFilterSummary();
   newsPaintList();
   newsPaintFoot();
 }
@@ -183,6 +194,20 @@ function newsPaintCats() {
     `<button class="nf-chip ${newsState.category === c.name ? "on" : ""}" data-cat="${escapeHtml(c.name)}">` +
     `${escapeHtml(c.name)}<span class="nf-n">${c.count}</span></button>`
   ).join("");
+}
+
+// 折叠态标题行右侧的当前筛选摘要（如「近 7 天 · 财经 · 搜索: x」）
+function newsPaintFilterSummary() {
+  const box = document.getElementById("news-filter-summary");
+  if (!box) return;
+  const parts = [];
+  const rl = NEWS_RANGES.find(([k]) => k === newsState.range);
+  parts.push(rl ? rl[1] : newsState.range);
+  if (newsState.category) parts.push(newsState.category);
+  if (newsState.q) parts.push(`搜索: ${newsState.q}`);
+  if (newsState.starred) parts.push("只看收藏");
+  if (newsState.related) parts.push("只看相关");
+  box.textContent = parts.join(" · ");
 }
 
 function newsDayLabel(dateStr) {

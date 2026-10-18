@@ -904,9 +904,9 @@ th { color: var(--muted); font-weight: 600; }
 .news-page { max-width: 1080px; margin: 0 auto; }
 
 /* --- 筛选条 --- */
-.news-filter { padding: 10px 14px; margin-bottom: var(--sp-4); }
+.news-filter { padding: 8px 14px; margin-bottom: var(--sp-4); }
+.news-filter.open { padding: 10px 14px; }
 .nf-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
-.nf-row-2 { margin-top: 10px; }
 .nf-ranges, .nf-cats { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .nf-sep { display: inline-block; width: 1px; height: 16px; background: var(--border); }
 .nf-chip {
@@ -922,15 +922,22 @@ th { color: var(--muted); font-weight: 600; }
   display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm);
   color: var(--muted); white-space: nowrap; cursor: pointer;
 }
-/* 筛选区折叠：默认只显示第一行（区间+分类），右上角 chevron 展开/收起搜索行 */
+/* 筛选区折叠：默认整区折叠只留一行标题条（标题+当前筛选摘要+chevron），点击展开全部筛选条件 */
+.nf-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  font-size: var(--fs-sm); color: var(--muted); cursor: pointer; user-select: none;
+}
+.nf-title { font-weight: 600; color: var(--text-2); }
+.nf-summary { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nf-toggle {
-  margin-left: auto; padding: 2px 8px; font-size: 13px; line-height: 1;
+  padding: 2px 8px; font-size: 13px; line-height: 1;
   color: var(--muted); background: transparent; border: none; border-radius: var(--radius-sm);
   cursor: pointer; user-select: none;
 }
 .nf-toggle:hover { color: var(--text); background: var(--subtle-bg); }
-.news-filter .nf-row-2 { display: none; }        /* 默认折叠：搜索行隐藏 */
-.news-filter.open .nf-row-2 { display: flex; }   /* 展开：显示搜索行 */
+.news-filter .nf-body { display: none; }        /* 默认折叠：整个筛选区隐藏 */
+.news-filter.open .nf-body { display: block; }   /* 展开：显示全部筛选条件 */
+.news-filter .nf-body .nf-row-2 { margin-top: 10px; }
 
 /* --- 日期分组 --- */
 .news-day { margin-bottom: var(--sp-5); }
