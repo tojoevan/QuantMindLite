@@ -11,7 +11,7 @@
   <script>
     (function(){ try { if (localStorage.getItem('qw_theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch(e){} })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=81" />
+  <link rel="stylesheet" href="/style.css?v=82" />
   <script src="/vendor/echarts.min.js?v=27"></script>
   <script src="/vendor/marked.min.js?v=1"></script>
   <script src="/vendor/purify.min.js?v=1"></script>
@@ -77,6 +77,7 @@
           <option value="fund">场外基金</option>
           <option value="bond">债券（可转债 / 国债）</option>
         </select>
+        <input id="p-category" list="cat-suggestions" placeholder="分类标签（可选，如 军工 / 科技 / 医药）" autocomplete="off" />
         <div id="p-lookup" class="pm-lookup hidden"></div>
         <div id="p-hint" class="pm-hint muted"></div>
         <select id="p-bias">
@@ -93,6 +94,18 @@
         <textarea id="p-strategy" placeholder="策略说明(可选)"></textarea>
         <button type="submit">＋ 新建标的</button>
       </form>
+      <datalist id="cat-suggestions">
+        <option value="军工"></option><option value="科技"></option><option value="半导体"></option>
+        <option value="新能源"></option><option value="医药"></option><option value="医疗"></option>
+        <option value="消费"></option><option value="白酒"></option><option value="食品饮料"></option>
+        <option value="金融"></option><option value="银行"></option><option value="券商"></option>
+        <option value="保险"></option><option value="地产"></option><option value="有色"></option>
+        <option value="煤炭"></option><option value="钢铁"></option><option value="汽车"></option>
+        <option value="化工"></option><option value="农业"></option><option value="传媒"></option>
+        <option value="通信"></option><option value="计算机"></option><option value="电力"></option>
+        <option value="机械"></option><option value="建材"></option><option value="航运"></option>
+        <option value="石油"></option>
+      </datalist>
     </div>
   </div>
 
@@ -132,11 +145,11 @@
 
   <!-- 前端脚本按序加载（经典脚本，共享全局作用域）：由原 app.js 按顶层边界原样拆分 -->
   <script src="/js/01-core.js?v=62"></script>
-  <script src="/js/02-dashboard.js?v=60"></script>
+  <script src="/js/02-dashboard.js?v=61"></script>
   <script src="/js/03-auth.js?v=61"></script>
   <script src="/js/04-about-users.js?v=67"></script>
   <script src="/js/05-roundtable.js?v=79"></script>
-  <script src="/js/06-pages.js?v=63"></script>
+  <script src="/js/06-pages.js?v=65"></script>
   <script src="/js/07-forum.js?v=67"></script>
   <script src="/js/08-news.js?v=74"></script>
 </body>

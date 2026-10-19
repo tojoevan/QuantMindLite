@@ -184,7 +184,7 @@ def _proj_out(p):
         strategy=p.strategy or "", strategy_type=p.strategy_type,
         strategy_config=p.strategy_config, bias=p.bias or "neutral",
         position_shares=p.position_shares, position_cost=p.position_cost,
-        pinned=p.pinned or 0,
+        pinned=p.pinned or 0, category=p.category or "",
         created_at=p.created_at.isoformat() if p.created_at else None,
     )
 
@@ -249,6 +249,7 @@ def _build_overview(projects, db):
                if (last is not None and cost > 1e-9 and shares > 1e-9) else None)
         positions.append({
             "id": p.id, "name": p.name, "code": p.code, "market": p.market,
+            "category": p.category or "",
             "shares": round(shares, 4), "cost": round(cost, 4),
             "last_close": last, "last_date": mp.date if mp else None,
             "market_value": mv, "unrealized": up, "pct": pct, "realized": realized,
@@ -507,7 +508,7 @@ def update_project(pid: int, body: ProjectUpdate, u: User = Depends(get_current_
     p = _project_or_404(pid, u, db)
     for field in ("name", "code", "market", "strategy",
                   "strategy_type", "strategy_config", "bias",
-                  "position_shares", "position_cost", "pinned"):
+                  "position_shares", "position_cost", "pinned", "category"):
         v = getattr(body, field)
         if v is not None:
             if field == "strategy_config" and isinstance(v, dict):
@@ -522,7 +523,7 @@ def update_project(pid: int, body: ProjectUpdate, u: User = Depends(get_current_
         strategy=p.strategy or "", strategy_type=p.strategy_type,
         strategy_config=p.strategy_config, bias=p.bias or "neutral",
         position_shares=p.position_shares, position_cost=p.position_cost,
-        pinned=p.pinned or 0,
+        pinned=p.pinned or 0, category=p.category or "",
         created_at=p.created_at.isoformat() if p.created_at else None,
     )
 
@@ -540,7 +541,7 @@ def list_projects(u: User = Depends(get_current_user), db: Session = Depends(get
             strategy=p.strategy or "", strategy_type=p.strategy_type,
             strategy_config=p.strategy_config, bias=p.bias or "neutral",
             position_shares=p.position_shares, position_cost=p.position_cost,
-            pinned=p.pinned or 0,
+            pinned=p.pinned or 0, category=p.category or "",
             created_at=p.created_at.isoformat() if p.created_at else None,
         )
         for p in rows
@@ -555,7 +556,7 @@ def get_project(pid: int, u: User = Depends(get_current_user), db: Session = Dep
         strategy=p.strategy or "", strategy_type=p.strategy_type,
         strategy_config=p.strategy_config, bias=p.bias or "neutral",
         position_shares=p.position_shares, position_cost=p.position_cost,
-        pinned=p.pinned or 0,
+        pinned=p.pinned or 0, category=p.category or "",
         created_at=p.created_at.isoformat() if p.created_at else None,
     )
 
@@ -569,7 +570,7 @@ def create_project(body: ProjectCreate, u: User = Depends(get_current_user), db:
                 strategy=body.strategy, strategy_type=body.strategy_type,
                 strategy_config=cfg if cfg is not None else "{}", bias=body.bias,
                 position_shares=body.position_shares, position_cost=body.position_cost,
-                owner_id=u.id)
+                category=body.category, owner_id=u.id)
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -578,7 +579,7 @@ def create_project(body: ProjectCreate, u: User = Depends(get_current_user), db:
         strategy=p.strategy or "", strategy_type=p.strategy_type,
         strategy_config=p.strategy_config, bias=p.bias or "neutral",
         position_shares=p.position_shares, position_cost=p.position_cost,
-        pinned=p.pinned or 0,
+        pinned=p.pinned or 0, category=p.category or "",
         created_at=p.created_at.isoformat() if p.created_at else None,
     )
 
@@ -592,6 +593,75 @@ def delete_project(pid: int, u: User = Depends(get_current_user), db: Session = 
     db.delete(p)
     db.commit()
     return {"ok": True}
+
+
+# ---------------- 标的分类标签自动推断 ----------------
+# 优先级：① fund_profiles.json 行业画像（与资讯 AI 关联持仓用同一份数据）为主；
+#          ② 名称关键词兜底（覆盖未来新增、画像里没有的标的）。
+_CAT_KEYWORDS = [
+    ("半导体", ["半导体", "芯片", "集成电路", "晶圆", "封测", "cmos", "传感器", "ic"]),
+    ("军工", ["军工", "国防", "防务"]),
+    ("医药", ["医药", "医疗", "生物", "创新药", "cxo", "制药", "疫苗"]),
+    ("新能源", ["新能源", "光伏", "锂电", "储能", "碳中和", "风电", "氢能"]),
+    ("房地产", ["地产", "置业", "城发"]),
+    ("科技", ["科技", "信息", "软件", "计算机", "云计算", "人工智能", "tmt", "电子", "数据"]),
+    ("高端制造", ["制造", "工业", "机械", "机器人", "自动化", "机床", "装备"]),
+    ("债券", ["债券", "中短债", "美元债", "国债"]),
+    ("宽基", ["指数", "etf", "a500", "沪深300", "中证", "联接", "lof"]),
+    ("消费", ["消费", "内需", "食品", "酒", "乳", "零售"]),
+    ("金融", ["银行", "证券", "保险", "金融"]),
+    ("交运", ["航空", "机场", "高速", "航运", "铁路", "运输"]),
+    ("电力设备", ["电网", "特高压", "电力", "能源"]),
+    ("有色", ["有色", "铜", "铝", "黄金", "矿", "钢铁"]),
+    ("传媒", ["传媒", "文化", "影视", "游戏", "出版"]),
+    ("汽车", ["汽车", "整车"]),
+]
+
+
+def _auto_category(name: str, code: str, market: str, profiles: dict) -> str:
+    # 1) fund_profiles 行业画像（与资讯 AI 关联持仓同源）
+    if code:
+        cand = [code, code.upper(), code.lower()]
+        nc = newsai.norm_code(code)
+        if nc:
+            cand.append(nc)
+        for k in cand:
+            prof = profiles.get(k)
+            if prof and (prof.get("industry") or "").strip():
+                return prof["industry"].strip()
+    # 2) 名称关键词兜底
+    text = f"{(name or '')} {(code or '')}".lower()
+    for cat, kws in _CAT_KEYWORDS:
+        if any(kw in text for kw in kws):
+            return cat
+    return ""
+
+
+@app.post("/api/projects/auto-categorize")
+def auto_categorize(body: Optional[dict] = None,
+                    u: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    """批量自动补分类标签：取 fund_profiles.json 行业画像为主，未命中走名称关键词兜底。
+
+    默认只填空分类；overwrite=true 时覆盖刷新（与画像重新对齐）。
+    仅登录用户可操作，普通用户只处理自己的标的，管理员处理全部。
+    """
+    overwrite = bool((body or {}).get("overwrite", False))
+    profiles = newsai.load_fund_profiles()
+    q = db.query(Project)
+    if not u.is_admin:
+        q = q.filter(Project.owner_id == u.id)
+    rows = q.all()
+    updated = skipped = 0
+    for p in rows:
+        cat = _auto_category(p.name, p.code, p.market, profiles)
+        if cat and (overwrite or not (p.category or "").strip()):
+            p.category = cat
+            updated += 1
+        else:
+            skipped += 1
+    db.commit()
+    return {"updated": updated, "total": len(rows), "skipped": skipped}
 
 
 # ---------------- 标的检索（新建/编辑标的时自动带出名称与品种） ----------------

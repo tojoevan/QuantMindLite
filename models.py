@@ -13,6 +13,7 @@ class ProjectCreate(BaseModel):
     bias: str = "neutral"
     position_shares: float = 0.0
     position_cost: float = 0.0
+    category: str = ""
 
 
 class ProjectOut(BaseModel):
@@ -27,6 +28,7 @@ class ProjectOut(BaseModel):
     position_shares: float = 0.0
     position_cost: float = 0.0
     pinned: int = 0
+    category: str = ""
     created_at: Optional[str] = None
 
 
@@ -41,6 +43,7 @@ class ProjectUpdate(BaseModel):
     position_shares: Optional[float] = None
     position_cost: Optional[float] = None
     pinned: Optional[int] = None
+    category: Optional[str] = None
 
 
 class PricePoint(BaseModel):

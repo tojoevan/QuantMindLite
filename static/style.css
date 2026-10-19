@@ -725,6 +725,10 @@ th { color: var(--muted); font-weight: 600; }
   border-bottom: var(--bd-w) solid var(--border); white-space: nowrap;
 }
 .table th { color: var(--muted); font-weight: 600; }
+/* 可排序表头（交易仪表台「标的清单」） */
+.table th.sortable { cursor: pointer; user-select: none; }
+.table th.sortable:hover { color: var(--text); background: var(--accent-soft); }
+.table th.sortable.num { text-align: right; }
 
 /* —— 标签页 —— */
 .tabs { display: flex; gap: var(--sp-2); }
@@ -768,6 +772,27 @@ th { color: var(--muted); font-weight: 600; }
 }
 .tag.buy { color: var(--red); border-color: var(--red); background: rgba(248,81,73,.12); }
 .tag.sell { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+/* 标的分类标签（交易仪表台「标的清单」新列） */
+.cat-tag {
+  display: inline-block; padding: 1px 8px; border-radius: var(--radius-sm);
+  background: var(--accent-soft); color: var(--accent); font-size: 11px; white-space: nowrap;
+}
+/* 标的清单筛选条 */
+.dash-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.dash-filter .dash-search {
+  background: var(--input-bg); border: 1px solid var(--border); color: var(--text);
+  border-radius: 8px; padding: 6px 10px; font-size: 13px; min-width: 160px; flex: 1; max-width: 260px;
+}
+.dash-filter .dash-search:focus { outline: none; border-color: var(--accent); }
+.dash-filter #dash-pos-count { margin-left: auto; font-size: 12px; }
+/* 个股详情页内联分类编辑 */
+.cat-edit-row { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: 13px; }
+.cat-edit-row input {
+  background: var(--input-bg); border: 1px solid var(--border); color: var(--text);
+  border-radius: 8px; padding: 5px 9px; font-size: 13px; width: 170px;
+}
+.cat-edit-row input:focus { outline: none; border-color: var(--accent); }
 
 /* 空态 */
 .empty-state { text-align: center; padding: 34px var(--sp-4); }

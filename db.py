@@ -33,6 +33,7 @@ class Project(Base):
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # 项目归属用户（多用户隔离）
     last_fetch_date = Column(String(10), default="")           # 游客自动拉取行情的“当天已拉取”标记（每天限一次）
     pinned = Column(Integer, default=0)                        # 置顶：1 置顶（列表排序优先）
+    category = Column(String(32), default="")                  # 人工分类标签：军工 / 科技 / 医药 …
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -397,6 +398,7 @@ _for_add = {
     "owner_id": "ALTER TABLE projects ADD COLUMN owner_id INTEGER",
     "last_fetch_date": "ALTER TABLE projects ADD COLUMN last_fetch_date VARCHAR(10) DEFAULT ''",
     "pinned": "ALTER TABLE projects ADD COLUMN pinned INTEGER DEFAULT 0",
+    "category": "ALTER TABLE projects ADD COLUMN category VARCHAR(32) DEFAULT ''",
 }
 for _cname, _ddl in _for_add.items():
     if _cname not in _cols:

@@ -92,6 +92,11 @@ async function selectProject(id) {
     </div>
     <div class="panel">
       <h3>${p.name} <span class="muted">${p.code || ""} · ${escapeHtml(marketLabel(p.market))}</span></h3>
+      <div class="cat-edit-row">
+        <span class="muted">分类</span>
+        <span id="proj-cat-tag">${p.category ? `<span class="cat-tag">${escapeHtml(p.category)}</span>` : `<span class="muted">未设置</span>`}</span>
+        ${isGuest ? "" : `<input id="proj-category" list="cat-suggestions" value="${escapeHtml(p.category || "")}" placeholder="如 军工 / 科技" /><button class="btn-mini" id="btn-cat-save" type="button">保存</button>`}
+      </div>
       <div id="note-wrap"></div>
     </div>
     <div class="panel">
@@ -166,6 +171,17 @@ async function selectProject(id) {
     </div>
   `;
   document.getElementById("back-dash").onclick = () => showView("dashboard");
+  const catSave = document.getElementById("btn-cat-save");
+  if (catSave) catSave.onclick = async () => {
+    const v = (document.getElementById("proj-category").value || "").trim();
+    try {
+      await API("PATCH", `/api/projects/${id}`, { category: v });
+      const pp = projects.find(x => x.id === id); if (pp) pp.category = v;
+      const tag = document.getElementById("proj-cat-tag");
+      if (tag) tag.innerHTML = v ? `<span class="cat-tag">${escapeHtml(v)}</span>` : `<span class="muted">未设置</span>`;
+      showToast("分类已更新");
+    } catch (err) { showToast("保存失败：" + err.message); }
+  };
   document.getElementById("btn-predict").onclick = generateSuggestion;
   document.getElementById("price-form").onsubmit = addPrice;
   document.getElementById("btn-fetch").onclick = fetchMarket;
@@ -712,7 +728,8 @@ document.getElementById("project-form").onsubmit = async (e) => {
       market: document.getElementById("p-market").value,
       bias: document.getElementById("p-bias").value,
       strategy_type: document.getElementById("p-strategy-type").value,
-      strategy: document.getElementById("p-strategy").value
+      strategy: document.getElementById("p-strategy").value,
+      category: document.getElementById("p-category").value.trim()
     });
   } catch (err) {
     showToast("新建失败：" + err.message);

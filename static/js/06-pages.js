@@ -142,6 +142,128 @@ function fmtNum(v, d) {
 function signCls(v) { return (v == null || v === 0) ? "muted" : (v > 0 ? "pos" : "neg"); }
 function signPct(v) { return v == null ? "—" : (v > 0 ? "+" : "") + v + "%"; }
 
+// 置顶查询（pinned 在 /api/projects 上，overview 的 positions 不含该字段）
+function pinOf(id) {
+  const x = (projects || []).find(v => v.id === id);
+  return x ? (x.pinned || 0) : 0;
+}
+
+// ===== 交易仪表台「标的清单」筛选 / 排序状态（跨刷新保留，刷新后按原条件重排）=====
+let dashAllPositions = [];     // 全量标的（含分类），来自 overview.positions
+let dashCatFilter = "";        // 按分类过滤（"" = 全部）
+let dashSearch = "";           // 名称 / 代码关键字
+let dashSortKey = "";          // 排序字段（"" = 默认，按置顶优先）
+let dashSortDir = 1;           // 1 升序 / -1 降序
+
+function dashTh(key, label, num) {
+  const arrow = dashSortKey === key ? (dashSortDir > 0 ? " ▲" : " ▼") : "";
+  return `<th data-sort="${key}" data-label="${label}" class="sortable${num ? " num" : ""}">${label}${arrow}</th>`;
+}
+
+function dashPaintHeaders(tbl) {
+  if (!tbl) return;
+  tbl.querySelectorAll("th.sortable").forEach(x => {
+    const base = x.getAttribute("data-label") || x.textContent;
+    x.textContent = base + (dashSortKey === x.getAttribute("data-sort")
+      ? (dashSortDir > 0 ? " ▲" : " ▼") : "");
+  });
+}
+
+// 按当前筛选/排序条件重算并填充标的清单 tbody（同时重绑行点击 / 置顶按钮）
+function dashRenderPosBody() {
+  const tbl = document.getElementById("dash-pos");
+  if (!tbl) return;
+  const tb = tbl.querySelector("tbody");
+  const rows = dashAllPositions.filter(p => {
+    if (dashCatFilter && (p.category || "") !== dashCatFilter) return false;
+    if (dashSearch) {
+      const q = dashSearch.toLowerCase();
+      if (!((p.name || "").toLowerCase().includes(q) || (p.code || "").toLowerCase().includes(q))) return false;
+    }
+    return true;
+  });
+  if (dashSortKey) {
+    const k = dashSortKey, dir = dashSortDir;
+    rows.sort((a, b) => {
+      const pa = pinOf(a.id), pb = pinOf(b.id);
+      if (pa !== pb) return pb - pa;                       // 置顶始终在前
+      let va = a[k], vb = b[k];
+      if (typeof va === "string") { va = (va || "").toLowerCase(); vb = (vb || "").toLowerCase(); }
+      if (va == null) va = (typeof vb === "number") ? -Infinity : "";
+      if (vb == null) vb = (typeof va === "number") ? Infinity : "";
+      return (va < vb ? -1 : va > vb ? 1 : 0) * dir;
+    });
+  } else {
+    rows.sort((a, b) => pinOf(b.id) - pinOf(a.id));        // 默认：置顶优先
+  }
+  tb.innerHTML = rows.map(p => `
+    <tr data-open="${p.id}" class="rowlink" title="查看 ${escapeHtml(p.name || "")} 详情">
+      <td><b>${escapeHtml(p.name || "")}</b>${isGuest ? "" : `
+        <button class="pin-btn ${pinOf(p.id) ? "on" : ""}" type="button"
+          title="${pinOf(p.id) ? "取消置顶" : "置顶"}" data-pin="${p.id}">📌</button>`}</td>
+      <td>${p.category ? `<span class="cat-tag">${escapeHtml(p.category)}</span>` : `<span class="muted">—</span>`}</td>
+      <td class="muted">${p.code ? escapeHtml(p.code) + marketTag(p.market) : escapeHtml(marketLabel(p.market))}</td>
+      <td>${fmtNum(p.shares, 0)}</td>
+      <td>${fmtNum(p.cost, 2)}</td>
+      <td>${fmtNum(p.last_close, 2)}</td>
+      <td>${fmtMoney(p.market_value)}</td>
+      <td class="${signCls(p.unrealized)}">${fmtMoney(p.unrealized)}</td>
+      <td class="${signCls(p.pct)}">${signPct(p.pct)}</td>
+    </tr>`).join("") || `<tr><td colspan="9" class="muted">没有符合条件的标的</td></tr>`;
+  const cnt = document.getElementById("dash-pos-count");
+  if (cnt) cnt.textContent = `共 ${rows.length} / ${dashAllPositions.length} 条`;
+  tb.querySelectorAll("tr[data-open]").forEach(tr => {
+    tr.onclick = () => showView("project", parseInt(tr.getAttribute("data-open"), 10));
+  });
+  tb.querySelectorAll(".pin-btn").forEach(btn => {
+    btn.onclick = (e) => { e.stopPropagation(); togglePin(parseInt(btn.getAttribute("data-pin"), 10)); };
+  });
+}
+
+// 一键自动分类：取持仓行业画像为标的补分类标签（已分类默认不覆盖）
+async function dashAutoCat() {
+  if (!confirm("自动根据持仓行业画像为所有未分类标的补上分类标签？已分类的不会被覆盖。")) return;
+  const btn = document.getElementById("dash-autocat");
+  if (btn) { btn.disabled = true; btn.textContent = "分类中…"; }
+  try {
+    const r = await API("POST", "/api/projects/auto-categorize", {});
+    showToast(`已自动分类 ${r.updated} 个标的，跳过 ${r.skipped} 个`);
+    await renderDashboard();
+  } catch (e) {
+    showToast("自动分类失败：" + (e && e.message ? e.message : e));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "自动分类"; }
+  }
+}
+
+// 绑定筛选条与排序表头（仪表台整体重渲染后调用一次）
+function dashBindPosControls() {
+  const tbl = document.getElementById("dash-pos");
+  const catSel = document.getElementById("dash-cat-filter");
+  if (catSel) catSel.onchange = () => { dashCatFilter = catSel.value; dashRenderPosBody(); };
+  const search = document.getElementById("dash-search");
+  if (search) search.oninput = () => { dashSearch = search.value.trim(); dashRenderPosBody(); };
+  const reset = document.getElementById("dash-reset");
+  if (reset) reset.onclick = () => {
+    dashCatFilter = ""; dashSearch = ""; dashSortKey = ""; dashSortDir = 1;
+    if (catSel) catSel.value = "";
+    if (search) search.value = "";
+    dashPaintHeaders(tbl); dashRenderPosBody();
+  };
+  const autocat = document.getElementById("dash-autocat");
+  if (autocat) autocat.onclick = dashAutoCat;
+  if (!tbl) return;
+  tbl.querySelectorAll("th.sortable").forEach(th => {
+    th.onclick = () => {
+      const k = th.getAttribute("data-sort");
+      if (dashSortKey === k) dashSortDir = -dashSortDir;
+      else { dashSortKey = k; dashSortDir = 1; }
+      dashPaintHeaders(tbl);
+      dashRenderPosBody();
+    };
+  });
+}
+
 // ===== 交易仪表台 =====
 async function renderDashboard() {
   const main = document.getElementById("main");
@@ -175,21 +297,11 @@ async function renderDashboard() {
     </div>` : "";
 
   // 置顶项排前（pinned 在 /api/projects 上，overview 的 positions 不含该字段）
-  const pinOf = id => { const x = (projects || []).find(v => v.id === id); return x ? (x.pinned || 0) : 0; };
-  const posList = [...(d.positions || [])].sort((a, b) => pinOf(b.id) - pinOf(a.id));
-  const posRows = posList.map(p => `
-    <tr data-open="${p.id}" class="rowlink" title="查看 ${escapeHtml(p.name || "")} 详情">
-      <td><b>${escapeHtml(p.name || "")}</b>${isGuest ? "" : `
-        <button class="pin-btn ${pinOf(p.id) ? "on" : ""}" type="button"
-          title="${pinOf(p.id) ? "取消置顶" : "置顶"}" data-pin="${p.id}">📌</button>`}</td>
-      <td class="muted">${p.code ? escapeHtml(p.code) + marketTag(p.market) : escapeHtml(marketLabel(p.market))}</td>
-      <td>${fmtNum(p.shares, 0)}</td>
-      <td>${fmtNum(p.cost, 2)}</td>
-      <td>${fmtNum(p.last_close, 2)}</td>
-      <td>${fmtMoney(p.market_value)}</td>
-      <td class="${signCls(p.unrealized)}">${fmtMoney(p.unrealized)}</td>
-      <td class="${signCls(p.pct)}">${signPct(p.pct)}</td>
-    </tr>`).join("") || `<tr><td colspan="8" class="muted">暂无标的</td></tr>`;
+  const posList = [...(d.positions || [])];
+  dashAllPositions = posList;
+  // 分类去重（供筛选下拉用，保留原有顺序）
+  const uniqCats = [];
+  posList.forEach(p => { const c = p.category || ""; if (c && !uniqCats.includes(c)) uniqCats.push(c); });
 
   const tradeRows = (d.trades || []).map(x => {
     const label = x.action === "BUY" ? "买入" : (x.action === "SELL" ? "卖出" : "持有");
@@ -223,11 +335,31 @@ async function renderDashboard() {
       </div>
 
       <div class="panel">
-        <h3>标的清单 <span class="muted">含全部标的（未建仓显示 0）· 点击任意一行查看详情</span></h3>
+        <h3>标的清单 <span class="muted">点击任意一行查看详情</span></h3>
+        <div class="dash-filter">
+          <select id="dash-cat-filter" class="mini-select" title="按分类筛选">
+            <option value="">全部分类</option>
+            ${uniqCats.map(c => `<option value="${escapeHtml(c)}"${dashCatFilter === c ? " selected" : ""}>${escapeHtml(c)}</option>`).join("")}
+          </select>
+          <input id="dash-search" class="dash-search" placeholder="搜索名称 / 代码" value="${escapeHtml(dashSearch)}" />
+          <span class="muted" id="dash-pos-count"></span>
+          <button class="btn ghost sm" id="dash-reset" type="button">重置</button>
+          ${isGuest ? "" : `<button class="btn ghost sm" id="dash-autocat" type="button" title="根据持仓行业画像自动补分类标签">自动分类</button>`}
+        </div>
         <div class="table-wrap">
           <table class="table" id="dash-pos">
-            <thead><tr><th>标的</th><th>代码</th><th>持仓</th><th>成本</th><th>现价</th><th>市值</th><th>浮动盈亏</th><th>收益率</th></tr></thead>
-            <tbody>${posRows}</tbody>
+            <thead><tr>
+              ${dashTh("name", "标的")}
+              ${dashTh("category", "分类")}
+              ${dashTh("code", "代码")}
+              ${dashTh("shares", "持仓", 1)}
+              ${dashTh("cost", "成本", 1)}
+              ${dashTh("last_close", "现价", 1)}
+              ${dashTh("market_value", "市值", 1)}
+              ${dashTh("unrealized", "浮动盈亏", 1)}
+              ${dashTh("pct", "收益率", 1)}
+            </tr></thead>
+            <tbody></tbody>
           </table>
         </div>
       </div>
@@ -249,13 +381,8 @@ async function renderDashboard() {
   if (nw) nw.onclick = openProjectModal;          // 侧栏删除后，新建入口挪到仪表台页头
   const lg = document.getElementById("dash-login");
   if (lg) lg.onclick = exitGuestToLogin;
-  main.querySelectorAll("#dash-pos tbody tr[data-open]").forEach(tr => {
-    tr.onclick = () => showView("project", parseInt(tr.getAttribute("data-open"), 10));
-  });
-  // 置顶：阻止冒泡，避免连带触发行点击（进详情）
-  main.querySelectorAll("#dash-pos .pin-btn").forEach(btn => {
-    btn.onclick = (e) => { e.stopPropagation(); togglePin(parseInt(btn.getAttribute("data-pin"), 10)); };
-  });
+  dashBindPosControls();                          // 筛选 / 排序表头绑定
+  dashRenderPosBody();                            // 按当前筛选+排序填充表格
 }
 
 // ===== 论坛（P3 已落地，实现在 07-forum.js：列表 / 详情 / 发帖 / 回复）=====
