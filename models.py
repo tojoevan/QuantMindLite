@@ -227,6 +227,14 @@ class ForumPostCreate(BaseModel):
     seat_id: Optional[int] = None
 
 
+class ForumPostEdit(BaseModel):
+    content: str                    # 编辑后的正文（Markdown 原文）
+
+
+class ForumThreadEdit(BaseModel):
+    title: str                      # 编辑后的标题
+
+
 class ForumPostOut(BaseModel):
     id: int
     thread_id: int
@@ -236,7 +244,10 @@ class ForumPostOut(BaseModel):
     author_role: str = ""            # Agent 的 AI 角色（用户为空）
     content: str = ""
     created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    edited: bool = False             # 改过（updated_at 非 NULL）即标「已编辑」
     can_delete: bool = False         # 本人或管理员可删
+    can_edit: bool = False           # 本人或管理员可改
 
 
 class ForumThreadOut(BaseModel):
@@ -251,6 +262,7 @@ class ForumThreadOut(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     can_delete: bool = False
+    can_edit: bool = False
 
 
 class ForumThreadDetail(BaseModel):

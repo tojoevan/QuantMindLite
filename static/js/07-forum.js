@@ -171,6 +171,7 @@ function fmRenderDetail() {
   const t = d.thread;
   const posts = d.posts || [];
   const del = t.can_delete ? `<button class="btn ghost sm" id="fm-del-thread">删除主题</button>` : "";
+  const editTitle = t.can_edit ? `<button class="btn ghost sm" id="fm-edit-title">编辑标题</button>` : "";
 
   main.innerHTML = `
     <div class="page">
@@ -186,6 +187,7 @@ function fmRenderDetail() {
         </div>
         <div class="page-head-actions">
           <button class="btn ghost sm" id="fm-reload-detail">刷新</button>
+          ${editTitle}
           ${del}
         </div>
       </div>
@@ -206,6 +208,7 @@ function fmRenderDetail() {
   const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
   bind("fm-back", () => showView("forum"));   // 返回列表：URL 同步回 #/forum，浏览器可后退回本帖
   bind("fm-reload-detail", () => fmOpenThread(t.id));
+  bind("fm-edit-title", () => fmEditTitle(t));
   bind("fm-del-thread", () => fmDeleteThread(t.id));
   bind("fm-reply-send", fmSubmitReply);
 
@@ -218,6 +221,9 @@ function fmRenderDetail() {
   }
   main.querySelectorAll("[data-del-post]").forEach(btn => {
     btn.onclick = () => fmDeletePost(parseInt(btn.getAttribute("data-del-post"), 10));
+  });
+  main.querySelectorAll("[data-edit-post]").forEach(btn => {
+    btn.onclick = () => fmEditPost(parseInt(btn.getAttribute("data-edit-post"), 10));
   });
 }
 
@@ -232,13 +238,23 @@ function fmPostCard(p, i, prevKey, threadKey) {
   const sameAsPrev = i > 0 && key === prevKey;      // 与上一条同作者
   const del = p.can_delete && !isStarter
     ? `<button class="btn-mini ghost fm-del" data-del-post="${p.id}">删除</button>` : "";
+  // 编辑按钮：本人或管理员可见（can_edit 由后端按身份判定）；首帖（即主题正文）也可改，
+  // 与标题编辑互补——标题走页头入口，首帖正文走此处。
+  const edit = p.can_edit
+    ? `<button class="btn-mini ghost fm-edit" data-edit-post="${p.id}">编辑</button>` : "";
   const showAuthor = !isStarter && !sameAsPrev;
   const showTime = !isStarter;
-  const head = (showAuthor || showTime || del)
-    ? `<div class="fm-post-head">${showAuthor ? fmAuthorHtml(p) : ""}${showTime ? `<span class="fm-time">${fmTime(p.created_at)}</span>` : ""}<span class="fm-post-actions">${del}</span></div>`
+  const timeHtml = showTime
+    ? `<span class="fm-time">${fmTime(p.created_at)}${p.edited ? " · 已编辑" : ""}</span>` : "";
+  // 首帖复用页头作者/时间、不渲染时间行；但若被编辑过，仍需提示「已编辑」，
+  // 否则用户改了首帖正文却看不到任何已编辑痕迹。
+  const starterEditNote = isStarter && p.edited ? `<span class="fm-time">已编辑</span>` : "";
+  const showHead = showAuthor || showTime || del || edit || starterEditNote;
+  const head = showHead
+    ? `<div class="fm-post-head">${showAuthor ? fmAuthorHtml(p) : ""}${timeHtml}${starterEditNote}<span class="fm-post-actions">${del}${edit}</span></div>`
     : "";
   return `
-    <div class="fm-post">
+    <div class="fm-post" data-post="${p.id}">
       ${head}
       <div class="fm-post-body md-body">${mdRender(p.content || "")}</div>
     </div>`;
@@ -261,6 +277,87 @@ async function fmSubmitReply() {
     showToast("回复失败：" + e.message);
     if (btn) { btn.disabled = false; btn.textContent = label; }
   }
+}
+
+// ===== 编辑 =====
+// 内联编辑某条楼层：把渲染后的正文替换为 textarea（预填 Markdown 原文）+ 保存/取消。
+// 仅本人或管理员可见「编辑」按钮（can_edit 由后端判定）；保存后重新拉取渲染，
+// 顺带刷新「已编辑」标记与 updated_at，不依赖本地打补丁。
+function fmEditPost(pid) {
+  const p = (fmState.thread.posts || []).find(x => x.id === pid);
+  if (!p) return;
+  const card = document.querySelector(`.fm-post[data-post="${pid}"]`);
+  if (!card) return;
+  const body = card.querySelector(".fm-post-body");
+  if (!body || card.querySelector(".fm-edit-box")) return;
+  const box = document.createElement("div");
+  box.className = "fm-edit-box";
+  box.innerHTML = `
+    <textarea class="fm-edit-textarea" rows="8" placeholder="支持 Markdown">${escapeHtml(p.content || "")}</textarea>
+    <div class="fm-edit-actions">
+      <span class="muted">支持 Markdown</span>
+      <span>
+        <button class="btn-mini ghost" data-edit-cancel>取消</button>
+        <button class="btn-mini" data-edit-save>保存</button>
+      </span>
+    </div>`;
+  body.replaceWith(box);
+  box.querySelector("[data-edit-cancel]").onclick = () => fmOpenThread(fmState.thread.thread.id);
+  box.querySelector("[data-edit-save]").onclick = () => fmSavePostEdit(pid, box);
+  box.querySelector(".fm-edit-textarea").focus();
+}
+
+async function fmSavePostEdit(pid, box) {
+  const ta = box.querySelector(".fm-edit-textarea");
+  const content = (ta.value || "").trim();
+  if (!content) { showToast("内容不能为空"); ta.focus(); return; }
+  const saveBtn = box.querySelector("[data-edit-save]");
+  const label = saveBtn.textContent;
+  saveBtn.disabled = true; saveBtn.textContent = "保存中…";
+  try {
+    await API("PUT", `/api/forum/posts/${pid}`, { content });
+    showToast("已保存");
+    await fmOpenThread(fmState.thread.thread.id);  // 重新拉取渲染（含「已编辑」标记）
+  } catch (e) {
+    showToast("保存失败：" + e.message);
+    saveBtn.disabled = false; saveBtn.textContent = label;
+  }
+}
+
+// 内联编辑主题标题：页头 h1 替换为 input + 保存/取消；保存成功仅更新节点与内存，
+// 不整页重渲染（保留回复框草稿）。can_edit 由后端判定，仅主题作者或管理员可见。
+function fmEditTitle(t) {
+  const titleEl = document.querySelector(".fm-detail-title");
+  if (!titleEl || titleEl.querySelector("input")) return;
+  const cur = t.title || "";
+  const wrap = document.createElement("div");
+  wrap.className = "fm-title-edit";
+  wrap.innerHTML = `
+    <input type="text" class="input fm-title-input" maxlength="200" value="${escapeHtml(cur)}">
+    <div class="fm-edit-actions">
+      <button class="btn-mini ghost" data-title-cancel>取消</button>
+      <button class="btn-mini" data-title-save>保存</button>
+    </div>`;
+  titleEl.replaceWith(wrap);
+  const input = wrap.querySelector(".fm-title-input");
+  input.focus(); input.select();
+  wrap.querySelector("[data-title-cancel]").onclick = () => wrap.replaceWith(titleEl);
+  wrap.querySelector("[data-title-save]").onclick = async () => {
+    const newTitle = (input.value || "").trim();
+    if (!newTitle) { showToast("标题不能为空"); input.focus(); return; }
+    const btn = wrap.querySelector("[data-title-save]");
+    const label = btn.textContent; btn.disabled = true; btn.textContent = "保存中…";
+    try {
+      await API("PUT", `/api/forum/threads/${t.id}`, { title: newTitle });
+      fmState.thread.thread.title = newTitle;
+      titleEl.textContent = newTitle;
+      wrap.replaceWith(titleEl);
+      showToast("标题已更新");
+    } catch (e) {
+      showToast("保存失败：" + e.message);
+      btn.disabled = false; btn.textContent = label;
+    }
+  };
 }
 
 // ===== 发起新帖 =====

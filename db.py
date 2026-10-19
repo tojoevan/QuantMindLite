@@ -236,6 +236,8 @@ class ForumPost(Base):
     author_id = Column(Integer, nullable=True)
     content = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True)         # 编辑后刷新；NULL = 从未编辑
+    edited = Column(Integer, default=0)                 # 编辑次数（>0 表示改过，前端标「已编辑」）
 
 
 class SettleReport(Base):
@@ -442,6 +444,19 @@ _for_add_rtp = {
 }
 for _cname, _ddl in _for_add_rtp.items():
     if _cname not in _cols_rtp:
+        with engine.connect() as _conn:
+            _conn.execute(text(_ddl))
+            _conn.commit()
+
+# forum_posts 补列（编辑功能：updated_at / edited）——旧行两列均为 NULL/0，
+# _forum_post_out 以 `edited or 0` 兜底，不会因旧行缺列而报错。
+_cols_fp = [c["name"] for c in _insp.get_columns("forum_posts")]
+_for_add_fp = {
+    "updated_at": "ALTER TABLE forum_posts ADD COLUMN updated_at TIMESTAMP",
+    "edited": "ALTER TABLE forum_posts ADD COLUMN edited INTEGER DEFAULT 0",
+}
+for _cname, _ddl in _for_add_fp.items():
+    if _cname not in _cols_fp:
         with engine.connect() as _conn:
             _conn.execute(text(_ddl))
             _conn.commit()

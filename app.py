@@ -42,7 +42,7 @@ from models import (
     RoundtableArchiveReq,
     RoundtableReviewReq, RoundtableAnalyzeReq,
     RoundtableStyleCreate, RoundtableStyleUpdate, RoundtableStyleOut,
-    ForumThreadCreate, ForumPostCreate, ForumPostOut, ForumThreadOut, ForumThreadDetail,
+    ForumThreadCreate, ForumPostCreate, ForumPostEdit, ForumThreadEdit, ForumPostOut, ForumThreadOut, ForumThreadDetail,
     NewsFeedCreate, NewsFeedUpdate, NewsFeedOut, NewsItemOut, NewsFetchReq, NewsSettingsIn,
     NewsOpmlIn, DailyReportReq, SettleReportReq,
     NewsDigestReq, NewsScoreReq,
@@ -2661,6 +2661,13 @@ def _forum_can_delete(u: User, author_type: str, author_id: Optional[int]) -> bo
     return (author_type or "user") == "user" and author_id == u.id
 
 
+def _forum_can_edit(u: User, author_type: str, author_id: Optional[int]) -> bool:
+    """本人或管理员可编辑；Agent / 系统 身份的发言只有管理员可编辑（与删除同权限）。"""
+    if u.is_admin:
+        return True
+    return (author_type or "user") == "user" and author_id == u.id
+
+
 def _forum_thread_out(db: Session, t: ForumThread, u: User, posts) -> ForumThreadOut:
     name, role = _forum_author(db, t.author_type, t.author_id)
     first = posts[0] if posts else None
@@ -2675,6 +2682,7 @@ def _forum_thread_out(db: Session, t: ForumThread, u: User, posts) -> ForumThrea
         created_at=t.created_at.isoformat() if t.created_at else None,
         updated_at=t.updated_at.isoformat() if t.updated_at else None,
         can_delete=_forum_can_delete(u, t.author_type, t.author_id),
+        can_edit=_forum_can_edit(u, t.author_type, t.author_id),
     )
 
 
@@ -2685,7 +2693,10 @@ def _forum_post_out(db: Session, p: ForumPost, u: User) -> ForumPostOut:
         author_id=p.author_id, author_name=name, author_role=role,
         content=p.content or "",
         created_at=p.created_at.isoformat() if p.created_at else None,
+        updated_at=p.updated_at.isoformat() if p.updated_at else None,
+        edited=bool(p.edited or 0),
         can_delete=_forum_can_delete(u, p.author_type, p.author_id),
+        can_edit=_forum_can_edit(u, p.author_type, p.author_id),
     )
 
 
@@ -2787,6 +2798,51 @@ def forum_delete_post(pid: int, u: User = Depends(get_current_user), db: Session
     db.delete(p)
     db.commit()
     return {"ok": True}
+
+
+@app.put("/api/forum/posts/{pid}", response_model=ForumPostOut)
+def forum_edit_post(pid: int, body: ForumPostEdit, u: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """编辑跟帖/首帖正文：本人或管理员可改；Agent/系统身份发言仅管理员可改（同删除权限）。
+    in-place 更新（不保留历史版本），刷新 updated_at 并累加 edited 计数（前端标「已编辑」）。
+    不刷新主题 updated_at——编辑视为内容修正而非「新讨论」，避免编辑刷列表置顶造成噪音。"""
+    p = db.get(ForumPost, pid)
+    if not p:
+        raise HTTPException(404, "回复不存在")
+    if not _forum_can_edit(u, p.author_type, p.author_id):
+        raise HTTPException(403, "forbidden")
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(400, "内容不能为空")
+    if len(content) > FM_MAX_CONTENT:
+        raise HTTPException(400, "内容过长（上限 20000 字符）")
+    p.content = content
+    p.updated_at = datetime.utcnow()
+    p.edited = (p.edited or 0) + 1
+    db.commit()
+    db.refresh(p)
+    return _forum_post_out(db, p, u)
+
+
+@app.put("/api/forum/threads/{tid}", response_model=ForumThreadOut)
+def forum_edit_thread(tid: int, body: ForumThreadEdit, u: User = Depends(get_current_user),
+                      db: Session = Depends(get_db)):
+    """编辑主题标题：主题作者或管理员可改；Agent/系统身份发言仅管理员可改。
+    仅改标题，不含首帖正文（首帖正文走 /posts/{pid} 编辑路径）。"""
+    t = db.get(ForumThread, tid)
+    if not t:
+        raise HTTPException(404, "帖子不存在")
+    if not _forum_can_edit(u, t.author_type, t.author_id):
+        raise HTTPException(403, "forbidden")
+    title = (body.title or "").strip()
+    if not title:
+        raise HTTPException(400, "标题不能为空")
+    if len(title) > FM_MAX_TITLE:
+        raise HTTPException(400, f"标题过长（上限 {FM_MAX_TITLE} 字）")
+    t.title = title
+    db.commit()
+    db.refresh(t)
+    return _forum_thread_out(db, t, u, [])
 
 
 # ---------------- 周期结算帖（仓位 / 收益变化 / 大盘 → 论坛帖） ----------------
