@@ -1292,3 +1292,12 @@ th { color: var(--muted); font-weight: 600; }
 .md-body th, .md-body td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
 .md-body th { background: var(--subtle-bg); font-weight: 600; }
 .md-body img { max-width: 100%; border-radius: 6px; }
+
+/* 主事工作台：目标权重（按标的） */
+.chief-w-input {
+  width: 82px; background: var(--input-bg); border: 1px solid var(--border);
+  color: var(--text); border-radius: 8px; padding: 4px 8px; font-size: 13px;
+}
+.chief-w-input:focus { outline: none; border-color: var(--accent); }
+.chief-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+td.chief-dev { font-variant-numeric: tabular-nums; }

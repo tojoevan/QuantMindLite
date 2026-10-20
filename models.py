@@ -1,5 +1,5 @@
 """Pydantic 请求/响应模型。"""
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, Field
 
 
@@ -364,3 +364,25 @@ class NewsFetchReq(BaseModel):
 class NewsSettingsIn(BaseModel):
     relay_url: Optional[str] = None    # 中继地址，如 https://relay.kapibala.icu
     relay_key: Optional[str] = None    # 中继密钥（传空串表示清除）
+
+
+# ---------------- v2 主事工作台：目标配置层 ----------------
+class ChiefWeightItem(BaseModel):
+    """标的级目标权重：weight 为百分比，0 表示「该标的未配置目标」。"""
+    project_id: int
+    weight: float = 0.0
+
+
+class ChiefWeightsIn(BaseModel):
+    items: List[ChiefWeightItem] = []
+
+
+class ChiefGoalOut(BaseModel):
+    id: int
+    kind: str = ""
+    key: str = ""
+    value: str = ""
+    op: str = ""
+    note: str = ""
+    source_quote: str = ""
+    sort: int = 0

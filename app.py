@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -33,6 +33,7 @@ from db import (
     RoundtableSeat, RoundtablePost, RoundtableStyle, ForumThread, ForumPost, Setting,
     NewsFeed, NewsItem, NewsInjectLog, NewsDigest, SettleReport, LLMCallLog,
     RtAnalysis,
+    ChiefGoal, ChiefSession, ChiefTurn, ChiefAction,
 )
 from models import (
     ProjectCreate, ProjectOut, ProjectUpdate, PricePoint, PredictionCreate, PredictionOut,
@@ -46,6 +47,7 @@ from models import (
     NewsFeedCreate, NewsFeedUpdate, NewsFeedOut, NewsItemOut, NewsFetchReq, NewsSettingsIn,
     NewsOpmlIn, DailyReportReq, SettleReportReq,
     NewsDigestReq, NewsScoreReq,
+    ChiefWeightItem, ChiefWeightsIn, ChiefGoalOut,
 )
 from predictor import run_strategy, STRATEGY_CATALOG, rolling_predict, forecast_future
 from datasource import (
@@ -3991,6 +3993,57 @@ def _migrate_positions():
 
 
 _migrate_positions()
+
+
+# ---------------- v2 主事工作台：目标配置层（A1 目标权重 / 按标的） ----------------
+# 设计来源：docs/v2-主事工作台设计方案.md §6；步骤见 docs/v2-开发步骤拆分.md（A1）。
+# 全部为**新端点 + 新表**，现有端点与现有表零改动。
+# 目标权重按标的（key="p:<project_id>"）而非按行业——用户定：目标到标的级，
+# 主事才能看清每笔钱投的是什么领域，调仓建议才准确。
+
+def _goal_out(g) -> dict:
+    return {
+        "id": g.id, "kind": g.kind or "", "key": g.key or "", "value": g.value or "",
+        "op": g.op or "", "note": g.note or "", "source_quote": g.source_quote or "",
+        "sort": g.sort or 0,
+    }
+
+
+@app.get("/api/chief/goals")
+def chief_goals(kind: str = "", u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """目标配置读取。kind 可传 weight / rule / preference，缺省返回全部。
+    可见范围 = 自己配的 + 无主配置（owner_id is null）。"""
+    q = db.query(ChiefGoal).filter(
+        or_(ChiefGoal.owner_id == u.id, ChiefGoal.owner_id.is_(None)))
+    if kind:
+        q = q.filter(ChiefGoal.kind == kind)
+    rows = q.order_by(ChiefGoal.kind, ChiefGoal.sort, ChiefGoal.id).all()
+    return {"items": [_goal_out(g) for g in rows]}
+
+
+@app.put("/api/chief/goals/weight")
+def chief_save_weights(body: ChiefWeightsIn,
+                       u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """标的级目标权重，全量覆盖保存（weight <= 0 视为未配置，不落库，读取时显示「—」）。"""
+    try:
+        db.query(ChiefGoal).filter(
+            ChiefGoal.kind == "weight",
+            or_(ChiefGoal.owner_id == u.id, ChiefGoal.owner_id.is_(None)),
+        ).delete(synchronize_session=False)
+        saved = 0
+        for it in body.items or []:
+            w = float(it.weight or 0)
+            if w <= 0:
+                continue
+            db.add(ChiefGoal(owner_id=u.id, kind="weight",
+                             key=f"p:{it.project_id}", value=f"{w:g}"))
+            saved += 1
+        db.commit()
+        return {"ok": True, "saved": saved}
+    except Exception as e:
+        db.rollback()
+        logger.warning("保存目标权重失败：%s", e)
+        raise HTTPException(400, f"保存目标权重失败：{e}")
 
 
 # ---------------- 前端静态托管 ----------------
