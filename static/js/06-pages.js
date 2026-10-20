@@ -14,11 +14,11 @@ function navDefault() { return "news"; }
 // 用 hash 而非真实路径：后端 StaticFiles(html=True) 只对 / 返回 index.html，
 // 真实路径（/roundtable）会 404，需要同时改 FastAPI 与线上 nginx；hash 零后端改动，
 // 且同样支持刷新/后退/收藏/分享。
-const ROUTES = ["news", "roundtable", "forum", "dashboard", "about", "users", "project"];
+const ROUTES = ["news", "roundtable", "forum", "dashboard", "chief", "about", "users", "project"];
 
 // 需要登录的视图：游客落到登录门禁（保留原引导行为），但不改写 URL——
 // 直链 #/roundtable 时保留 hash，登录成功后 enterApp 会按 URL 直接进圆桌。
-function viewNeedsAuth(name) { return name === "roundtable" || name === "forum"; }
+function viewNeedsAuth(name) { return name === "roundtable" || name === "forum" || name === "chief"; }
 
 // 视图 → hash（无视图时为空串）
 function viewHash(v) {
@@ -116,6 +116,8 @@ async function showView(name, arg, opts) {
     case "forum":
       // arg = 主题 id：有值进帖子详情（#/forum/<id>），无值进列表（#/forum）
       currentView = { name, arg: arg ?? null }; markNavActive(name); await renderForum(arg ?? null); break;
+    case "chief":
+      currentView = { name, arg: null }; markNavActive(name); renderChief(); break;
     case "about":
       currentView = { name, arg: null }; markNavActive(name); renderAbout(); break;
     case "users":
@@ -394,6 +396,7 @@ function bindNav() {
     ["btn-roundtable", "roundtable"], ["drawer-roundtable", "roundtable"],
     ["btn-forum", "forum"], ["drawer-forum", "forum"],
     ["btn-dashboard", "dashboard"], ["drawer-dashboard", "dashboard"],
+    ["btn-chief", "chief"], ["drawer-chief", "chief"],
     ["btn-about", "about"], ["drawer-about", "about"],
   ];
   entries.forEach(([id, view]) => {

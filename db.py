@@ -384,6 +384,90 @@ class LLMCallLog(Base):
     thinking_fallback = Column(Integer, default=0)      # 是否触发超预算兜底
 
 
+# ===================== v2 主事工作台（chief_*）=====================
+# 设计来源：docs/v2-主事工作台设计方案.md §6 / §13。
+# 全部为**新表**：create_all 自动建，不需要 ALTER 迁移；现有表（projects 等）零改动。
+
+class ChiefGoal(Base):
+    """目标配置层（v1 缺口，v2 新建）：目标权重 / 纪律规则 / 风险偏好。
+
+    kind=weight    —— 按行业的目标占比：key=行业名，value="20"（百分比）
+    kind=rule      —— 纪律规则：key 如 "单一标的"，op=le/ge，value="15"（百分比）
+    kind=preference—— 风险偏好 / 约束：key 为条目名，value 为文本
+    note           —— 调整留痕：哪一期 / 什么背景 / 依据哪次主事建议（§4.2.1）
+    """
+    __tablename__ = "chief_goals"
+    id = Column(Integer, primary_key=True)
+    owner_id = Column(Integer, nullable=True, index=True)
+    kind = Column(String(16), default="weight")          # weight / rule / preference
+    key = Column(String(64), default="")
+    value = Column(String(128), default="")
+    op = Column(String(8), default="")                   # rule 专用：le / ge / eq
+    note = Column(Text, default="")                      # 留痕
+    source_quote = Column(Text, default="")              # 依据的主事原文片段
+    sort = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ChiefSession(Base):
+    """一期调控会话（一次完整的三段式闭环）。
+
+    status：inspect 审视中 → draft 初稿 → review 审查 → final 终稿
+            → executing 执行中 → done 完成
+    """
+    __tablename__ = "chief_sessions"
+    id = Column(Integer, primary_key=True)
+    owner_id = Column(Integer, nullable=True, index=True)
+    title = Column(String(64), default="")               # 期号/标题，如 2026-10-20
+    status = Column(String(16), default="inspect")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ChiefTurn(Base):
+    """三轮原文：draft（→Gemini 初稿）/ review（→ChatGPT 审查）/ final（→Gemini 终稿）。
+
+    原设计里 briefings 三行 + rebalance_plans 三列，此处**合并为一表三轮行**：
+    每轮各存自己的提示词、答复与快照，语义不变、少一张表。
+    """
+    __tablename__ = "chief_turns"
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, index=True)
+    role = Column(String(16), default="draft")           # draft / review / final
+    prompt_text = Column(Text, default="")
+    reply_text = Column(Text, default="")
+    snapshot_json = Column(Text, default="{}")           # 生成时的持仓/目标/素材快照（可回溯）
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ChiefAction(Base):
+    """动作行（用户从终稿标注生成）：调仓 与 规则变更 两条主线共用一表。
+
+    kind=rebalance：action=cut/add/swap/hold，target=标的代码，target_weight=目标权重(%)
+                    status=planned/partial/done/canceled
+    kind=rule：     action=modify/add/revoke，target=规则项，new_value=新值
+                    status=adopted/rejected
+    source_quote：对应终稿原文片段（溯源）
+    """
+    __tablename__ = "chief_actions"
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, index=True)
+    kind = Column(String(16), default="rebalance")       # rebalance / rule
+    action = Column(String(16), default="")
+    target = Column(String(64), default="")
+    target_weight = Column(Float, nullable=True)
+    new_value = Column(String(64), default="")
+    reason = Column(Text, default="")
+    trigger = Column(Text, default="")
+    source_quote = Column(Text, default="")
+    status = Column(String(16), default="planned")
+    executed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 Base.metadata.create_all(engine)
 
 # ---- 兼容已存在的数据库：补加新列（SQLite 不支持 ALTER ADD COLUMN 进 create_all 自动迁移）----
