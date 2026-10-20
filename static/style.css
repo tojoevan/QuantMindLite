@@ -1301,3 +1301,28 @@ th { color: var(--muted); font-weight: 600; }
 .chief-w-input:focus { outline: none; border-color: var(--accent); }
 .chief-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
 td.chief-dev { font-variant-numeric: tabular-nums; }
+
+/* 主事工作台：纪律规则（A2）
+   两块配置（目标权重 / 纪律规则）同属一个 panel，用 h4 分区，间距与卡片间隔一致。
+   违规呈现三级：红=违反、黄=接近阈值、绿=达标，复用既有 .badge 色板。 */
+.chief-sub + .chief-sub { margin-top: 22px; }
+.chief-sub h4 .muted { font-size: 12px; font-weight: 400; margin-left: 6px; }
+#chief-r-sum { font-size: 12px; font-weight: 400; }
+.chief-warn-text { color: var(--yellow); }
+.chief-new-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.chief-select, .chief-r-op {
+  font: inherit; font-size: 13px; color: var(--text); background: var(--input-bg);
+  border: 1px solid var(--border); border-radius: 8px; padding: 4px 6px;
+}
+.chief-select:focus, .chief-r-op:focus { outline: none; border-color: var(--accent); }
+/* 次要按钮（移除 / 添加 / 恢复默认）：与实心主按钮区分，避免两颗实心抢焦点 */
+.btn-mini.chief-minor {
+  background: transparent; color: var(--muted); border: 1px solid var(--border);
+}
+.btn-mini.chief-minor:hover {
+  color: var(--text); border-color: var(--accent); background: var(--accent-soft);
+}
+td.chief-r-cur { font-variant-numeric: tabular-nums; }
+/* 违反规则的标的：整行左侧红条 + 占比红字（占比数字红） */
+tr.chief-row-break > td:first-child { box-shadow: inset 2px 0 0 var(--red); }
+.cat-tag.break { color: var(--red); background: rgba(248,81,73,.12); }

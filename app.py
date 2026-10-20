@@ -47,7 +47,7 @@ from models import (
     NewsFeedCreate, NewsFeedUpdate, NewsFeedOut, NewsItemOut, NewsFetchReq, NewsSettingsIn,
     NewsOpmlIn, DailyReportReq, SettleReportReq,
     NewsDigestReq, NewsScoreReq,
-    ChiefWeightItem, ChiefWeightsIn, ChiefGoalOut,
+    ChiefWeightItem, ChiefWeightsIn, ChiefGoalOut, ChiefRuleItem, ChiefRulesIn,
 )
 from predictor import run_strategy, STRATEGY_CATALOG, rolling_predict, forecast_future
 from datasource import (
@@ -4044,6 +4044,176 @@ def chief_save_weights(body: ChiefWeightsIn,
         db.rollback()
         logger.warning("保存目标权重失败：%s", e)
         raise HTTPException(400, f"保存目标权重失败：{e}")
+
+
+# ---------------- 纪律规则（A2）----------------
+# 规则是**结构化条目**：作用范围（四种）+ 比较符（le/ge）+ 阈值。
+# 形态保持结构化是为了三件事：① 平台能自己算出当前值与违规，不必每次问主事；
+# ② 能直接写进主事提示词（"任一单一标的 ≤ 15%"）；③ 规则变更能被留痕与跟踪。
+# 自由文本类约束留给 kind=preference（A3）。
+
+CHIEF_RULE_SCOPES = ("any_pos", "any_cat", "pos", "cat")
+
+
+def _chief_rule_projects(u, db):
+    """当前用户可见的标的（口径与 /api/overview 一致：管理员看全部）。"""
+    q = db.query(Project)
+    if not u.is_admin:
+        q = q.filter(Project.owner_id == u.id)
+    return q.order_by(Project.id).all()
+
+
+def _chief_split_scope(scope: str):
+    """"pos:12" -> ("pos", "12")；"any_pos" -> ("any_pos", "")。"""
+    s = (scope or "any_pos").strip()
+    if ":" in s:
+        k, v = s.split(":", 1)
+        return k.strip(), v.strip()
+    return s, ""
+
+
+@app.put("/api/chief/goals/rule")
+def chief_save_rules(body: ChiefRulesIn,
+                     u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """纪律规则全量覆盖保存。value <= 0（未填阈值）的条目丢弃不落库。"""
+    try:
+        db.query(ChiefGoal).filter(
+            ChiefGoal.kind == "rule",
+            or_(ChiefGoal.owner_id == u.id, ChiefGoal.owner_id.is_(None)),
+        ).delete(synchronize_session=False)
+        saved = 0
+        for i, it in enumerate(body.items or []):
+            v = float(it.value or 0)
+            if v <= 0:
+                continue
+            k, _ = _chief_split_scope(it.scope)
+            if k not in CHIEF_RULE_SCOPES:
+                continue
+            db.add(ChiefGoal(owner_id=u.id, kind="rule", key=(it.scope or "").strip(),
+                             op=(it.op or "le").strip(), value=f"{v:g}",
+                             note=(it.note or "").strip(), sort=i))
+            saved += 1
+        db.commit()
+        return {"ok": True, "saved": saved}
+    except Exception as e:
+        db.rollback()
+        logger.warning("保存纪律规则失败：%s", e)
+        raise HTTPException(400, f"保存纪律规则失败：{e}")
+
+
+def _chief_check_rules(rule_items, u: User, db: Session):
+    """拿持仓现况逐条校验一组规则（**不落库**，存与算分离）。
+
+    rule_items：[{scope, op, value, note}]。
+    le（上限）取**最极端**的那个标的 / 行业来判：只要有一个超了就是违反；
+    ge（下限）同理取最小的那个。空仓时全部按达标处理（current=0）。
+    行业聚合只认有分类的标的；未分类标的不归属任何行业，只参与单一标的规定。
+    """
+    positions = _build_overview(_chief_rule_projects(u, db), db)["positions"]
+    total = sum(float(x.get("market_value") or 0.0) for x in positions)
+    name_of = {x["id"]: (x.get("name") or "") for x in positions}
+    pct_pos, pct_cat = {}, {}
+    for x in positions:
+        mv = float(x.get("market_value") or 0.0)
+        pct_pos[x["id"]] = (mv / total * 100) if total > 0 else 0.0
+        c = (x.get("category") or "").strip()
+        if c:
+            pct_cat[c] = pct_cat.get(c, 0.0) + mv
+    pct_cat = {c: (v / total * 100 if total > 0 else 0.0) for c, v in pct_cat.items()}
+
+    out, bp, bc = [], set(), set()
+    for g in rule_items or []:
+        scope, op = (g.get("scope") or "any_pos").strip(), (g.get("op") or "le").strip()
+        if op not in ("le", "ge"):
+            op = "le"
+        val = 0.0
+        try:
+            val = float(g.get("value") or 0)
+        except (TypeError, ValueError):
+            val = 0.0
+        k, arg = _chief_split_scope(scope)
+
+        # 命中集合：单一标的类 -> [(id, name)]；行业类 -> [(None, 名称)]
+        if k == "any_pos":
+            cand = [(pid, name_of.get(pid, ""), v) for pid, v in pct_pos.items()]
+        elif k == "pos":
+            pid = int(arg) if arg.lstrip("-").isdigit() else -1
+            # 标的已不在持仓中 -> 视为无命中，不当 0% 达标处理
+            cand = ([(pid, name_of.get(pid, ""), pct_pos[pid])]
+                    if pid in pct_pos else [])
+        elif k == "any_cat":
+            cand = [(None, c, v) for c, v in pct_cat.items()]
+        elif k == "cat":
+            cand = [(None, arg, pct_cat[arg])] if arg in pct_cat else []
+        else:
+            cand = []
+        cand = [c for c in cand if c[0] is not None or c[1]]
+
+        if not cand:
+            cur, hits = 0.0, []
+        else:
+            # le 看最大值（最可能超标），ge 看最小值（最可能不足）
+            extreme = max(c[2] for c in cand) if op == "le" else min(c[2] for c in cand)
+            cur = extreme
+            hits = [{"id": c[0], "name": c[1]} for c in cand if abs(c[2] - extreme) < 1e-9]
+
+        if val <= 0:
+            status = "none"
+        elif op == "le":
+            status = ("break" if cur > val + 1e-9
+                      else ("warn" if cur > val * 0.9 - 1e-9 else "ok"))
+        else:
+            status = ("break" if cur < val - 1e-9
+                      else ("warn" if cur < val * 1.1 + 1e-9 else "ok"))
+        if status == "break":
+            for h in hits:
+                if h["id"]:
+                    bp.add(h["id"])
+                elif h["name"]:
+                    bc.add(h["name"])
+
+        out.append({"scope": scope, "op": op, "value": round(val, 2),
+                     "current": round(cur, 2), "hits": hits,
+                     "status": status, "note": g.get("note") or ""})
+
+    return {
+        "total_market_value": round(total, 2),
+        "items": out,
+        "breaks": {"positions": sorted(bp), "categories": sorted(bc)},
+        "summary": {
+            "break": sum(1 for x in out if x["status"] == "break"),
+            "warn": sum(1 for x in out if x["status"] == "warn"),
+            "ok": sum(1 for x in out if x["status"] == "ok"),
+        },
+    }
+
+
+@app.get("/api/chief/rules/check")
+def chief_rules_check(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """校验**已落库**的规则（供提示词装配等服务端场景）。
+
+    存与算分离：这里只取库里的 kind=rule，计算统一走 _chief_check_rules。
+    """
+    rows = (db.query(ChiefGoal).filter(
+        ChiefGoal.kind == "rule",
+        or_(ChiefGoal.owner_id == u.id, ChiefGoal.owner_id.is_(None)),
+    ).order_by(ChiefGoal.sort, ChiefGoal.id).all())
+    saved = [{"scope": (g.key or "").strip(), "op": (g.op or "").strip(),
+              "value": g.value or "", "note": g.note or ""} for g in rows]
+    return _chief_check_rules(saved, u, db)
+
+
+@app.post("/api/chief/rules/check")
+def chief_rules_check_draft(body: ChiefRulesIn,
+                            u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """校验**任意一组规则**（未保存的草稿也算），不落库。
+
+    页面上「默认 2 条」「刚改了阈值还没保存」都要能立刻看到红黄绿 —— 校验不能依赖已落库，
+    否则未保存的规则永远灰着，纪律规则最核心的即时反馈就没了。
+    """
+    items = [{"scope": (it.scope or "").strip(), "op": (it.op or "").strip(),
+              "value": it.value, "note": it.note or ""} for it in body.items or []]
+    return _chief_check_rules(items, u, db)
 
 
 # ---------------- 前端静态托管 ----------------

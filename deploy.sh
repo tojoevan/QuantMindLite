@@ -335,7 +335,8 @@ cmd_deploy() {
 
   echo
   step "同步源码到 $REMOTE_DIR"
-  tar_sync "$LOCAL_DIR" "." '.venv' 'quantweb.db' '__pycache__' '*.pyc' '.DS_Store' '._*' '.git' 'docs' \
+  # 排除 .workbuddy：那是本地 Agent 记忆目录（含项目结构与内部路径），不该随代码上生产
+  tar_sync "$LOCAL_DIR" "." '.venv' 'quantweb.db' '__pycache__' '*.pyc' '.DS_Store' '._*' '.git' 'docs' '.workbuddy' \
     || die "同步失败"
   info "同步完成（共 ${DIFF_COUNT:-0} 处差异文件）"
 

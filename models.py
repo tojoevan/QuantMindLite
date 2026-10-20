@@ -385,4 +385,23 @@ class ChiefGoalOut(BaseModel):
     op: str = ""
     note: str = ""
     source_quote: str = ""
+
+
+# ---------------- v2 主事工作台：纪律规则（A2）----------------
+class ChiefRuleItem(BaseModel):
+    """一条纪律规则：**结构化条目**（作用范围 + 比较符 + 阈值）。
+
+    scope 编码与作用一致：any_pos / any_cat / pos:<id> / cat:<名称>
+    op：le=不超过（占比上限），ge=不低于（占比下限）
+    value：阈值百分比，<=0 视为未配置（不落库）
+    自由文本类约束走 kind=preference（A3），不进这张表。
+    """
+    scope: str = "any_pos"
+    op: str = "le"
+    value: float = 0.0
+    note: str = ""
+
+
+class ChiefRulesIn(BaseModel):
+    items: List[ChiefRuleItem] = []
     sort: int = 0

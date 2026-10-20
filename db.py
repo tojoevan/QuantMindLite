@@ -394,7 +394,15 @@ class ChiefGoal(Base):
     kind=weight    —— 目标权重（**按标的**，非按行业）：key="p:<project_id>"，value="12.5"（百分比）
                       行业占比由标的按分类汇总得出，不单独存。
                       （用户定：目标到标的级，主事才能看清每笔钱投的是什么领域。）
-    kind=rule      —— 纪律规则：key 如 "单一标的"，op=le/ge，value="15"（百分比）
+    kind=rule      —— 纪律规则（**结构化条目**，A2）：
+                      key = 作用范围 scope，四种取值：
+                        "any_pos"   任一单一标的（默认 1：≤15%）
+                        "any_cat"   任一单一行业（默认 2：≤40%）
+                        "pos:<id>"  指定标的（id=projects.id）
+                        "cat:<名称>" 指定行业（名称与标的 category 一致）
+                      op = le（不超过）/ ge（不低于）
+                      value = 阈值（百分比数字）
+                      自由文本类约束留给 kind=preference（A3），不塞进这里。
     kind=preference—— 风险偏好 / 约束：key 为条目名，value 为文本
     note           —— 调整留痕：哪一期 / 什么背景 / 依据哪次主事建议（§4.2.1）
     """
