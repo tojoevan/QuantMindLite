@@ -498,8 +498,9 @@ function rtRenderSeats() {
     // 命中率徽标：仅当有效样本达标（>=MIN_SAMPLE）才显示，避免小样本误导。
     const _rs = (rtState.review && rtState.review.seat_stats) || [];
     const _stat = _rs.find(x => x.seat_id === s.id);
+    const _meta = (rtState.review && rtState.review.meta) || {};
     const rateBadge = (_stat && _stat.min_ok && _stat.rate != null)
-      ? `<span class="rt-badge rate" title="近 ${((rtState.review && rtState.review.meta) || {}).review_days || 20} 天有效样本 ${_stat.hit}+${_stat.miss}，T+${((rtState.review && rtState.review.meta) || {}).horizon || 5} 机械判定素材质量（命中率）">素材质量 ${_stat.rate}%</span>`
+      ? `<span class="rt-badge rate" title="近 ${_meta.review_days || 20} 天有效样本 ${_stat.hit}+${_stat.miss}，T+${_meta.horizon_active || _meta.horizon || 5} 机械判定素材质量（命中率）">素材质量 ${_stat.rate}%</span>`
       : "";
     let actions = "";
     if (isAuto) {
@@ -680,6 +681,8 @@ function rtRenderReview() {
   if (!data) { el.innerHTML = `<span class="muted">复盘数据加载失败（不影响其他面板）</span>`; return; }
   const meta = data.meta || {};
   const horizon = meta.horizon || 5;
+  // 主口径（默认 T+1）：T+5 需约 7 个自然日成熟，长期零有效样本；T+5 作为中期口径保留在明细里
+  const horizonActive = meta.horizon_active || horizon;
   const band = meta.flat_band != null ? meta.flat_band : 0.5;
   const minSample = meta.min_sample || 3;
 
@@ -712,28 +715,33 @@ function rtRenderReview() {
 
   // 3) 样本明细（近 limit 条，含判定）
   const samples = data.samples || [];
+  // 双口径并列：T+1 为主（次日可判），T+5 为中期（行情到齐后回头补算）
+  const retCell = (v) => v == null
+    ? `<td class="muted">—</td>`
+    : `<td class="${v >= 0 ? "rt-v-hit" : "rt-v-miss"}">${(v >= 0 ? "+" : "") + v}%</td>`;
   const sampleRows = samples.length ? samples.map(r => {
-    const v = RT_VERDICT[r.verdict_t5] || RT_VERDICT.pending;
+    const v = RT_VERDICT[r.active_verdict] || RT_VERDICT.pending;
     const basis = (r.basis && r.basis.length) ? r.basis.map(b => escapeHtml(b)).join("、") : `<span class="muted">—</span>`;
-    const t5 = r.ret_t5 == null ? "—" : (r.ret_t5 >= 0 ? "+" : "") + r.ret_t5 + "%";
     return `<tr>
       <td>${r.date}</td>
       <td>${escapeHtml(r.seat)}</td>
       <td>${escapeHtml(r.name || r.code)}</td>
       <td>${RT_DIR_LABEL[r.direction] || r.direction}</td>
       <td class="rt-news-title" title="${escapeHtml((r.basis || []).join('、'))}">${basis}</td>
-      <td class="${r.ret_t5 == null ? "" : (r.ret_t5 >= 0 ? "rt-v-hit" : "rt-v-miss")}">${t5}</td>
+      ${retCell(r.ret_t1)}
+      ${retCell(r.ret_t5)}
       <td class="${v.cls}">${v.label}</td>
     </tr>`;
-  }).join("") : `<tr><td colspan="7" class="muted">暂无样本</td></tr>`;
+  }).join("") : `<tr><td colspan="8" class="muted">暂无样本</td></tr>`;
 
   el.innerHTML = `
     <div class="rt-review-note">
-      判定窗口 T+${horizon}（与策略外推同尺度）；|收益| &lt; ${band}% 视为无效波动、不计入素材质量分母；
-      hold/观察无法用收益判对错，同样不计入。样本 &lt; ${minSample} 不展示素材质量徽标。
+      主口径 T+${horizonActive}（次日即可判定）；T+${horizon} 为中期口径，行情到齐后自动回填。
+      |收益| &lt; ${band}% 视为无效波动、不计入素材质量分母；hold/观察无法用收益判对错，同样不计入。
+      样本 &lt; ${minSample} 不展示素材质量徽标。
     </div>
     <div class="rt-review-chart" id="rt-review-chart"></div>
-    <div class="rt-hist-sub">席位素材质量（T+${horizon}，= 机械判定命中率）</div>
+    <div class="rt-hist-sub">席位素材质量（T+${horizonActive}，= 机械判定命中率）</div>
     <div class="table-wrap"><table class="rt-review-table">
       <thead><tr><th>席位</th><th>素材质量</th><th>命中/未中</th><th>无效波动</th><th>待定</th><th>样本</th></tr></thead>
       <tbody>${seatRows}</tbody>
@@ -745,7 +753,7 @@ function rtRenderReview() {
     </table></div>
     <div class="rt-hist-sub">样本明细（近 ${samples.length} 条）</div>
     <div class="table-wrap rt-scroll"><table class="rt-review-table">
-      <thead><tr><th>日期</th><th>席位</th><th>标的</th><th>方向</th><th>依据资讯</th><th>T+${horizon}</th><th>判定</th></tr></thead>
+      <thead><tr><th>日期</th><th>席位</th><th>标的</th><th>方向</th><th>依据资讯</th><th>T+${horizonActive}</th><th>T+${horizon}</th><th>判定（主口径）</th></tr></thead>
       <tbody>${sampleRows}</tbody>
     </table></div>`;
 

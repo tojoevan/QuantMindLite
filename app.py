@@ -2346,15 +2346,21 @@ def rt_review_stats(u: User = Depends(get_current_user), db: Session = Depends(g
 
     判定全部机械（方向 × 真实收益），LLM 只负责「文本 → 结构化」抽取，
     不在后端做任何「对错」判断——这是平台「可解释、人在回路」的底线。
-    命中率口径为 T+5（与策略外推 5 交易日同尺度）；hold/observe 与
-    |收益|<FLAT_BAND 的无效波动一律不计入命中率分母。
+    命中率走 rtreview.ACTIVE 主口径（默认 T+1：T+5 需约 7 个自然日成熟，
+    叠加观点日稀疏 + hold 占多数会长期零有效样本；要切回只改那个常量）；
+    T+5 仍照常计算，作为「中期」口径随样本明细一起返回。
+    hold/observe 与 |收益|<FLAT_BAND 的无效波动一律不计入命中率分母。
     """
+    active_tag = str(getattr(rtreview, "ACTIVE", "t1") or "t1")
+    active_horizon = (int(active_tag[1:]) if active_tag[1:].isdigit()
+                      else rtreview.HORIZON)
     return {
         "seat_stats": rtreview.seat_stats(db),
         "trend": rtreview.trend_stats(db),
         "news_hit": rtreview.news_hit_stats(db),
         "samples": rtreview.samples(db, limit=50),
         "meta": {"flat_band": rtreview.FLAT_BAND, "horizon": rtreview.HORIZON,
+                 "horizon_active": active_horizon, "active_verdict": active_tag,
                  "min_sample": rtreview.MIN_SAMPLE, "review_days": rtreview.REVIEW_DAYS},
     }
 
@@ -2385,6 +2391,24 @@ def rt_review_run(body: Optional[RoundtableReviewReq] = None,
         r = rtreview.daily(db, conf)
         mode = "daily"
     return {"ok": True, "mode": mode, "result": r}
+
+
+@app.post("/api/roundtable/review/refresh")
+def rt_review_refresh(u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """只重算判定（补算所有未最终化的记录），**不调 LLM、不抽取新判断**。
+
+    存在理由：历史上 `daily` 只补算近 HORIZON+1 个自然日，短于 T+5 成熟所需时间，
+    导致记录永久停在 pending（全表长期零有效样本）。修复后需要一个零成本入口
+    把存量待定一次性补算出来——对比手动「重新生成」，这个端点不烧任何 LLM 费用。
+    """
+    if not u.is_admin:
+        raise HTTPException(403, "forbidden")
+    n = rtreview.review_pending(db)
+    seats = rtreview.seat_stats(db)
+    eff = sum((x["hit"] + x["miss"]) for x in seats)
+    pend = sum(x["pending"] for x in seats)
+    return {"ok": True, "refreshed": n, "effective_samples": eff,
+            "still_pending": pend, "seat_stats": seats}
 
 
 @app.get("/api/roundtable/analysis")

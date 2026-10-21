@@ -34,6 +34,29 @@ REVIEW_DAYS = 20           # 统计窗口（交易日观点的近 N 天）
 BACKFILL_DAYS = 14         # 首跑补批回溯天数
 DIRECTIONS = ("up", "down", "hold", "observe")
 
+# ---------------- 统计主口径 ----------------
+# 原设计为 T+5（与策略外推 5 交易日同尺度，语义最严谨），但实测长期零有效样本：
+#   T+5 需约 7 个自然日成熟；叠加观点日稀疏 + hold/observe 占比高（机械判定下
+#   恒 flat 不计入分母），面板会长时间显示「样本不足」。
+# 故面板主口径改 **T+1**（次日即有结果）；T+5 照常计算并保留，在样本明细里作为
+# 「中期、待成熟」口径并列展示。要切回只需改这一个常量。
+ACTIVE = "t1"
+
+
+def _v(row, tag: str = ACTIVE):
+    """取某行在指定口径下的判定值（verdict_t1 / verdict_t5）。"""
+    return getattr(row, f"verdict_{tag}", None)
+
+
+def _pending(v) -> bool:
+    """该判定是否「未最终化」。
+
+    ⚠️ 不能写成 `not v` —— 判定值是字符串 "pending"，它是 truthy。
+    原 `sum(1 for r in rs if not r.verdict_t5)` 会把待定全部漏计，
+    导致面板「待定」列恒为 0，掩盖了「一条都没判出来」的真实情况。
+    """
+    return v is None or v == "" or v == "pending"
+
 EXTRACT_SYSTEM = ("你是严谨的数据整理员，只做结构化抽取，不做任何市场判断，"
                   "不补充观点里没有的信息。")
 
@@ -299,43 +322,66 @@ def backfill(db, conf: dict, days: int = BACKFILL_DAYS, log=print) -> dict:
             total["dates"] += 1
             total["posts"] += r["posts"]
             total["calls"] += r["calls"]
-    # 近 HORIZON 日未满窗的补算（T+5 到期后 verdict 才最终化）
-    for i in range(HORIZON + 1):
-        d = (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=i)).strftime("%Y-%m-%d")
-        if db.query(RtReview).filter(RtReview.date == d).count():
-            review_date(db, d)
+    # 未最终化记录的补算（T+5 到期后判定才最终化，渐进式）
+    review_pending(db, log=log)
     return total
 
 
+def review_pending(db, days: int = 0, log=None) -> int:
+    """重算所有「未最终化」的记录（不调 LLM，纯机械，幂等）。返回重算记录数。
+
+    为什么要有这个函数（修复 pending 死锁）：
+        旧逻辑只补算「近 HORIZON+1 个自然日」，而 T+5 判定需要基准日后第 5 个
+        **交易日** ≈ 7 个自然日。6 < 7 ⇒ 记录会在数据刚够之前就滑出补算窗口，
+        此后再也不会被补算，永久停在 pending。实测全表 has_ret5=0 即由此而来。
+        这里反过来做：以「记录本身仍未最终化」为准去重算，而不是猜日期窗口。
+
+    days=0 表示不限窗口（默认，幂等且代价很小：只是按日期逐个 review_date）。
+    """
+    q = db.query(RtReview)
+    if days and days > 0:
+        q = q.filter(RtReview.date >= _days_ago(days))
+    # ⚠️ 两个口径都必须扫：只扫主口径（T+1）会漏掉「T+1 已定、T+5 仍 pending」
+    #    的记录，导致中期口径永远停在 pending。
+    tags = ("t1", "t5")
+    dates = sorted({r.date for r in q.all()
+                    if any(_pending(_v(r, t)) for t in tags)})
+    n = 0
+    for d in dates:
+        n += review_date(db, d, log=log)
+    if log and dates:
+        log(f"  补算未最终化记录：{len(dates)} 个日期 / {n} 条"
+            f"（{'、'.join(dates)}）")
+    return n
+
+
 def daily(db, conf: dict, log=print) -> dict:
-    """每日 cron 入口：复盘昨日观点 + 补算近窗未满窗记录。"""
+    """每日 cron 入口：复盘昨日观点 + 补算所有未最终化记录。"""
     yesterday = (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=1)).strftime("%Y-%m-%d")
     r = run_review(db, conf, yesterday, log=log)
-    fixed = 0
-    for i in range(HORIZON + 1):
-        d = (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=i)).strftime("%Y-%m-%d")
-        if db.query(RtReview).filter(RtReview.date == d).count():
-            fixed += review_date(db, d)
+    # ⚠️ 不能只补算「近 HORIZON+1 个自然日」——那比 T+5 成熟所需的时间还短，
+    #    记录会永久停在 pending。改为按「是否仍未最终化」补算。
+    fixed = review_pending(db, log=log)
     return {"reviewed": r, "refreshed": fixed}
 
 
 # ---------------- 3) 统计（消费方：面板 / 徽标） ----------------
 def seat_stats(db, days: int = REVIEW_DAYS) -> list:
-    """各席位命中率（verdict_t5 口径，有效样本 = hit+miss）。"""
+    """各席位命中率（主口径 ACTIVE，有效样本 = hit+miss）。"""
     start = _days_ago(days)
     seats = {s.id: (s.name or "") for s in db.query(RoundtableSeat).all()}
     rows = db.query(RtReview).filter(RtReview.date >= start).all()
     out = []
     for sid, name in seats.items():
         rs = [r for r in rows if r.seat_id == sid]
-        eff = [r for r in rs if r.verdict_t5 in ("hit", "miss")]
-        hit = sum(1 for r in eff if r.verdict_t5 == "hit")
+        eff = [r for r in rs if _v(r) in ("hit", "miss")]
+        hit = sum(1 for r in eff if _v(r) == "hit")
         out.append({
             "seat_id": sid, "name": name,
             "hit": hit, "miss": len(eff) - hit,
             "rate": round(hit / len(eff) * 100) if eff else None,
-            "pending": sum(1 for r in rs if not r.verdict_t5),
-            "flat": sum(1 for r in rs if r.verdict_t5 == "flat"),
+            "pending": sum(1 for r in rs if _pending(_v(r))),
+            "flat": sum(1 for r in rs if _v(r) == "flat"),
             "total": len(rs), "min_ok": len(eff) >= MIN_SAMPLE,
         })
     return sorted(out, key=lambda x: (x["rate"] is None, -(x["rate"] or 0)))
@@ -347,10 +393,11 @@ def trend_stats(db, days: int = REVIEW_DAYS) -> list:
     rows = db.query(RtReview).filter(RtReview.date >= start).all()
     by = {}
     for r in rows:
-        if r.verdict_t5 not in ("hit", "miss"):
+        v = _v(r)
+        if v not in ("hit", "miss"):
             continue
         a = by.setdefault(r.date, {"date": r.date, "hit": 0, "miss": 0})
-        a["hit" if r.verdict_t5 == "hit" else "miss"] += 1
+        a["hit" if v == "hit" else "miss"] += 1
     out = []
     for d in sorted(by):
         a = by[d]
@@ -366,12 +413,13 @@ def news_hit_stats(db, days: int = REVIEW_DAYS) -> list:
     rows = db.query(RtReview).filter(RtReview.date >= start).all()
     agg = {}
     for r in rows:
+        v = _v(r)
         for iid in [x for x in (r.basis_news_ids or "").split(",") if x.strip().isdigit()]:
             a = agg.setdefault(int(iid), {"cited": 0, "hit": 0, "miss": 0})
             a["cited"] += 1
-            if r.verdict_t5 == "hit":
+            if v == "hit":
                 a["hit"] += 1
-            elif r.verdict_t5 == "miss":
+            elif v == "miss":
                 a["miss"] += 1
     titles = {}
     if agg:
@@ -390,7 +438,12 @@ def samples(db, days: int = REVIEW_DAYS, limit: int = 30) -> list:
     """样本明细（面板表格用）：含席位名与依据资讯标题。"""
     start = _days_ago(days)
     rows = (db.query(RtReview).filter(RtReview.date >= start)
-            .order_by(RtReview.date.desc(), RtReview.id.desc()).limit(limit).all())
+            .order_by(RtReview.date.desc(), RtReview.id.desc()).all())
+    # 未最终化的排后面，否则最新一批（当天/昨天，行情未到齐）会占满前 limit 条，
+    # 明细满屏「—」看着像没内容。已判定的内部：双口径齐全（T+5 也已回填）的最优先。
+    rows.sort(key=lambda r: (not _pending(_v(r, "t5")), not _pending(_v(r, "t1")),
+                             r.date, r.id), reverse=True)
+    rows = rows[:limit]
     seats = {s.id: (s.name or "") for s in db.query(RoundtableSeat).all()}
     news_ids = {int(x) for r in rows for x in (r.basis_news_ids or "").split(",")
                 if x.strip().isdigit()}
@@ -408,5 +461,6 @@ def samples(db, days: int = REVIEW_DAYS, limit: int = 30) -> list:
             "confidence": r.confidence, "basis": basis,
             "ret_t1": r.ret_t1, "ret_t5": r.ret_t5,
             "verdict_t1": r.verdict_t1, "verdict_t5": r.verdict_t5,
+            "active_verdict": _v(r),
         })
     return out
