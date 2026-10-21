@@ -99,6 +99,7 @@ function chiefRenderWeights() {
     inp.oninput = () => chiefRefreshDev(inp);
   });
   chiefRefreshSum();
+  chiefRenderConcentration();
 }
 
 // 输入目标值时，实时重算该行偏离与底部合计（不请求后端）
@@ -127,6 +128,28 @@ function chiefRefreshSum() {
   });
   el.textContent = n ? sum.toFixed(1) + "%" : "—";
   el.className = (n && sum > 100.05) ? "pos" : "";
+}
+
+// Top3 集中度：按市值取前三，显示合计占比 + 各自百分比。
+// 纯前端算（positions 自带 market_value / name），无后端依赖。集中度越高风险越大：
+// ≥85% 红（过高）/ ≥70% 黄（偏高）/ 其余中性。
+function chiefRenderConcentration() {
+  const el = document.getElementById("chief-conc");
+  if (!el) return;
+  const pos = chiefState.positions
+    .filter(p => (p.market_value || 0) > 0)
+    .sort((a, b) => (b.market_value || 0) - (a.market_value || 0));
+  if (!pos.length) { el.innerHTML = ""; return; }
+  const total = pos.reduce((s, p) => s + (p.market_value || 0), 0);
+  const top = pos.slice(0, 3);
+  const sumTop = top.reduce((s, p) => s + (p.market_value || 0), 0);
+  const pct = total > 0 ? sumTop / total * 100 : 0;
+  const cls = pct >= 85 ? "pos" : (pct >= 70 ? "chief-warn-text" : "");
+  const parts = top.map(p =>
+    `${escapeHtml(p.name || ("#" + p.id))} ${chiefFmtPct(total > 0 ? (p.market_value || 0) / total * 100 : 0)}`);
+  const label = top.length === 3 ? "Top3 集中度" : `Top${top.length} 集中度`;
+  el.innerHTML = `<span class="${cls}"><b>${label} ${pct.toFixed(1)}%</b></span>` +
+    `<span class="muted">（${parts.join(" · ")}）</span>`;
 }
 
 // 全量覆盖保存（后端按当前用户全量替换 kind=weight 的行）
@@ -452,6 +475,7 @@ function renderChief() {
                 </tr></tfoot>
               </table>
             </div>
+            <div class="chief-conc" id="chief-conc"></div>
             <div class="chief-actions">
               <button class="btn-mini" id="chief-w-save" type="button">保存目标权重</button>
               <span class="muted" id="chief-w-hint"></span>
