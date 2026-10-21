@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>主事工作台 · 界面原型 v0.1（演示数据）</title>
+<style>
+/* ===== 复用 quant-web 设计令牌（与 static/style.css 一致）===== */
+:root{
+  --bg:#0d1117; --bg-2:#11161d; --panel:#161b22; --panel-2:#1c2330;
+  --border:#21262d; --border-strong:#30363d;
+  --text:#e6edf3; --text-2:#c9d1d9; --muted:#8b949e;
+  --accent:#388bfd; --accent-hover:#4493f8; --accent-soft:rgba(56,139,253,.12);
+  --green:#3fb950; --red:#f85149; --yellow:#d29922;
+  --input-bg:#0d1117; --active-bg:#11233b; --subtle-bg:rgba(255,255,255,.02);
+  --radius:12px; --radius-sm:6px; --radius-md:8px; --radius-pill:999px;
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:22px;
+  --fs-xs:12px; --fs-sm:13px; --fs-md:14px; --fs-lg:15px;
+  --shadow-md:0 8px 24px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:var(--sp-5) var(--sp-4) 60px}
+
+/* 顶栏 */
+.topbar{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3) var(--sp-4);
+  background:linear-gradient(180deg,#161b22,#11161d);border-bottom:1px solid var(--border);
+  position:sticky;top:0;z-index:20}
+.topbar h1{font-size:var(--fs-lg);margin:0;font-weight:600}
+.topbar .sub{color:var(--muted);font-size:var(--fs-xs)}
+.demo-badge{margin-left:auto;font-size:var(--fs-xs);color:var(--yellow);
+  border:1px solid var(--yellow);border-radius:var(--radius-pill);padding:2px 10px}
+
+/* 步骤条 */
+.stepbar{display:flex;gap:var(--sp-2);margin:var(--sp-5) 0;flex-wrap:wrap}
+.step{flex:1;min-width:150px;background:var(--panel);border:1px solid var(--border);
+  border-radius:var(--radius-md);padding:var(--sp-3);cursor:pointer;transition:.15s}
+.step:hover{border-color:var(--border-strong)}
+.step .n{font-size:var(--fs-xs);color:var(--muted)}
+.step .t{font-weight:600;margin-top:2px}
+.step.active{border-color:var(--accent);background:var(--active-bg)}
+.step.active .t{color:var(--accent)}
+.step.done .t{color:var(--green)}
+.step .tick{float:right;color:var(--green);font-size:var(--fs-xs)}
+
+/* 面板 */
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  padding:var(--sp-4);margin-bottom:var(--sp-4)}
+.panel h3{margin:0 0 var(--sp-3);font-size:var(--fs-lg);font-weight:600}
+.panel h3 .muted{color:var(--muted);font-size:var(--fs-xs);font-weight:400;margin-left:var(--sp-2)}
+.panel h4{font-size:var(--fs-md);color:var(--accent);margin:var(--sp-4) 0 var(--sp-2)}
+.muted{color:var(--muted);font-size:var(--fs-xs)}
+.row{display:flex;gap:var(--sp-3);flex-wrap:wrap}
+.col{flex:1;min-width:300px}
+
+/* 按钮 */
+.btn{display:inline-block;background:transparent;color:var(--text);border:1px solid var(--border-strong);
+  border-radius:var(--radius-md);padding:7px 14px;font-size:var(--fs-sm);cursor:pointer}
+.btn:hover{border-color:var(--border-strong);background:var(--subtle-bg)}
+.btn.primary{background:var(--accent);color:#fff;border-color:transparent}
+.btn.primary:hover{background:var(--accent-hover)}
+.btn.ghost{color:var(--muted)}
+.btn.sm{padding:5px 10px;font-size:var(--fs-xs)}
+.btn.success{background:var(--green);color:#fff;border-color:transparent}
+
+/* 表格 / 标签 */
+.table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
+.table th,.table td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:left}
+.table th{color:var(--muted);font-weight:600}
+.table td.num{text-align:right}
+.tag{display:inline-block;font-size:var(--fs-xs);padding:1px 8px;border-radius:var(--radius-pill);
+  border:1px solid var(--border-strong);color:var(--muted)}
+.tag.ok{color:var(--green);border-color:var(--green);background:rgba(63,185,80,.12)}
+.tag.warn{color:var(--yellow);border-color:var(--yellow);background:rgba(210,153,34,.12)}
+.tag.risk{color:var(--red);border-color:var(--red);background:rgba(248,81,73,.12)}
+.tag.accent{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+
+/* 输入框 / 文本域 */
+textarea,input[type=text]{width:100%;background:var(--input-bg);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--sp-3);
+  font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical}
+textarea:focus,input:focus{outline:none;border-color:var(--accent)}
+.prompt-box{max-height:340px;overflow:auto}
+
+/* 资讯卡片 */
+.news{border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--sp-3);
+  margin-bottom:var(--sp-2);background:var(--panel-2)}
+.news .hd{display:flex;gap:var(--sp-2);align-items:baseline;flex-wrap:wrap}
+.news .ttl{font-weight:600}
+.news .meta{color:var(--muted);font-size:var(--fs-xs)}
+.news .reason{margin-top:var(--sp-2);font-size:var(--fs-sm);color:var(--text-2)}
+.star{color:var(--yellow)}
+
+/* 标注清单 */
+.act{border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--sp-3);
+  margin-bottom:var(--sp-2);background:var(--panel-2);display:flex;gap:var(--sp-3);align-items:flex-start}
+.act input[type=checkbox]{margin-top:4px;accent-color:var(--accent)}
+.act .body{flex:1}
+.act .ttl{font-weight:600;font-size:var(--fs-sm)}
+.act .why{color:var(--muted);font-size:var(--fs-xs);margin-top:2px}
+.act .quote{font-size:var(--fs-xs);color:var(--muted);border-left:2px solid var(--border-strong);
+  padding-left:var(--sp-2);margin-top:var(--sp-2)}
+
+.step-pane{display:none}
+.step-pane.active{display:block}
+.hint{background:var(--accent-soft);border:1px solid var(--accent);border-radius:var(--radius-md);
+  padding:var(--sp-3);font-size:var(--fs-sm);margin-bottom:var(--sp-4)}
+.kbd{font:12px ui-monospace,monospace;background:var(--panel-2);border:1px solid var(--border);
+  border-radius:4px;padding:1px 5px}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>主事工作台</h1>
+  <span class="sub">Gemini 决策 · ChatGPT 反向审查 · 你终裁</span>
+  <span class="demo-badge">界面原型 · 演示数据</span>
+</div>
+
+<div class="wrap">
+
+  <!-- 步骤条 -->
+  <div class="stepbar" id="stepbar">
+    <div class="step active" data-step="1"><span class="tick">✓</span><div class="n">步骤 ①</div><div class="t">规则审视</div></div>
+    <div class="step" data-step="2"><div class="n">步骤 ②</div><div class="t">初稿 · Gemini</div></div>
+    <div class="step" data-step="3"><div class="n">步骤 ③</div><div class="t">审查 · ChatGPT</div></div>
+    <div class="step" data-step="4"><div class="n">步骤 ④</div><div class="t">终稿 · Gemini</div></div>
+    <div class="step" data-step="5"><div class="n">步骤 ⑤</div><div class="t">执行跟踪</div></div>
+  </div>
+
+  <!-- ① 规则审视 -->
+  <div class="step-pane active" id="pane-1">
+    <div class="hint">
+      <b>每期必做</b>：规则本身不常变，但<b>政策与市场会影响它</b> —— 先看当前规则与近期变化，主事会在三轮里给出
+      <b>规则变更建议</b>（与调仓建议并列）。你在此对照裁定。
+    </div>
+
+    <div class="row">
+      <div class="col">
+        <div class="panel">
+          <h3>目标权重 <span class="muted">按行业 · 当前 vs 目标</span></h3>
+          <table class="table">
+            <thead><tr><th>行业</th><th class="num">目标</th><th class="num">当前</th><th class="num">偏离</th><th>状态</th></tr></thead>
+            <tbody>
+              <tr><td>半导体</td><td class="num">20%</td><td class="num">26.4%</td><td class="num">+6.4%</td><td><span class="tag risk">超配</span></td></tr>
+              <tr><td>宽基指数</td><td class="num">25%</td><td class="num">22.1%</td><td class="num">−2.9%</td><td><span class="tag ok">正常</span></td></tr>
+              <tr><td>电力设备</td><td class="num">10%</td><td class="num">11.8%</td><td class="num">+1.8%</td><td><span class="tag ok">正常</span></td></tr>
+              <tr><td>国防军工</td><td class="num">8%</td><td class="num">7.2%</td><td class="num">−0.8%</td><td><span class="tag ok">正常</span></td></tr>
+              <tr><td>医药医疗</td><td class="num">10%</td><td class="num">6.5%</td><td class="num">−3.5%</td><td><span class="tag warn">低配</span></td></tr>
+              <tr><td>房地产</td><td class="num">5%</td><td class="num">9.0%</td><td class="num">+4.0%</td><td><span class="tag risk">超配</span></td></tr>
+              <tr><td>海外债券</td><td class="num">12%</td><td class="num">10.5%</td><td class="num">−1.5%</td><td><span class="tag ok">正常</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="panel">
+          <h3>纪律规则 <span class="muted">可就地调整 · 改动留痕</span></h3>
+          <table class="table">
+            <thead><tr><th>规则</th><th class="num">阈值</th><th>当前</th></tr></thead>
+            <tbody>
+              <tr><td>单一标的上限</td><td class="num">≤ 15%</td><td><span class="tag ok">合规</span></td></tr>
+              <tr><td>单一行业上限</td><td class="num">≤ 40%</td><td><span class="tag ok">合规</span></td></tr>
+              <tr><td>权益类总仓位</td><td class="num">≤ 75%</td><td><span class="tag warn">71%</span></td></tr>
+              <tr><td>单一行业偏离容差</td><td class="num">± 5%</td><td><span class="tag risk">半导体 +6.4%</span></td></tr>
+            </tbody>
+          </table>
+          <div style="margin-top:var(--sp-3);display:flex;gap:var(--sp-2)">
+            <button class="btn sm">就地调整</button>
+            <button class="btn sm ghost">本期规则无变化</button>
+          </div>
+          <div class="muted" style="margin-top:var(--sp-2)">
+            留痕示例：2026-10-12 因「半导体出口管制」将单一行业偏离容差 ±8% → ±5%（依据 10-12 主事建议）
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>近期政策与市场变化 <span class="muted">复用资讯卡片 · ★ 与持仓相关 · 这是规则审视的输入</span></h3>
+      <div class="news">
+        <div class="hd"><span class="star">★</span><span class="ttl">半导体设备出口管制再度升级</span>
+          <span class="tag risk">重要度 5</span><span class="meta">路透 · 10-19 09:12</span></div>
+        <div class="reason">要点：新增两类设备许可要求，直接影响国产设备出口节奏 → 关联：格科微、鹏华半导体ETF</div>
+      </div>
+      <div class="news">
+        <div class="hd"><span class="star">★</span><span class="ttl">央行宣布降准 0.5 个百分点</span>
+          <span class="tag warn">重要度 4</span><span class="meta">央行 · 10-18 17:30</span></div>
+        <div class="reason">要点：释放长期资金约 1 万亿，利好权益与地产链 → 关联：万 科Ａ</div>
+      </div>
+      <div class="news">
+        <div class="hd"><span class="ttl">医药集采第十批开标</span>
+          <span class="tag">重要度 3</span><span class="meta">医保局 · 10-17 14:05</span></div>
+        <div class="reason">要点：平均降价 52%，创新药豁免 → 关联：中欧医疗健康</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ② 初稿 -->
+  <div class="step-pane" id="pane-2">
+    <div class="hint">
+      平台拼装提示词 = <b>上下文头</b>（持仓/目标/规则）+ <b>素材体</b>（资讯卡片 + 圆桌席位结论）+ <b>指令尾</b>（本轮角色指令）。
+      复制 → 到 Gemini 粘贴 → 把回复贴回下方保存。
+    </div>
+    <div class="panel">
+      <h3>提示词 · ① 初稿 <span class="muted">→ 复制给 Gemini</span>
+        <button class="btn sm primary" style="float:right" onclick="copyPrompt(this)">复制提示词</button>
+      </h3>
+      <textarea class="prompt-box" readonly>
+# 角色与任务（指令尾）
+你是我投资组合的主事（主动管理者）。基于以下全部信息，给出：
+1. 【调仓】是否需要调仓；若需要，给出调整指南（减/加/换 + 目标权重 + 理由 + 触发条件）
+2. 【规则】近期政策与市场变化是否要求调整我的纪律规则；若需要，给出规则变更建议（改哪条/改成什么/理由）
+
+# 我的持仓与目标（上下文头）
+- 总资产 ¥1,286,400 · 权益 71% · 浮盈 +3.2%
+- 半导体 26.4%（目标 20%，超配 +6.4%）· 宽基 22.1% · 电力设备 11.8% · 军工 7.2% · 医药 6.5% · 地产 9.0% · 海外债 10.5%
+- 纪律规则：单一标的 ≤15% · 单一行业 ≤40% · 权益总仓位 ≤75% · 行业偏离容差 ±5%
+
+# 近期相关资讯（素材体 · 已评审去重）
+1. ★【重要度5】半导体设备出口管制再度升级（路透 10-19）要点：新增两类设备许可 → 关联 格科微、鹏华半导体ETF
+2. ★【重要度4】央行降准 0.5 个百分点（央行 10-18）要点：释放长期资金约1万亿 → 关联 万 科Ａ
+3. 【重要度3】医药集采第十批开标（医保局 10-17）要点：平均降价52%，创新药豁免 → 关联 中欧医疗健康
+
+# 圆桌席位结论（素材体 · 按标的聚合：共识 / 分歧）
+- 格科微：共识=短期承压；分歧=回调幅度（保守派看 −15%，激进派看 −8%）
+- 万 科Ａ：共识=政策底显现；分歧=是否参与（价值派主张加，风险派主张不动）
+- 半导体板块：共识=中期国产替代逻辑未变；分歧=是否逢跌加仓
+
+# 输出要求
+用自然语言输出「调仓建议」与「规则变更建议」两部分，给出理由与触发条件。
+</textarea>
+      <div class="muted">提示词措辞可随时迭代 —— 不影响开发。</div>
+    </div>
+    <div class="panel">
+      <h3>回填 · Gemini 初稿原文</h3>
+      <textarea placeholder="把 Gemini 的回复整段粘贴到这里 → 平台原文留存（不做结构化解析）" style="min-height:150px">
+【调仓建议】
+1. 减仓 格科微：26.4%→20%，出口管制下短期承压，触发：管制细则落地或股价反弹至成本线
+2. 加仓 中欧医疗健康：6.5%→10%，集采落地后创新药豁免，估值处于低位
+3. 地产 万 科Ａ：维持 9%，降准利好但基本面未反转，不动
+
+【规则变更建议】
+1. 单一行业偏离容差 ±5% → ±8%：当前半导体受政策外生冲击，非主观超配，建议放宽容差避免被动砍仓
+</textarea>
+      <div style="margin-top:var(--sp-3)"><button class="btn primary" onclick="goto(3)">保存初稿 → 生成审查提示词</button></div>
+    </div>
+  </div>
+
+  <!-- ③ 审查 -->
+  <div class="step-pane" id="pane-3">
+    <div class="hint">
+      本轮提示词<b>内嵌上一轮原文</b>，交给 ChatGPT 做<b>反向思考</b>：对调仓建议与规则变更建议<b>都</b>挑刺。
+      ChatGPT 不产出最终方案，只是终稿的"砂纸"。
+    </div>
+    <div class="panel">
+      <h3>提示词 · ② 反向审查 <span class="muted">内嵌 Gemini 初稿 → 复制给 ChatGPT</span>
+        <button class="btn sm primary" style="float:right" onclick="copyPrompt(this)">复制提示词</button>
+      </h3>
+      <textarea class="prompt-box" readonly>
+# 角色与任务（指令尾）
+你是反向思考审查者。以下是主事（Gemini）给出的初稿方案。请逐条指出问题、风险与修正建议。
+不要另起一套方案，只做审查。请同时审查「调仓建议」与「规则变更建议」两部分。
+
+# 上下文（同上期：持仓 / 目标 / 规则 / 资讯 / 席位结论 —— 略，保持一致以保证可比）
+
+# 待审查初稿（内嵌 Gemini 原文）
+【调仓建议】
+1. 减仓 格科微 26.4%→20%：出口管制下短期承压，触发：管制细则落地或反弹至成本线
+2. 加仓 中欧医疗健康 6.5%→10%：集采落地后创新药豁免，估值低位
+3. 万 科Ａ 维持 9%：降准利好但基本面未反转
+
+【规则变更建议】
+1. 单一行业偏离容差 ±5% → ±8%：半导体属外生冲击，非主观超配
+
+# 输出要求
+对每条给出：通过 / 驳回 / 风险警示 + 理由；规则变更建议需评估是否为「过度反应」或「遗漏政策影响」。
+</textarea>
+    </div>
+    <div class="panel">
+      <h3>回填 · ChatGPT 审查原文</h3>
+      <textarea placeholder="把 ChatGPT 的审查回复整段粘贴到这里" style="min-height:150px">
+1. 减仓格科微 —— 风险警示：一次性减 6.4% 过于激进，建议分批（先减 3%，观察细则）
+2. 加仓中欧医疗健康 —— 通过，但建议设 8% 为第一目标，而非直接 10%
+3. 万科维持 —— 通过
+4. 规则容差 ±5%→±8% —— 驳回（过度反应）：为单一外生事件放宽长期纪律，会削弱规则约束力；
+   建议改用「临时豁免」而非改规则，或仅在半导体行业设观察期
+</textarea>
+      <div style="margin-top:var(--sp-3)"><button class="btn primary" onclick="goto(4)">保存审查 → 生成终稿提示词</button></div>
+    </div>
+  </div>
+
+  <!-- ④ 终稿 -->
+  <div class="step-pane" id="pane-4">
+    <div class="hint">
+      把 ChatGPT 的审查意见回灌 Gemini，由其<b>综合出终稿</b> —— 终稿是<b>执行依据</b>。
+    </div>
+    <div class="panel">
+      <h3>提示词 · ③ 终稿 <span class="muted">内嵌 ChatGPT 审查 → 复制给 Gemini</span>
+        <button class="btn sm primary" style="float:right" onclick="copyPrompt(this)">复制提示词</button>
+      </h3>
+      <textarea class="prompt-box" readonly>
+# 角色与任务（指令尾）
+综合以下审查意见，输出修订后的【最终调仓方案】与【最终规则变更建议】，
+并说明采纳 / 未采纳哪些审查意见及原因。这是终稿，将作为我的执行依据。
+
+# 你的初稿（原文）……（内嵌）
+# 审查意见（原文）……（内嵌）
+
+# 输出要求
+两条主线分别给结论：① 调仓（含目标权重、触发条件）② 规则变更（含是否改、改成什么、理由）
+</textarea>
+    </div>
+    <div class="panel">
+      <h3>回填 · Gemini 终稿原文 <span class="muted">= 执行依据</span></h3>
+      <textarea style="min-height:170px">
+【最终调仓方案】
+1. 减仓 格科微 26.4%→23%：采纳审查意见，改为分批（先减 3.4%），观察管制细则落地
+2. 加仓 中欧医疗健康 6.5%→8%：采纳审查意见，第一目标 8%，达 10% 需等创新药数据确认
+3. 万 科Ａ 维持 9%
+
+【最终规则变更建议】
+1. 不修改「单一行业偏离容差 ±5%」（未采纳初稿的 ±8%）；
+   改为：对半导体设 60 天临时观察期，期间不计入偏离告警 —— 兼顾纪律与外生冲击
+</textarea>
+      <div style="margin-top:var(--sp-3)"><button class="btn primary" onclick="goto(5)">保存终稿 → 进入执行跟踪</button></div>
+    </div>
+  </div>
+
+  <!-- ⑤ 执行跟踪 -->
+  <div class="step-pane" id="pane-5">
+    <div class="hint">
+      终稿原文（左） + 标注清单（右）。动作行由<b>平台轻量提取候选 → 你勾选/删改确认</b>。
+      分<b>调仓</b>与<b>规则变更</b>两组 —— 两条主线，都由你终裁。规则采纳后<b>立即生效</b>。
+    </div>
+    <div class="row">
+      <div class="col">
+        <div class="panel">
+          <h3>终稿原文 <span class="muted">只读 · 可高亮定位</span></h3>
+          <textarea readonly style="min-height:260px">
+【最终调仓方案】
+1. 减仓 格科微 26.4%→23%：分批，先减 3.4%
+2. 加仓 中欧医疗健康 6.5%→8%
+3. 万 科Ａ 维持 9%
+
+【最终规则变更建议】
+1. 不修改偏离容差 ±5%；对半导体设 60 天临时观察期
+</textarea>
+        </div>
+      </div>
+      <div class="col">
+        <div class="panel">
+          <h3>标注清单 · 调仓 <span class="tag accent">rebalance</span></h3>
+          <div class="act">
+            <input type="checkbox" checked />
+            <div class="body">
+              <div class="ttl">减仓 格科微 → 23%</div>
+              <div class="why">分批先减 3.4% · 触发：管制细则落地</div>
+              <div class="quote">来源：「减仓 格科微 26.4%→23%：分批，先减 3.4%」</div>
+              <div style="margin-top:var(--sp-2)"><span class="tag ok">计划</span></div>
+            </div>
+          </div>
+          <div class="act">
+            <input type="checkbox" checked />
+            <div class="body">
+              <div class="ttl">加仓 中欧医疗健康 → 8%</div>
+              <div class="why">第一目标 8% · 触发：创新药数据确认后再到 10%</div>
+              <div class="quote">来源：「加仓 中欧医疗健康 6.5%→8%」</div>
+              <div style="margin-top:var(--sp-2)"><span class="tag ok">计划</span></div>
+            </div>
+          </div>
+          <div class="act">
+            <input type="checkbox" />
+            <div class="body">
+              <div class="ttl">万 科Ａ 维持 9% <span class="muted">（持有，无需动作）</span></div>
+              <div class="why">降准利好但基本面未反转</div>
+            </div>
+          </div>
+
+          <h4>标注清单 · 规则变更 <span class="tag warn">rule</span></h4>
+          <div class="act">
+            <input type="checkbox" checked />
+            <div class="body">
+              <div class="ttl">半导体设 60 天临时观察期 <span class="muted">（不改 ±5% 容差）</span></div>
+              <div class="why">未采纳初稿的放宽至 ±8%，改用临时豁免 —— 保留纪律约束力</div>
+              <div class="quote">来源：「不修改偏离容差 ±5%；对半导体设 60 天临时观察期」</div>
+              <div style="margin-top:var(--sp-2)"><span class="tag ok">已采纳 · 立即生效</span></div>
+            </div>
+          </div>
+          <div style="margin-top:var(--sp-3);display:flex;gap:var(--sp-2)">
+            <button class="btn success sm">确认动作行</button>
+            <button class="btn sm ghost">回填实际成交</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 历史 -->
+  <div class="panel">
+    <h3>历史会话 <span class="muted">点开可回溯三回合原文 + 动作行 + 执行结果</span></h3>
+    <table class="table">
+      <thead><tr><th>日期</th><th>状态</th><th class="num">调仓条目</th><th class="num">规则变更</th><th>摘要</th><th></th></tr></thead>
+      <tbody>
+        <tr><td>2026-10-19</td><td><span class="tag ok">执行中</span></td><td class="num">2</td><td class="num">1</td><td>减格科微 / 加中欧医疗 · 半导体观察期</td><td><button class="btn sm ghost">查看</button></td></tr>
+        <tr><td>2026-10-12</td><td><span class="tag">已完成</span></td><td class="num">3</td><td class="num">1</td><td>调降地产 / 补宽基 · 偏离容差 ±8%→±5%</td><td><button class="btn sm ghost">查看</button></td></tr>
+        <tr><td>2026-10-05</td><td><span class="tag">已完成</span></td><td class="num">2</td><td class="num">0</td><td>减军工 / 加电力设备</td><td><button class="btn sm ghost">查看</button></td></tr>
+      </tbody>
+    </table>
+    <div class="muted" style="margin-top:var(--sp-2)">
+      与规则留痕联动：可查某次规则变更发生在哪期、什么背景、依据哪次主事建议。
+    </div>
+  </div>
+
+  <div class="muted" style="text-align:center;margin-top:var(--sp-5)">
+    原型仅供界面与工作流确认 · 数据为演示 · 对应设计文档 docs/v2-主事工作台设计方案.md（v0.3）
+  </div>
+</div>
+
+<script>
+const bar = document.getElementById('stepbar');
+bar.addEventListener('click', e => {
+  const el = e.target.closest('.step');
+  if (el) goto(parseInt(el.dataset.step, 10));
+});
+function goto(n){
+  document.querySelectorAll('.step').forEach(s=>{
+    s.classList.toggle('active', +s.dataset.step === n);
+    s.classList.toggle('done', +s.dataset.step < n);
+    const tick = s.querySelector('.tick');
+    if (+s.dataset.step < n && !tick){
+      const t=document.createElement('span'); t.className='tick'; t.textContent='✓'; s.prepend(t);
+    } else if (+s.dataset.step >= n && tick) tick.remove();
+  });
+  document.querySelectorAll('.step-pane').forEach(p=>p.classList.remove('active'));
+  document.getElementById('pane-'+n).classList.add('active');
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+function copyPrompt(btn){
+  const ta = btn.closest('.panel').querySelector('textarea');
+  ta.select(); document.execCommand('copy');
+  const old = btn.textContent; btn.textContent = '已复制 ✓';
+  setTimeout(()=>btn.textContent = old, 1200);
+}
+</script>
+</body>
+</html>

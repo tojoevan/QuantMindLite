@@ -50,6 +50,12 @@ const chiefState = {
   breaks: { positions: [], categories: [] },
   fromDefault: false,          // 当前展示的是否为「默认 2 条（未保存）」
   pref: { note: "", allow_rebalance: false },  // A3 风险偏好 / 约束
+  // ---- v2 主事工作台：会话 / 三轮 / 动作行 / 历史（B·C·D 组）----
+  sessionId: null,             // 当前一期会话 id
+  sessions: [],                // 历史会话列表（倒序）
+  turns: { draft: null, review: null, final: null },  // {prompt, reply}
+  actions: [],                 // 已保存动作行
+  pendingActions: [],          // 提取但未保存的候选
 };
 
 function chiefFmtPct(v) { return v == null ? "—" : v.toFixed(1) + "%"; }
@@ -488,6 +494,10 @@ function renderChief() {
     <div class="chief-page">
       <div class="panel">
         <h3>目标与规则审视 <span class="muted">目标与纪律都在平台侧配置，主事只给建议、由你终裁</span></h3>
+        <div class="chief-sessionbar">
+          <span id="chief-cur-session" class="muted">本期会话：未创建（生成提示词时自动新建）</span>
+          <button class="btn-mini chief-minor" id="chief-new-session" type="button">新建一期</button>
+        </div>
         <div id="chief-cards">
           <div class="chief-sub">
             <h4>目标权重（按标的） <span class="muted">让主事看清每笔钱投的领域</span></h4>
@@ -572,6 +582,65 @@ function renderChief() {
               <span class="muted" id="chief-p-ref-hint"></span>
             </div>
           </div>
+
+          <div class="chief-sub">
+            <h4>近期政策 / 市场变化 <span class="muted">★ = 与我的持仓相关，供规则复核对照（§4.2.1）</span></h4>
+            <div id="chief-news" class="chief-news">加载中…</div>
+          </div>
+        </div>
+
+        <div class="chief-round">
+          <h4>② 初稿（→ Gemini）<span id="chief-draft-status" class="muted"></span></h4>
+          <div class="chief-round-actions">
+            <button class="btn-mini" data-gen="draft" type="button">生成提示词</button>
+            <button class="btn-mini chief-minor" data-copy="draft" type="button">复制提示词</button>
+            <button class="btn-mini" data-save="draft" type="button">保存答复</button>
+          </div>
+          <textarea class="chief-prompt" id="chief-prompt-draft" placeholder="点「生成提示词」自动装配（上下文头 + 素材体 + 指令尾）；也可手动粘贴/微调"></textarea>
+          <textarea class="chief-reply" id="chief-reply-draft" placeholder="在此粘贴 Gemini 初稿原文，点「保存答复」留档"></textarea>
+        </div>
+
+        <div class="chief-round">
+          <h4>③ 审查（→ ChatGPT）<span id="chief-review-status" class="muted"></span></h4>
+          <div class="chief-round-actions">
+            <button class="btn-mini" data-gen="review" type="button">内嵌初稿生成</button>
+            <button class="btn-mini chief-minor" data-copy="review" type="button">复制提示词</button>
+            <button class="btn-mini" data-save="review" type="button">保存答复</button>
+          </div>
+          <textarea class="chief-prompt" id="chief-prompt-review" placeholder="自动内嵌 ② 初稿原文 + 反向审查指令"></textarea>
+          <textarea class="chief-reply" id="chief-reply-review" placeholder="在此粘贴 ChatGPT 审查意见原文，点「保存答复」留档"></textarea>
+        </div>
+
+        <div class="chief-round">
+          <h4>④ 终稿（→ Gemini，执行依据）<span id="chief-final-status" class="muted"></span></h4>
+          <div class="chief-round-actions">
+            <button class="btn-mini" data-gen="final" type="button">内嵌审查生成</button>
+            <button class="btn-mini chief-minor" data-copy="final" type="button">复制提示词</button>
+            <button class="btn-mini" data-save="final" type="button">保存答复</button>
+            <button class="btn-mini chief-minor" id="chief-extract" type="button">提取动作行</button>
+          </div>
+          <textarea class="chief-prompt" id="chief-prompt-final" placeholder="自动内嵌 ③ 审查意见 + 终稿指令（须显式说明采纳/未采纳哪些审查意见）"></textarea>
+          <textarea class="chief-reply" id="chief-reply-final" placeholder="在此粘贴 Gemini 终稿原文（执行依据），保存后可「提取动作行」"></textarea>
+        </div>
+
+        <div class="chief-sub">
+          <h4>⑤ 执行跟踪</h4>
+          <div class="chief-track">
+            <div class="chief-track-left">
+              <div class="muted">终稿原文（执行依据）</div>
+              <div id="chief-final-render" class="md-body"></div>
+            </div>
+            <div class="chief-track-right">
+              <div class="muted">动作行（调仓组 / 规则组）</div>
+              <div id="chief-actions"></div>
+              <div id="chief-extract-editor" style="display:none"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="chief-history">
+          <h4 class="chief-collapse" id="chief-history-toggle">▸ 历史会话</h4>
+          <div id="chief-history-list" style="display:none"></div>
         </div>
       </div>
     </div>`;
@@ -587,5 +656,369 @@ function renderChief() {
   if (rScope) rScope.onchange = chiefSyncRuleTarget;
   const pSave = document.getElementById("chief-pref-save");
   if (pSave) pSave.onclick = chiefSavePref;
+
+  // ---- v2：会话 / 三轮 / 提取 / 历史 ----
+  const ns = document.getElementById("chief-new-session");
+  if (ns) ns.onclick = chiefNewSession;
+  document.querySelectorAll("[data-gen]").forEach(b =>
+    b.onclick = () => chiefGenPrompt(b.getAttribute("data-gen")));
+  document.querySelectorAll("[data-copy]").forEach(b =>
+    b.onclick = () => chiefCopyPrompt(b.getAttribute("data-copy")));
+  document.querySelectorAll("[data-save]").forEach(b =>
+    b.onclick = () => chiefSaveReply(b.getAttribute("data-save")));
+  const ex = document.getElementById("chief-extract");
+  if (ex) ex.onclick = chiefExtractActions;
+  const ht = document.getElementById("chief-history-toggle");
+  if (ht) ht.onclick = chiefToggleHistory;
+
   chiefLoadGoals();
+  chiefLoadNews();
+  chiefLoadSessions();
+}
+
+// =====================================================================
+// v2 主事工作台：会话 / 三轮提示词（B1-B5）/ 动作行（C1-C3）/ 历史（D1）
+// 平台定位：不做决策、不自动下单；只归集→出提示词→回收原文→跟踪。
+// =====================================================================
+
+// ---------- A5：近期政策 / 市场变化 ----------
+async function chiefLoadNews() {
+  const el = document.getElementById("chief-news");
+  if (!el) return;
+  try {
+    const r = await API("GET", "/api/chief/news");
+    const items = (r && r.items) || [];
+    if (!items.length) {
+      el.innerHTML = '<span class="muted">近期暂无重要度达标的资讯</span>';
+      return;
+    }
+    el.innerHTML = items.map(it => {
+      const star = it.related ? "★ " : "";
+      const codes = (it.codes && it.codes.length) ? ` · 关联：${it.codes.join("、")}` : "";
+      return `<div class="chief-news-item">
+        <span class="${it.related ? "chief-news-star" : "muted"}">${star}</span>
+        <span class="chief-news-title">${escapeHtml(it.title || "")}</span>
+        <span class="muted">（${escapeHtml(it.source || "")} · ${escapeHtml(it.date || "")}）</span>
+        ${codes ? `<span class="muted">${codes}</span>` : ""}
+      </div>`;
+    }).join("");
+  } catch (e) {
+    el.innerHTML = `<span class="muted">资讯加载失败：${escapeHtml(e.message || String(e))}</span>`;
+  }
+}
+
+// ---------- 会话管理 ----------
+async function chiefNewSession() {
+  try {
+    const r = await API("POST", "/api/chief/sessions", {});
+    chiefState.sessionId = r.id;
+    chiefState.sessions = [r].concat(chiefState.sessions);
+    chiefUpdateSessionBar();
+    showToast("已新建一期会话");
+  } catch (e) {
+    showToast("新建失败：" + (e.message || e));
+  }
+}
+
+async function chiefLoadSessions() {
+  try {
+    const r = await API("GET", "/api/chief/sessions");
+    chiefState.sessions = (r && r.items) || [];
+    if (chiefState.sessions.length) {
+      await chiefLoadSessionDetail(chiefState.sessions[0].id);  // 默认载入最新一期
+    } else {
+      chiefState.sessionId = null;
+      chiefUpdateSessionBar();
+    }
+  } catch (e) { /* 不影响主流程 */ }
+}
+
+async function chiefLoadSessionDetail(sid) {
+  try {
+    const r = await API("GET", "/api/chief/sessions/" + sid);
+    chiefState.turns = (r && r.turns) || {};
+    chiefState.actions = (r && r.actions) || [];
+    for (const role of ["draft", "review", "final"]) {
+      const p = document.getElementById("chief-prompt-" + role);
+      const rp = document.getElementById("chief-reply-" + role);
+      if (p && chiefState.turns[role]) p.value = chiefState.turns[role].prompt || "";
+      if (rp && chiefState.turns[role]) rp.value = chiefState.turns[role].reply || "";
+    }
+    chiefUpdateSessionBar();
+    chiefRenderFinalReply();
+    chiefRenderActions();
+  } catch (e) { /* ignore */ }
+}
+
+function chiefUpdateSessionBar() {
+  const el = document.getElementById("chief-cur-session");
+  if (!el) return;
+  const s = chiefState.sessions.find(x => x.id === chiefState.sessionId);
+  if (!s) { el.textContent = "本期会话：未创建（生成提示词时自动新建）"; return; }
+  el.textContent = `本期会话：#${s.id} ${s.title} · 状态 ${s.status} · 调仓 ${s.rebalance_count} · 规则 ${s.rule_count}`;
+}
+
+// ---------- B3/B4/B5：三轮提示词生成 / 复制 / 保存 ----------
+async function chiefGenPrompt(round) {
+  if (!chiefState.sessionId) await chiefNewSession();
+  if (!chiefState.sessionId) return;
+  const btn = document.querySelector(`[data-gen="${round}"]`);
+  if (btn) btn.disabled = true;
+  try {
+    const r = await API("POST", "/api/chief/prompt",
+      { session_id: chiefState.sessionId, round });
+    const ta = document.getElementById("chief-prompt-" + round);
+    if (ta) ta.value = (r && r.prompt) || "";
+    showToast(`提示词已生成（${round}）`);
+  } catch (e) {
+    showToast("生成失败：" + (e.message || e));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function chiefCopyPrompt(round) {
+  const ta = document.getElementById("chief-prompt-" + round);
+  if (!ta) return;
+  const text = ta.value || "";
+  if (!text) { showToast("提示词为空"); return; }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text)
+      .then(() => showToast("已复制提示词"), () => chiefFallbackCopy(ta));
+  } else {
+    chiefFallbackCopy(ta);
+  }
+}
+
+function chiefFallbackCopy(ta) {
+  ta.select();
+  try { document.execCommand("copy"); showToast("已复制提示词"); } catch (e) { /* noop */ }
+}
+
+async function chiefSaveReply(round) {
+  if (!chiefState.sessionId) await chiefNewSession();
+  if (!chiefState.sessionId) return;
+  const promptTa = document.getElementById("chief-prompt-" + round);
+  const replyTa = document.getElementById("chief-reply-" + round);
+  const reply = replyTa ? replyTa.value : "";
+  const promptText = promptTa ? promptTa.value : "";
+  const btn = document.querySelector(`[data-save="${round}"]`);
+  if (btn) btn.disabled = true;
+  try {
+    const r = await API("POST", "/api/chief/turns",
+      { session_id: chiefState.sessionId, role: round,
+        prompt_text: promptText, reply_text: reply });
+    if (r && r.status) {
+      const s = chiefState.sessions.find(x => x.id === chiefState.sessionId);
+      if (s) s.status = r.status;
+    }
+    chiefState.turns[round] = { prompt: promptText, reply };
+    if (round === "final") chiefRenderFinalReply();
+    chiefUpdateSessionBar();
+    showToast(round + " 答复已保存");
+  } catch (e) {
+    showToast("保存失败：" + (e.message || e));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function chiefRenderFinalReply() {
+  const el = document.getElementById("chief-final-render");
+  if (!el) return;
+  const reply = (chiefState.turns.final && chiefState.turns.final.reply) || "";
+  el.innerHTML = reply
+    ? mdRender(reply)
+    : '<span class="muted">尚未保存终稿（在 ④ 粘贴并保存）</span>';
+}
+
+// ---------- C1：从终稿提取动作行候选 ----------
+function chiefExtractActions() {
+  const ta = document.getElementById("chief-reply-final");
+  const text = (ta ? ta.value : "") || (chiefState.turns.final && chiefState.turns.final.reply) || "";
+  if (!text.trim()) { showToast("终稿为空，无法提取"); return; }
+  chiefState.pendingActions = chiefParseActions(text);
+  chiefRenderExtractEditor();
+}
+
+// 轻量启发式：编号/关键词行 → 候选；不调 LLM，零解析风险（§13.4）。
+function chiefParseActions(text) {
+  const out = [];
+  const lines = text.split(/\r?\n/);
+  for (const raw of lines) {
+    const ln = raw.trim();
+    if (!ln) continue;
+    if (/^#{1,4}\s/.test(ln)) continue;                 // 标题
+    if (/^[-—=*_]{3,}$/.test(ln)) continue;             // 分隔线
+    const isRule = /规则|纪律|上限|下限|阈值|持仓集中|单一(标的|行业)|超出/.test(ln);
+    const isRebal = /减仓|加仓|买入|卖出|增持|减持|换仓|调仓|建仓|清仓|平仓/.test(ln);
+    if (!isRule && !isRebal && !/^\d+[.、]/.test(ln)) continue;
+    let kind = isRule ? "rule" : "rebalance";
+    let action = "调整";
+    if (/减仓|减持|卖出/.test(ln)) action = "减仓";
+    else if (/加仓|增持|买入|建仓/.test(ln)) action = "加仓";
+    else if (/换仓|调仓/.test(ln)) action = "换仓";
+    else if (kind === "rule") action = /废止|取消|删除|撤/.test(ln) ? "revoke" : "modify";
+    const m = ln.match(/[（(]([^（）()]{2,12})[）)]/);
+    const target = m ? m[1] : "";
+    const nm = ln.match(/(\d+(?:\.\d+)?)\s*%/);
+    const num = nm ? nm[1] : "";
+    out.push({
+      kind, action, target,
+      target_weight: kind === "rebalance" ? (num || "") : "",
+      new_value: kind === "rule" ? (num || "") : "",
+      reason: ln.slice(0, 120), trigger: "", source_quote: ln.slice(0, 80),
+      status: kind === "rule" ? "rejected" : "planned",
+    });
+  }
+  if (!out.length) {
+    out.push({ kind: "rebalance", action: "调整", target: "",
+      target_weight: "", new_value: "", reason: "（未自动识别，请手动添加）",
+      trigger: "", source_quote: "", status: "planned" });
+  }
+  return out;
+}
+
+function chiefRenderExtractEditor() {
+  const el = document.getElementById("chief-extract-editor");
+  if (!el) return;
+  el.style.display = "";
+  const acts = chiefState.pendingActions || [];
+  el.innerHTML =
+    `<div class="muted">从终稿提取到 ${acts.length} 条候选，请核对其类型 / 动作 / 标的 / 权重后保存：</div>` +
+    acts.map((a, i) => `
+      <div class="chief-act-row" data-i="${i}">
+        <select class="chief-act-kind" data-i="${i}">
+          <option value="rebalance"${a.kind !== "rule" ? " selected" : ""}>调仓</option>
+          <option value="rule"${a.kind === "rule" ? " selected" : ""}>规则</option>
+        </select>
+        <input class="chief-act-target" data-i="${i}" value="${escapeHtml(a.target || "")}" placeholder="标的/范围">
+        <input class="chief-act-num" data-i="${i}" value="${escapeHtml(a.target_weight || a.new_value || "")}" placeholder="${a.kind === "rule" ? "新阈值%" : "目标权重%"}">
+        <button class="btn-mini chief-minor" data-del="${i}" type="button">删</button>
+      </div>`).join("") +
+    `<div class="chief-actions"><button class="btn-mini" id="chief-save-actions" type="button">保存动作行</button>
+      <span class="muted">保存后可在右侧 ⑤ 标注状态 / 权重</span></div>`;
+  el.querySelectorAll(".chief-act-kind").forEach(s =>
+    s.onchange = () => chiefEditPending(s.getAttribute("data-i"), "kind", s.value));
+  el.querySelectorAll(".chief-act-target").forEach(inp =>
+    inp.oninput = () => chiefEditPending(inp.getAttribute("data-i"), "target", inp.value));
+  el.querySelectorAll(".chief-act-num").forEach(inp =>
+    inp.oninput = () => chiefEditPending(inp.getAttribute("data-i"), "num", inp.value));
+  el.querySelectorAll("[data-del]").forEach(b =>
+    b.onclick = () => { chiefState.pendingActions.splice(+b.getAttribute("data-del"), 1); chiefRenderExtractEditor(); });
+  const sv = document.getElementById("chief-save-actions");
+  if (sv) sv.onclick = chiefSaveActions;
+}
+
+function chiefEditPending(i, field, val) {
+  i = +i;
+  const a = chiefState.pendingActions[i];
+  if (!a) return;
+  if (field === "num") { if (a.kind === "rule") a.new_value = val; else a.target_weight = val; }
+  else a[field] = val;
+}
+
+async function chiefSaveActions() {
+  if (!chiefState.sessionId) await chiefNewSession();
+  if (!chiefState.sessionId) return;
+  const items = (chiefState.pendingActions || []).map(a => ({
+    kind: a.kind, action: a.action, target: a.target,
+    target_weight: a.kind === "rebalance" ? (a.target_weight || "") : "",
+    new_value: a.kind === "rule" ? (a.new_value || "") : "",
+    reason: a.reason || "", trigger: a.trigger || "",
+    source_quote: a.source_quote || "",
+    status: a.kind === "rule" ? "rejected" : "planned",
+  }));
+  try {
+    await API("POST", "/api/chief/sessions/" + chiefState.sessionId + "/actions", { items });
+    await chiefLoadSessionDetail(chiefState.sessionId);
+    const ed = document.getElementById("chief-extract-editor");
+    if (ed) ed.style.display = "none";
+    showToast("动作行已保存");
+  } catch (e) {
+    showToast("保存失败：" + (e.message || e));
+  }
+}
+
+// ---------- C2/C3：动作行标注 + 规则采纳写回 ----------
+function chiefRenderActions() {
+  const el = document.getElementById("chief-actions");
+  if (!el) return;
+  const acts = chiefState.actions || [];
+  if (!acts.length) {
+    el.innerHTML = '<span class="muted">暂无动作行，在 ④ 终稿保存后点「提取动作行」</span>';
+    return;
+  }
+  const rb = acts.filter(a => a.kind !== "rule");
+  const rl = acts.filter(a => a.kind === "rule");
+  const rbHtml = rb.length ? rb.map(chiefActRowHtml).join("") : '<div class="muted">（无调仓动作）</div>';
+  const rlHtml = rl.length ? rl.map(chiefActRowHtml).join("") : '<div class="muted">（无规则变更）</div>';
+  el.innerHTML =
+    `<div class="chief-act-group">调仓组（计划 / 部分 / 已完成 / 取消）</div>${rbHtml}` +
+    `<div class="chief-act-group">规则组（采纳 → 立即写回目标配置并留痕）</div>${rlHtml}`;
+  el.querySelectorAll("[data-act-id]").forEach(sel =>
+    sel.onchange = () => chiefUpdateAction(+sel.getAttribute("data-act-id"),
+      sel.value, sel.getAttribute("data-field")));
+  el.querySelectorAll(".chief-act-w").forEach(inp =>
+    inp.onchange = () => chiefUpdateAction(+inp.getAttribute("data-act-id"),
+      inp.value, inp.getAttribute("data-field")));
+}
+
+function chiefActRowHtml(a) {
+  const isRule = a.kind === "rule";
+  const opts = isRule
+    ? [["adopted", "采纳"], ["rejected", "未采纳"]]
+    : [["planned", "计划"], ["partial", "部分"], ["done", "已完成"], ["canceled", "取消"]];
+  const sel = `<select class="chief-act-status" data-act-id="${a.id}" data-field="status">` +
+    opts.map(o => `<option value="${o[0]}"${a.status === o[0] ? " selected" : ""}>${o[1]}</option>`).join("") +
+    `</select>`;
+  const weight = isRule
+    ? `新值 <input class="chief-act-w" data-act-id="${a.id}" data-field="new_value" value="${escapeHtml(a.new_value || "")}" size="6">%`
+    : `目标 <input class="chief-act-w" data-act-id="${a.id}" data-field="target_weight" value="${escapeHtml(a.target_weight != null ? a.target_weight : "")}" size="6">%`;
+  return `<div class="chief-act-row">
+    <span class="chief-act-action">${escapeHtml(a.action || "")}</span>
+    <span class="chief-act-target">${escapeHtml(a.target || "")}</span>
+    ${weight} ${sel}
+  </div>`;
+}
+
+async function chiefUpdateAction(id, val, field) {
+  try {
+    await API("PATCH", "/api/chief/actions/" + id, { [field]: val });
+    await chiefLoadSessionDetail(chiefState.sessionId);  // 刷新（规则采纳会写回 chief_goals）
+    if (field === "status" && val === "adopted") showToast("规则已采纳并写回目标配置");
+    else showToast("已更新");
+  } catch (e) {
+    showToast("更新失败：" + (e.message || e));
+  }
+}
+
+// ---------- D1：历史会话 ----------
+function chiefToggleHistory() {
+  const list = document.getElementById("chief-history-list");
+  const tog = document.getElementById("chief-history-toggle");
+  if (!list) return;
+  const open = list.style.display !== "none";
+  list.style.display = open ? "none" : "";
+  if (tog) tog.textContent = (open ? "▸" : "▾") + " 历史会话";
+  if (!open) chiefRenderHistory();
+}
+
+function chiefRenderHistory() {
+  const list = document.getElementById("chief-history-list");
+  if (!list) return;
+  const sess = chiefState.sessions || [];
+  if (!sess.length) { list.innerHTML = '<div class="muted">暂无历史会话</div>'; return; }
+  list.innerHTML = sess.map(s => `
+    <div class="chief-hist-item" data-sid="${s.id}">
+      <span class="chief-hist-title">#${s.id} ${escapeHtml(s.title || "")}</span>
+      <span class="muted">${(s.created_at || "").slice(0, 10)} · ${s.status} · 调仓 ${s.rebalance_count} · 规则 ${s.rule_count}</span>
+      <button class="btn-mini chief-minor" data-open="${s.id}" type="button">载入</button>
+    </div>`).join("");
+  list.querySelectorAll("[data-open]").forEach(b =>
+    b.onclick = () => {
+      const sid = +b.getAttribute("data-open");
+      chiefState.sessionId = sid;
+      chiefLoadSessionDetail(sid);
+    });
 }

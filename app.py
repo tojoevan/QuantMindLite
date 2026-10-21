@@ -4243,6 +4243,12 @@ def chief_rules_check_draft(body: ChiefRulesIn,
     return _chief_check_rules(items, u, db)
 
 
+# ---------------- v2 主事工作台（chief.py）----------------
+# 加法接入：全新文件，仅注册新端点；现有 80+ 端点与表结构零改动。
+# register_chief 必须在 app.mount 之前调用，确保 /api/chief/* 路由先于静态托管注册。
+from chief import register_chief
+register_chief(app)
+
 # ---------------- 前端静态托管 ----------------
 # 显式 API 路由已先于 mount 注册，/api/* 由 API 处理；其余路径由静态目录托管（html=True 使 / 返回 index.html）。
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

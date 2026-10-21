@@ -143,7 +143,7 @@ async function renderRoundtable() {
           <div class="rt-seat-title">
             <button class="rt-seat-caret" type="button" aria-expanded="${_fold.has("rt-review-panel") ? "false" : "true"}" title="${_fold.has("rt-review-panel") ? "展开观点复盘" : "折叠观点复盘"}"></button>
             <span class="rt-seat-name">观点复盘</span>
-            <span class="muted">席位建议的「命中率 / 趋势 / 引用资讯信息量」——判定全部机械（方向 × 真实收益），不在页面做任何「对错」自评</span>
+            <span class="muted">席位输出为「分析结论」（对持仓与新闻的判断与理由）；其「素材质量 / 趋势 / 引用资讯信息量」由真实行情机械判定（方向 × 真实收益），不在页面做任何「对错」自评</span>
           </div>
           <div class="rt-seat-actions"></div>
         </div>
@@ -495,7 +495,7 @@ function rtRenderSeats() {
     const _rs = (rtState.review && rtState.review.seat_stats) || [];
     const _stat = _rs.find(x => x.seat_id === s.id);
     const rateBadge = (_stat && _stat.min_ok && _stat.rate != null)
-      ? `<span class="rt-badge rate" title="近 ${((rtState.review && rtState.review.meta) || {}).review_days || 20} 天有效样本 ${_stat.hit}+${_stat.miss}，T+${((rtState.review && rtState.review.meta) || {}).horizon || 5} 机械判定命中率">命中 ${_stat.rate}%</span>`
+      ? `<span class="rt-badge rate" title="近 ${((rtState.review && rtState.review.meta) || {}).review_days || 20} 天有效样本 ${_stat.hit}+${_stat.miss}，T+${((rtState.review && rtState.review.meta) || {}).horizon || 5} 机械判定素材质量（命中率）">素材质量 ${_stat.rate}%</span>`
       : "";
     let actions = "";
     if (isAuto) {
@@ -678,13 +678,13 @@ function rtRenderReview() {
 
   el.innerHTML = `
     <div class="rt-review-note">
-      判定窗口 T+${horizon}（与策略外推同尺度）；|收益| &lt; ${band}% 视为无效波动、不计命中率分母；
-      hold/观察无法用收益判对错，同样不计入。样本 &lt; ${minSample} 不展示命中率徽标。
+      判定窗口 T+${horizon}（与策略外推同尺度）；|收益| &lt; ${band}% 视为无效波动、不计入素材质量分母；
+      hold/观察无法用收益判对错，同样不计入。样本 &lt; ${minSample} 不展示素材质量徽标。
     </div>
     <div class="rt-review-chart" id="rt-review-chart"></div>
-    <div class="rt-hist-sub">席位命中率（T+${horizon}）</div>
+    <div class="rt-hist-sub">席位素材质量（T+${horizon}，= 机械判定命中率）</div>
     <div class="table-wrap"><table class="rt-review-table">
-      <thead><tr><th>席位</th><th>命中率</th><th>命中/未中</th><th>无效波动</th><th>待定</th><th>样本</th></tr></thead>
+      <thead><tr><th>席位</th><th>素材质量</th><th>命中/未中</th><th>无效波动</th><th>待定</th><th>样本</th></tr></thead>
       <tbody>${seatRows}</tbody>
     </table></div>
     <div class="rt-hist-sub">引用资讯的信息量（被引用 × 兑现）</div>
