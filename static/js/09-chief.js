@@ -54,8 +54,7 @@ const chiefState = {
   sessionId: null,             // 当前一期会话 id
   sessions: [],                // 历史会话列表（倒序）
   turns: { draft: null, review: null, final: null },  // {prompt, reply}
-  actions: [],                 // 已保存动作行
-  pendingActions: [],          // 提取但未保存的候选
+  actions: [],                 // 已保存动作行（由 agent 提取或手动维护，前端不再自动提取）
 };
 
 function chiefFmtPct(v) { return v == null ? "—" : v.toFixed(1) + "%"; }
@@ -617,10 +616,9 @@ function renderChief() {
             <button class="btn-mini" data-gen="final" type="button">内嵌审查生成</button>
             <button class="btn-mini chief-minor" data-copy="final" type="button">复制提示词</button>
             <button class="btn-mini" data-save="final" type="button">保存答复</button>
-            <button class="btn-mini chief-minor" id="chief-extract" type="button">提取动作行</button>
           </div>
           <textarea class="chief-prompt" id="chief-prompt-final" placeholder="自动内嵌 ③ 审查意见 + 终稿指令（须显式说明采纳/未采纳哪些审查意见）"></textarea>
-          <textarea class="chief-reply" id="chief-reply-final" placeholder="在此粘贴 Gemini 终稿原文（执行依据），保存后可「提取动作行」"></textarea>
+          <textarea class="chief-reply" id="chief-reply-final" placeholder="在此粘贴 Gemini 终稿原文（执行依据）"></textarea>
         </div>
 
         <div class="chief-sub">
@@ -631,9 +629,8 @@ function renderChief() {
               <div id="chief-final-render" class="md-body"></div>
             </div>
             <div class="chief-track-right">
-              <div class="muted">动作行（调仓组 / 规则组）</div>
+              <div class="muted">动作行（调仓组 / 规则组，由 agent 提取或手动维护）</div>
               <div id="chief-actions"></div>
-              <div id="chief-extract-editor" style="display:none"></div>
             </div>
           </div>
         </div>
@@ -666,8 +663,6 @@ function renderChief() {
     b.onclick = () => chiefCopyPrompt(b.getAttribute("data-copy")));
   document.querySelectorAll("[data-save]").forEach(b =>
     b.onclick = () => chiefSaveReply(b.getAttribute("data-save")));
-  const ex = document.getElementById("chief-extract");
-  if (ex) ex.onclick = chiefExtractActions;
   const ht = document.getElementById("chief-history-toggle");
   if (ht) ht.onclick = chiefToggleHistory;
 
@@ -677,7 +672,8 @@ function renderChief() {
 }
 
 // =====================================================================
-// v2 主事工作台：会话 / 三轮提示词（B1-B5）/ 动作行（C1-C3）/ 历史（D1）
+// v2 主事工作台：会话 / 三轮提示词（B1-B5）/ 动作行标注与写回（C2-C3）/ 历史（D1）
+// 注：C1「自动提取动作行」已移除——终稿原文本身即完整反馈，提取改由 agent 负责。
 // 平台定位：不做决策、不自动下单；只归集→出提示词→回收原文→跟踪。
 // =====================================================================
 
@@ -713,7 +709,9 @@ async function chiefNewSession() {
     const r = await API("POST", "/api/chief/sessions", {});
     chiefState.sessionId = r.id;
     chiefState.sessions = [r].concat(chiefState.sessions);
+    chiefState.actions = [];                 // 新会话无动作行
     chiefUpdateSessionBar();
+    chiefRenderActions();                    // 渲染空态，避免右栏永久空白
     showToast("已新建一期会话");
   } catch (e) {
     showToast("新建失败：" + (e.message || e));
@@ -832,121 +830,13 @@ function chiefRenderFinalReply() {
     : '<span class="muted">尚未保存终稿（在 ④ 粘贴并保存）</span>';
 }
 
-// ---------- C1：从终稿提取动作行候选 ----------
-function chiefExtractActions() {
-  const ta = document.getElementById("chief-reply-final");
-  const text = (ta ? ta.value : "") || (chiefState.turns.final && chiefState.turns.final.reply) || "";
-  if (!text.trim()) { showToast("终稿为空，无法提取"); return; }
-  chiefState.pendingActions = chiefParseActions(text);
-  chiefRenderExtractEditor();
-}
-
-// 轻量启发式：编号/关键词行 → 候选；不调 LLM，零解析风险（§13.4）。
-function chiefParseActions(text) {
-  const out = [];
-  const lines = text.split(/\r?\n/);
-  for (const raw of lines) {
-    const ln = raw.trim();
-    if (!ln) continue;
-    if (/^#{1,4}\s/.test(ln)) continue;                 // 标题
-    if (/^[-—=*_]{3,}$/.test(ln)) continue;             // 分隔线
-    const isRule = /规则|纪律|上限|下限|阈值|持仓集中|单一(标的|行业)|超出/.test(ln);
-    const isRebal = /减仓|加仓|买入|卖出|增持|减持|换仓|调仓|建仓|清仓|平仓/.test(ln);
-    if (!isRule && !isRebal && !/^\d+[.、]/.test(ln)) continue;
-    let kind = isRule ? "rule" : "rebalance";
-    let action = "调整";
-    if (/减仓|减持|卖出/.test(ln)) action = "减仓";
-    else if (/加仓|增持|买入|建仓/.test(ln)) action = "加仓";
-    else if (/换仓|调仓/.test(ln)) action = "换仓";
-    else if (kind === "rule") action = /废止|取消|删除|撤/.test(ln) ? "revoke" : "modify";
-    const m = ln.match(/[（(]([^（）()]{2,12})[）)]/);
-    const target = m ? m[1] : "";
-    const nm = ln.match(/(\d+(?:\.\d+)?)\s*%/);
-    const num = nm ? nm[1] : "";
-    out.push({
-      kind, action, target,
-      target_weight: kind === "rebalance" ? (num || "") : "",
-      new_value: kind === "rule" ? (num || "") : "",
-      reason: ln.slice(0, 120), trigger: "", source_quote: ln.slice(0, 80),
-      status: kind === "rule" ? "rejected" : "planned",
-    });
-  }
-  if (!out.length) {
-    out.push({ kind: "rebalance", action: "调整", target: "",
-      target_weight: "", new_value: "", reason: "（未自动识别，请手动添加）",
-      trigger: "", source_quote: "", status: "planned" });
-  }
-  return out;
-}
-
-function chiefRenderExtractEditor() {
-  const el = document.getElementById("chief-extract-editor");
-  if (!el) return;
-  el.style.display = "";
-  const acts = chiefState.pendingActions || [];
-  el.innerHTML =
-    `<div class="muted">从终稿提取到 ${acts.length} 条候选，请核对其类型 / 动作 / 标的 / 权重后保存：</div>` +
-    acts.map((a, i) => `
-      <div class="chief-act-row" data-i="${i}">
-        <select class="chief-act-kind" data-i="${i}">
-          <option value="rebalance"${a.kind !== "rule" ? " selected" : ""}>调仓</option>
-          <option value="rule"${a.kind === "rule" ? " selected" : ""}>规则</option>
-        </select>
-        <input class="chief-act-target" data-i="${i}" value="${escapeHtml(a.target || "")}" placeholder="标的/范围">
-        <input class="chief-act-num" data-i="${i}" value="${escapeHtml(a.target_weight || a.new_value || "")}" placeholder="${a.kind === "rule" ? "新阈值%" : "目标权重%"}">
-        <button class="btn-mini chief-minor" data-del="${i}" type="button">删</button>
-      </div>`).join("") +
-    `<div class="chief-actions"><button class="btn-mini" id="chief-save-actions" type="button">保存动作行</button>
-      <span class="muted">保存后可在右侧 ⑤ 标注状态 / 权重</span></div>`;
-  el.querySelectorAll(".chief-act-kind").forEach(s =>
-    s.onchange = () => chiefEditPending(s.getAttribute("data-i"), "kind", s.value));
-  el.querySelectorAll(".chief-act-target").forEach(inp =>
-    inp.oninput = () => chiefEditPending(inp.getAttribute("data-i"), "target", inp.value));
-  el.querySelectorAll(".chief-act-num").forEach(inp =>
-    inp.oninput = () => chiefEditPending(inp.getAttribute("data-i"), "num", inp.value));
-  el.querySelectorAll("[data-del]").forEach(b =>
-    b.onclick = () => { chiefState.pendingActions.splice(+b.getAttribute("data-del"), 1); chiefRenderExtractEditor(); });
-  const sv = document.getElementById("chief-save-actions");
-  if (sv) sv.onclick = chiefSaveActions;
-}
-
-function chiefEditPending(i, field, val) {
-  i = +i;
-  const a = chiefState.pendingActions[i];
-  if (!a) return;
-  if (field === "num") { if (a.kind === "rule") a.new_value = val; else a.target_weight = val; }
-  else a[field] = val;
-}
-
-async function chiefSaveActions() {
-  if (!chiefState.sessionId) await chiefNewSession();
-  if (!chiefState.sessionId) return;
-  const items = (chiefState.pendingActions || []).map(a => ({
-    kind: a.kind, action: a.action, target: a.target,
-    target_weight: a.kind === "rebalance" ? (a.target_weight || "") : "",
-    new_value: a.kind === "rule" ? (a.new_value || "") : "",
-    reason: a.reason || "", trigger: a.trigger || "",
-    source_quote: a.source_quote || "",
-    status: a.kind === "rule" ? "rejected" : "planned",
-  }));
-  try {
-    await API("POST", "/api/chief/sessions/" + chiefState.sessionId + "/actions", { items });
-    await chiefLoadSessionDetail(chiefState.sessionId);
-    const ed = document.getElementById("chief-extract-editor");
-    if (ed) ed.style.display = "none";
-    showToast("动作行已保存");
-  } catch (e) {
-    showToast("保存失败：" + (e.message || e));
-  }
-}
-
 // ---------- C2/C3：动作行标注 + 规则采纳写回 ----------
 function chiefRenderActions() {
   const el = document.getElementById("chief-actions");
   if (!el) return;
   const acts = chiefState.actions || [];
   if (!acts.length) {
-    el.innerHTML = '<span class="muted">暂无动作行，在 ④ 终稿保存后点「提取动作行」</span>';
+    el.innerHTML = '<span class="muted">暂无动作行（调仓依据直接看左侧终稿原文；动作行由 agent 提取或手动维护）</span>';
     return;
   }
   const rb = acts.filter(a => a.kind !== "rule");
