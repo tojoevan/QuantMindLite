@@ -955,6 +955,9 @@ th { color: var(--muted); font-weight: 600; }
 /* 反馈面板顶部：有持仓却无流水时说明持仓来源 */
 .fb-hint { margin-bottom: var(--sp-2); font-size: var(--fs-sm); }
 .fb-hint:empty { display: none; }
+/* 反馈记录：正在编辑的那一行高亮，提示用户当前在改哪条 */
+#fb-table tr.fb-editing { background: var(--accent-soft2, rgba(56,139,253,.10)); }
+#fb-table tr.fb-editing td { border-left: 2px solid var(--accent); }
 
 @media (max-width: 768px) {
   .sug-actions { margin-left: 0; width: 100%; }

@@ -94,6 +94,16 @@ class FeedbackOut(FeedbackCreate):
     realized_pnl: float = 0.0
 
 
+class FeedbackUpdate(BaseModel):
+    """编辑已提交的反馈（错误操作可改正确）。字段均可选，只更新传入的字段。"""
+    date: Optional[str] = None
+    action: Optional[str] = None          # BUY / SELL / HOLD
+    price: Optional[float] = None
+    qty: Optional[float] = None
+    prediction_id: Optional[int] = None
+    note: Optional[str] = None
+
+
 class ChartData(BaseModel):
     market_prices: list[PricePoint]
     predictions: list[PredictionOut]

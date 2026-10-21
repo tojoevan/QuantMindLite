@@ -157,13 +157,15 @@ async function selectProject(id) {
         <input id="fb-price" type="number" step="0.01" placeholder="成交价" />
         <input id="fb-qty" type="number" step="0.0001" placeholder="数量" value="0" />
         <input id="fb-note" placeholder="备注(可选)" />
-        <button type="submit">提交反馈</button>
+        <button type="submit" id="fb-submit">提交反馈</button>
+        <button type="button" id="fb-cancel" style="display:none">取消编辑</button>
+        <span id="fb-edit-tip" class="muted" style="display:none"></span>
       </form>
     </div>
     <div class="panel">
       <h3>反馈记录</h3>
       <div class="table-wrap">
-        <table id="fb-table"><thead><tr><th>日期</th><th>动作</th><th>价</th><th>量</th><th>实现盈亏</th><th>备注</th></tr></thead><tbody></tbody></table>
+        <table id="fb-table"><thead><tr><th>日期</th><th>动作</th><th>价</th><th>量</th><th>实现盈亏</th><th>备注</th><th>操作</th></tr></thead><tbody></tbody></table>
       </div>
     </div>
     <div class="panel">
@@ -186,6 +188,7 @@ async function selectProject(id) {
   document.getElementById("price-form").onsubmit = addPrice;
   document.getElementById("btn-fetch").onclick = fetchMarket;
   document.getElementById("fb-form").onsubmit = submitFeedback;
+  document.getElementById("fb-cancel").onclick = cancelEditFeedback;
   document.getElementById("btn-del").onclick = () => deleteProject(id);
   document.getElementById("btn-pos-save").onclick = savePosition;
   renderNoteView();
@@ -234,6 +237,7 @@ function qtyMemoKey(pid) { return "qw_last_qty_" + pid; }
 function backfillFeedback() {
   const form = document.getElementById("fb-form");
   if (!form) return;
+  cancelEditFeedback();   // 从建议区补录时一定是新增，先清掉可能的编辑态
   const panel = form.closest(".panel") || form;
   const data = lastChartData || {};
   const mps = data.market_prices || [];
@@ -299,8 +303,10 @@ async function refreshProjectView() {
   tb.innerHTML = "";
   data.feedbacks.forEach(f => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${f.date}</td><td>${f.action}</td><td>${f.price}</td><td>${f.qty}</td><td class="${f.realized_pnl >= 0 ? "pos" : "neg"}">${f.realized_pnl}</td><td class="muted">${f.note || ""}</td>`;
+    if (editingFbId === f.id) tr.classList.add("fb-editing");
+    tr.innerHTML = `<td>${f.date}</td><td>${f.action}</td><td>${f.price}</td><td>${f.qty}</td><td class="${f.realized_pnl >= 0 ? "pos" : "neg"}">${f.realized_pnl}</td><td class="muted">${escapeHtml(f.note || "")}</td><td><button type="button" class="btn sm fb-edit" data-id="${f.id}">编辑</button></td>`;
     tb.appendChild(tr);
+    tr.querySelector(".fb-edit").onclick = () => startEditFeedback(f);
   });
   renderCharts(data);
 }
@@ -643,25 +649,64 @@ async function fetchMarket() {
   }
 }
 
+// 反馈编辑态：编辑某条已提交记录时置为对应 id，提交走 PUT；为空则走 POST（新增）
+let editingFbId = null;
+
+function startEditFeedback(f) {
+  editingFbId = f.id;
+  document.getElementById("fb-date").value = f.date;
+  document.getElementById("fb-action").value = f.action;
+  document.getElementById("fb-price").value = f.price;
+  document.getElementById("fb-qty").value = f.qty;
+  document.getElementById("fb-note").value = f.note || "";
+  const submitBtn = document.getElementById("fb-submit");
+  const cancelBtn = document.getElementById("fb-cancel");
+  const tip = document.getElementById("fb-edit-tip");
+  if (submitBtn) submitBtn.textContent = "保存修改";
+  if (cancelBtn) cancelBtn.style.display = "";
+  if (tip) { tip.style.display = ""; tip.textContent = `正在编辑 ${f.date} 的「${f.action}」记录`; }
+  const form = document.getElementById("fb-form");
+  if (form) form.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function cancelEditFeedback() {
+  editingFbId = null;
+  const submitBtn = document.getElementById("fb-submit");
+  const cancelBtn = document.getElementById("fb-cancel");
+  const tip = document.getElementById("fb-edit-tip");
+  if (submitBtn) submitBtn.textContent = "提交反馈";
+  if (cancelBtn) cancelBtn.style.display = "none";
+  if (tip) tip.style.display = "none";
+}
+
 async function submitFeedback(e) {
   e.preventDefault();
   const qtyEl = document.getElementById("fb-qty");
   const qty = parseFloat(qtyEl.value) || 0;
+  const payload = {
+    date: document.getElementById("fb-date").value,
+    action: document.getElementById("fb-action").value,
+    price: parseFloat(document.getElementById("fb-price").value),
+    qty,
+    note: document.getElementById("fb-note").value
+  };
   try {
-    await API("POST", `/api/projects/${currentId}/feedback`, {
-      date: document.getElementById("fb-date").value,
-      action: document.getElementById("fb-action").value,
-      price: parseFloat(document.getElementById("fb-price").value),
-      qty,
-      note: document.getElementById("fb-note").value
-    });
-    if (qty > 0) localStorage.setItem(qtyMemoKey(currentId), String(qty));   // 记住数量，便于连续录入
-    document.getElementById("fb-form").reset();
-    document.getElementById("fb-date").value = today();
-    if (qty > 0) qtyEl.value = qty;   // reset 后回填本次数量，减少重复输入
-    await refreshProjectView();
-    await loadProjects();   // 同步侧栏
-    showToast("反馈已提交，持仓已更新");
+    if (editingFbId) {
+      await API("PUT", `/api/projects/${currentId}/feedback/${editingFbId}`, payload);
+      cancelEditFeedback();
+      await refreshProjectView();
+      await loadProjects();   // 同步侧栏
+      showToast("反馈已修改，持仓与盈亏已重算");
+    } else {
+      await API("POST", `/api/projects/${currentId}/feedback`, payload);
+      if (qty > 0) localStorage.setItem(qtyMemoKey(currentId), String(qty));   // 记住数量，便于连续录入
+      document.getElementById("fb-form").reset();
+      document.getElementById("fb-date").value = today();
+      if (qty > 0) qtyEl.value = qty;   // reset 后回填本次数量，减少重复输入
+      await refreshProjectView();
+      await loadProjects();   // 同步侧栏
+      showToast("反馈已提交，持仓已更新");
+    }
   } catch (err) {
     alert("提交失败：" + (err.message || err));
   }

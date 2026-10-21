@@ -37,7 +37,7 @@ from db import (
 )
 from models import (
     ProjectCreate, ProjectOut, ProjectUpdate, PricePoint, PredictionCreate, PredictionOut,
-    FeedbackCreate, FeedbackOut, ChartData, FetchReq, PriceOut,
+    FeedbackCreate, FeedbackOut, FeedbackUpdate, ChartData, FetchReq, PriceOut,
     RoundtableSeatCreate, RoundtableSeatUpdate, RoundtableSeatOut,
     RoundtablePostIn, RoundtablePostOut, RoundtableSettingsIn, RoundtableGenerateReq,
     RoundtableArchiveReq,
@@ -907,6 +907,48 @@ def submit_feedback(pid: int, body: FeedbackCreate, u: User = Depends(get_curren
         action=new_fb.action, price=new_fb.price, qty=new_fb.qty,
         prediction_id=new_fb.prediction_id, note=new_fb.note,
         realized_pnl=new_fb.realized_pnl,
+    )
+
+
+# ---------------- 编辑反馈（错误操作可改正确） ----------------
+@app.put("/api/projects/{pid}/feedback/{fid}", response_model=FeedbackOut)
+def update_feedback(pid: int, fid: int, body: FeedbackUpdate,
+                    u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    p = _project_or_404(pid, u, db)
+    fb = db.get(Feedback, fid)
+    if not fb or fb.project_id != pid:
+        raise HTTPException(404, "feedback not found")
+    # 1) 用「当前维护持仓 + 旧反馈全集」反推建仓起点（与 _build_chart 同一口径）
+    fbs_old = db.query(Feedback).filter(Feedback.project_id == pid).all()
+    init_s, init_c = _holding_initial(fbs_old, p.position_shares or 0.0, p.position_cost or 0.0)
+    # 2) 应用字段修改
+    if body.date is not None:
+        fb.date = body.date
+    if body.action is not None:
+        fb.action = body.action
+    if body.price is not None:
+        fb.price = body.price
+    if body.qty is not None:
+        fb.qty = body.qty
+    if body.prediction_id is not None:
+        fb.prediction_id = body.prediction_id
+    if body.note is not None:
+        fb.note = body.note
+    # 3) 全量重放：重算逐笔实现盈亏 + 最终持仓（改一笔会牵连后续成本基准）
+    fbs_new = db.query(Feedback).filter(Feedback.project_id == pid).all()
+    replayed, pos = replay(fbs_new, init_s, init_c)
+    realized_map = {f.id: r for f, r in replayed}
+    for f, r in replayed:
+        f.realized_pnl = r
+    p.position_shares = pos["shares"]
+    p.position_cost = pos["avg"]
+    db.commit()
+    db.refresh(fb)
+    return FeedbackOut(
+        id=fb.id, project_id=fb.project_id, date=fb.date,
+        action=fb.action, price=fb.price, qty=fb.qty,
+        prediction_id=fb.prediction_id, note=fb.note,
+        realized_pnl=realized_map.get(fb.id, 0.0),
     )
 
 
