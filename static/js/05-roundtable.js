@@ -143,7 +143,7 @@ async function renderRoundtable() {
           <div class="rt-seat-title">
             <button class="rt-seat-caret" type="button" aria-expanded="${_fold.has("rt-review-panel") ? "false" : "true"}" title="${_fold.has("rt-review-panel") ? "展开观点复盘" : "折叠观点复盘"}"></button>
             <span class="rt-seat-name">观点复盘</span>
-            <span class="muted">席位输出为「分析结论」（对持仓与新闻的判断与理由）；其「素材质量 / 趋势 / 引用资讯信息量」由真实行情机械判定（方向 × 真实收益），不在页面做任何「对错」自评</span>
+            <span class="muted" title="席位输出为「分析结论」（对持仓与新闻的判断与理由）；其「素材质量 / 趋势 / 引用资讯信息量」由真实行情机械判定（方向 × 真实收益），不在页面做任何「对错」自评">席位输出为「分析结论」；素材质量由真实行情机械判定，不做对错自评</span>
           </div>
           <div class="rt-seat-actions">
             ${rtState.admin ? `<button class="btn-mini" id="rt-review-run">${rtHasReview() ? "重新生成" : "生成复盘"}</button>` : ""}
