@@ -133,7 +133,7 @@ async function renderRoundtable() {
             <span class="muted">汇总全部席位观点 · 配置的 LLM 交叉分析</span>
           </div>
           <div class="rt-seat-actions">
-            ${rtState.admin ? `<button class="btn-mini" id="rt-analyze-run">开始分析</button>` : ""}
+            ${rtState.admin ? `<button class="btn-mini" id="rt-analyze-run">${rtState.analysis ? "重新分析" : "开始分析"}</button>` : ""}
           </div>
         </div>
         <div class="rt-seat-body" id="rt-analysis-body"><span class="muted">加载中…</span></div>
@@ -145,7 +145,9 @@ async function renderRoundtable() {
             <span class="rt-seat-name">观点复盘</span>
             <span class="muted">席位输出为「分析结论」（对持仓与新闻的判断与理由）；其「素材质量 / 趋势 / 引用资讯信息量」由真实行情机械判定（方向 × 真实收益），不在页面做任何「对错」自评</span>
           </div>
-          <div class="rt-seat-actions"></div>
+          <div class="rt-seat-actions">
+            ${rtState.admin ? `<button class="btn-mini" id="rt-review-run">${rtHasReview() ? "重新生成" : "生成复盘"}</button>` : ""}
+          </div>
         </div>
         <div class="rt-seat-body" id="rt-review-body"><span class="muted">加载中…</span></div>
       </div>
@@ -174,6 +176,8 @@ async function renderRoundtable() {
   if (rCaret) rCaret.onclick = () => rtFoldAux("rt-review-panel", !document.getElementById("rt-review-panel").classList.contains("collapsed"));
   const analyzeRun = document.getElementById("rt-analyze-run");
   if (analyzeRun) analyzeRun.onclick = () => rtAnalyze();
+  const reviewRun = document.getElementById("rt-review-run");
+  if (reviewRun) reviewRun.onclick = () => rtReviewRun();
   document.getElementById("rt-seat-collapse").onclick = () => rtFoldAll(true);
   document.getElementById("rt-seat-expand").onclick = () => rtFoldAll(false);
   const addSeatToggle = document.getElementById("rt-add-seat-toggle");
@@ -573,6 +577,7 @@ function rtRenderSeats() {
 // 这里是「多条观点之间」的横向汇总（共识/分歧/风险/综合结论），不做对错判断。
 // 分析由管理员手动触发（调 LLM 有费用），结果按日期覆盖保存，所有登录用户可见。
 function rtRenderAnalysis() {
+  rtSyncAnalysisBtn();
   const el = document.getElementById("rt-analysis-body");
   if (!el) return;
   const a = rtState.analysis;
@@ -597,7 +602,6 @@ async function rtAnalyze() {
   // 防误触：分析要调用 LLM（产生费用），与「生成今日讨论」同一约定。
   if (!confirm("确认汇总分析当日全部 AI 席位观点？\n将调用配置的 LLM（默认 DeepSeek）生成交叉分析。")) return;
   const btn = document.getElementById("rt-analyze-run");
-  const label = btn ? btn.textContent : "";
   if (btn) { btn.disabled = true; btn.textContent = "分析中…"; }
   try {
     const r = await API("POST", "/api/roundtable/analyze", { date: rtState.date });
@@ -607,7 +611,53 @@ async function rtAnalyze() {
   } catch (e) {
     showToast("分析失败：" + e.message);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = label; }
+    // 不用 finally 还原旧文案：成功/失败后文案都由 rtSyncAnalysisBtn 按当前数据决定
+    // （成功一次后应显示「重新分析」，还原 label 会退回「开始分析」）。
+    if (btn) { btn.disabled = false; rtSyncAnalysisBtn(); }
+  }
+}
+
+// 按钮文案按「当前是否已有分析结果」决定：无=开始分析，有=重新分析。
+function rtSyncAnalysisBtn() {
+  const btn = document.getElementById("rt-analyze-run");
+  if (!btn || btn.disabled) return;   // 生成中不要覆盖「分析中…」
+  btn.textContent = rtState.analysis ? "重新分析" : "开始分析";
+}
+
+// 复盘按钮文案：已有判定记录=重新生成，尚无=生成复盘。
+function rtSyncReviewBtn() {
+  const btn = document.getElementById("rt-review-run");
+  if (!btn || btn.disabled) return;   // 生成中不要覆盖「复盘中…」
+  btn.textContent = rtHasReview() ? "重新生成" : "生成复盘";
+}
+
+// 是否已有可复盘的判定记录（用于决定按钮文案）
+function rtHasReview() {
+  return !!(rtState.review && (rtState.review.seat_stats || []).some(s => s.total > 0));
+}
+
+async function rtReviewRun() {
+  const d = rtState.date;
+  // 必须显式传 date：端点不传参走 daily（复盘「昨日」），只有传 date 才复盘当前选定日。
+  if (!confirm(`确认对 ${d} 的观点重新抽取并复盘？\n将对当日每个有观点的席位各调用一次 LLM（产生费用），\n随后按真实行情机械判定。\n\n（幂等：同一 日期+席位+标的 不会重复落行，已存在的只更新。）`)) return;
+  const btn = document.getElementById("rt-review-run");
+  if (btn) { btn.disabled = true; btn.textContent = "复盘中…"; }
+  try {
+    const r = await API("POST", "/api/roundtable/review", { date: d });
+    const res = (r && r.result) || {};
+    // 复盘产出的判定落 rt_reviews，页面数据来自 review/stats，要重拉一次才看得到新结果。
+    const s = await API("GET", "/api/roundtable/review/stats").catch(() => null);
+    if (s) rtState.review = s;
+    rtRenderReview();
+    if (res.calls || res.records) {
+      showToast(`复盘完成：观点 ${res.posts || 0} · 抽取 ${res.calls || 0} · 判定 ${res.records || 0} 条`);
+    } else {
+      showToast(`${d} 没有可复盘的观点（当日无席位输出）`);
+    }
+  } catch (e) {
+    showToast("复盘失败：" + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; rtSyncReviewBtn(); }
   }
 }
 
@@ -623,6 +673,7 @@ const RT_VERDICT = {
 let rtReviewChart = null;
 
 function rtRenderReview() {
+  rtSyncReviewBtn();
   const el = document.getElementById("rt-review-body");
   if (!el) return;
   const data = rtState.review;
