@@ -47,7 +47,7 @@ from models import (
     NewsFeedCreate, NewsFeedUpdate, NewsFeedOut, NewsItemOut, NewsFetchReq, NewsSettingsIn,
     NewsOpmlIn, DailyReportReq, SettleReportReq,
     NewsDigestReq, NewsScoreReq,
-    ChiefWeightItem, ChiefWeightsIn, ChiefGoalOut, ChiefRuleItem, ChiefRulesIn,
+    ChiefWeightItem, ChiefWeightsIn, ChiefGoalOut, ChiefRuleItem, ChiefRulesIn, ChiefPrefIn,
 )
 from predictor import run_strategy, STRATEGY_CATALOG, rolling_predict, forecast_future
 from datasource import (
@@ -4099,6 +4099,33 @@ def chief_save_rules(body: ChiefRulesIn,
         db.rollback()
         logger.warning("保存纪律规则失败：%s", e)
         raise HTTPException(400, f"保存纪律规则失败：{e}")
+
+
+# ---------------- 风险偏好 / 约束（A3）----------------
+# 自由文本承载无法结构化的约束（最大回撤容忍 / 风格偏好 / 不接受杠杆…），
+# 开关控制主事能否提出换仓。两者都作为主事提示词的上下文（B 阶段装配）。
+# 固定两个 key：note（文本，可为空）/ allow_rebalance（1/0，永远有值）。
+
+@app.put("/api/chief/goals/preference")
+def chief_save_pref(body: ChiefPrefIn,
+                    u: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """风险偏好 / 约束全量覆盖保存（A3）。
+    空 note 也落库（代表用户清空了偏好），开关永远有值（默认 0）。"""
+    try:
+        db.query(ChiefGoal).filter(
+            ChiefGoal.kind == "preference",
+            or_(ChiefGoal.owner_id == u.id, ChiefGoal.owner_id.is_(None)),
+        ).delete(synchronize_session=False)
+        db.add(ChiefGoal(owner_id=u.id, kind="preference", key="note",
+                         value=(body.note or "").strip()))
+        db.add(ChiefGoal(owner_id=u.id, kind="preference", key="allow_rebalance",
+                         value="1" if body.allow_rebalance else "0"))
+        db.commit()
+        return {"ok": True}
+    except Exception as e:
+        db.rollback()
+        logger.warning("保存风险偏好失败：%s", e)
+        raise HTTPException(400, f"保存风险偏好失败：{e}")
 
 
 def _chief_check_rules(rule_items, u: User, db: Session):

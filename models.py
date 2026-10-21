@@ -405,3 +405,15 @@ class ChiefRuleItem(BaseModel):
 class ChiefRulesIn(BaseModel):
     items: List[ChiefRuleItem] = []
     sort: int = 0
+
+
+# ---------------- v2 主事工作台：风险偏好 / 约束（A3）----------------
+class ChiefPrefIn(BaseModel):
+    """风险偏好 / 约束（A3）：自由文本偏好 + 是否允许换仓开关。
+
+    自由文本承载「最大回撤容忍」「风格偏好」「不接受杠杆」等无法结构化的约束；
+    开关控制主事能否在建议里提出新增/减持标的（关闭则只评估当前持仓）。
+    这两个也作为主事提示词的上下文头（B 阶段装配）。
+    """
+    note: str = ""
+    allow_rebalance: bool = False

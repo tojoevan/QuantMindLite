@@ -1328,3 +1328,30 @@ td.chief-r-cur { font-variant-numeric: tabular-nums; }
 /* 违反规则的标的：整行左侧红条 + 占比红字（占比数字红） */
 tr.chief-row-break > td:first-child { box-shadow: inset 2px 0 0 var(--red); }
 .cat-tag.break { color: var(--red); background: rgba(248,81,73,.12); }
+
+/* 主事工作台：风险偏好 / 约束（A3） */
+.chief-pref { display: flex; flex-direction: column; gap: 14px; margin-top: 6px; }
+.chief-field { display: flex; flex-direction: column; gap: 6px; }
+.chief-field-label { font-size: 13px; color: var(--text); font-weight: 600; }
+.chief-textarea {
+  font: inherit; font-size: 13px; color: var(--text); background: var(--input-bg);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  width: 100%; resize: vertical; line-height: 1.5;
+}
+.chief-textarea:focus { outline: none; border-color: var(--accent); }
+.chief-switch-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.chief-switch-row .chief-field-label { min-width: 120px; }
+.chief-switch-hint { font-size: 12px; }
+/* 开关 */
+.switch { position: relative; display: inline-block; width: 44px; height: 24px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .slider {
+  position: absolute; cursor: pointer; inset: 0; background: var(--border);
+  border-radius: 24px; transition: background .18s;
+}
+.switch .slider::before {
+  content: ""; position: absolute; height: 18px; width: 18px; left: 3px; top: 3px;
+  background: #fff; border-radius: 50%; transition: transform .18s;
+}
+.switch input:checked + .slider { background: var(--accent); }
+.switch input:checked + .slider::before { transform: translateX(20px); }

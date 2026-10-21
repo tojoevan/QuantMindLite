@@ -6,8 +6,9 @@
 //   S2  页面骨架与入口（#/chief）
 //   A1  目标权重（**按标的**）+ 现状对照（当前占比 / 领域 / 偏离）
 //   A2  纪律规则（结构化条目：作用范围 + 比较符 + 阈值）+ 逐条校验（红=违反 / 黄=接近 / 绿=达标）
+//   A3  风险偏好 / 约束（自由文本偏好 + 允许换仓开关，存 kind=preference）
 //
-// 后续卡片（A3 风险偏好 / A4 政策变化 / B 三轮提示词 / C 标注跟踪 / D 历史）
+// 后续卡片（A4 政策变化 / B 三轮提示词 / C 标注跟踪 / D 历史）
 // 逐步填充到 #chief-cards 内。样式复用现有 .panel / .table / .cat-tag / .btn-mini。
 //
 // 纪律规则形态说明（用户决策）：只收**结构化条目**——平台要能自己算出「当前有没有违规」，
@@ -48,6 +49,7 @@ const chiefState = {
   checks: [],                  // 最近的逐条校验结果
   breaks: { positions: [], categories: [] },
   fromDefault: false,          // 当前展示的是否为「默认 2 条（未保存）」
+  pref: { note: "", allow_rebalance: false },  // A3 风险偏好 / 约束
 };
 
 function chiefFmtPct(v) { return v == null ? "—" : v.toFixed(1) + "%"; }
@@ -400,15 +402,37 @@ function chiefRestoreDefaultRules() {
   if (hint) hint.textContent = "已填入默认 2 条（单一标的 ≤15% / 单一行业 ≤40%），点「保存规则」生效";
 }
 
+// ---------- A3：风险偏好 / 约束 ----------
+async function chiefSavePref() {
+  const ta = document.getElementById("chief-pref-note");
+  const sw = document.getElementById("chief-pref-rebalance");
+  const hint = document.getElementById("chief-p-ref-hint");
+  const btn = document.getElementById("chief-pref-save");
+  const note = ta ? ta.value : "";
+  const allow = !!(sw && sw.checked);
+  if (btn) btn.disabled = true;
+  try {
+    await API("PUT", "/api/chief/goals/preference", { note, allow_rebalance: allow });
+    chiefState.pref = { note, allow_rebalance: allow };
+    if (hint) hint.textContent = "已保存风险偏好";
+    if (typeof showToast === "function") showToast("风险偏好已保存");
+  } catch (e) {
+    if (hint) hint.textContent = "保存失败：" + (e.message || String(e));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 // 载入持仓 + 已存目标权重
 async function chiefLoadGoals() {
   const tb = document.getElementById("chief-weights-body");
   const hint = document.getElementById("chief-w-hint");
   try {
-    const [ov, gs, rs] = await Promise.all([
+    const [ov, gs, rs, ps] = await Promise.all([
       API("GET", "/api/overview"),
       API("GET", "/api/chief/goals?kind=weight"),
       API("GET", "/api/chief/goals?kind=rule"),
+      API("GET", "/api/chief/goals?kind=preference"),
     ]);
     chiefState.positions = (ov && ov.positions) || [];
     const w = {};
@@ -424,7 +448,18 @@ async function chiefLoadGoals() {
       value: parseFloat(g.value) || 0,
     })).filter(r => r.value > 0);
     chiefState.rules = saved;
+    const prefs = ((ps && ps.items) || []);
+    chiefState.pref = {
+      note: (prefs.find(x => x.key === "note") || {}).value || "",
+      allow_rebalance: ((prefs.find(x => x.key === "allow_rebalance") || {}).value || "0") === "1",
+    };
     chiefState.fromDefault = false;
+    // 把已加载的风险偏好同步进 DOM（卡片在 renderChief 时按初始空值渲染，
+    // 之后异步拉到的偏好不会自动回填，必须手动同步，否则刷新后不显示已存内容）
+    const ta = document.getElementById("chief-pref-note");
+    if (ta) ta.value = chiefState.pref.note || "";
+    const sw = document.getElementById("chief-pref-rebalance");
+    if (sw) sw.checked = !!chiefState.pref.allow_rebalance;
     if (!saved.length) {   // 首次进入：铺默认 2 条，但不落库
       chiefState.rules = CHIEF_DEFAULT_RULES.map(r => ({ scope: r.scope, op: r.op, value: r.value }));
       chiefState.fromDefault = true;
@@ -515,6 +550,28 @@ function renderChief() {
               <span class="muted" id="chief-r-hint"></span>
             </div>
           </div>
+          <div class="chief-sub">
+            <h4>风险偏好 / 约束 <span class="muted">自由文本约束 · 换仓开关</span></h4>
+            <div class="chief-pref">
+              <label class="chief-field">
+                <span class="chief-field-label">风险偏好与约束说明</span>
+                <textarea id="chief-pref-note" class="chief-textarea" rows="4"
+                  placeholder="如：最大回撤容忍 -15%；偏价值而非成长；不接受杠杆…（将作为主事提示词上下文）">${escapeHtml(chiefState.pref.note || "")}</textarea>
+              </label>
+              <label class="chief-switch-row">
+                <span class="chief-field-label">允许主事建议换仓</span>
+                <span class="switch">
+                  <input type="checkbox" id="chief-pref-rebalance" ${chiefState.pref.allow_rebalance ? "checked" : ""}>
+                  <span class="slider"></span>
+                </span>
+                <span class="muted chief-switch-hint">关闭时，主事只评估当前持仓、不提新增/减持标的</span>
+              </label>
+            </div>
+            <div class="chief-actions">
+              <button class="btn-mini" id="chief-pref-save" type="button">保存偏好</button>
+              <span class="muted" id="chief-p-ref-hint"></span>
+            </div>
+          </div>
         </div>
       </div>
     </div>`;
@@ -528,5 +585,7 @@ function renderChief() {
   if (rDef) rDef.onclick = chiefRestoreDefaultRules;
   const rScope = document.getElementById("chief-r-new-scope");
   if (rScope) rScope.onchange = chiefSyncRuleTarget;
+  const pSave = document.getElementById("chief-pref-save");
+  if (pSave) pSave.onclick = chiefSavePref;
   chiefLoadGoals();
 }
