@@ -53,9 +53,14 @@ const chiefState = {
   // ---- v2 主事工作台：会话 / 三轮 / 动作行 / 历史（B·C·D 组）----
   sessionId: null,             // 当前一期会话 id
   sessions: [],                // 历史会话列表（倒序）
-  turns: { inspect: null, draft: null, review: null, final: null },  // {prompt, reply}
+  turns: {},                   // {role: {prompt, reply}}，role 见 CHIEF_ROLES
   actions: [],                 // 已保存动作行（由 agent 提取或手动维护，前端不再自动提取）
 };
+
+// 一期会话要回填的全部角色。inspect 与 ruleinspect 同属第 ① 步的两张卡，两者平行、
+// 互不依赖（可以先审仓位也可以先审纪律）。新增 / 改名时务必同步这里——
+// 「新建会话清空」与「打开会话回填」都遍历它，漏一个就会留下上一期的旧原文。
+const CHIEF_ROLES = ["inspect", "ruleinspect", "draft", "review", "final"];
 
 function chiefFmtPct(v) { return v == null ? "—" : v.toFixed(1) + "%"; }
 
@@ -478,7 +483,7 @@ function renderChief() {
     <div class="chief-page">
       <div class="chief-steps" id="chief-steps"></div>
       <div class="panel" id="chief-step-inspect">
-        <h3>① 审视目标与规则 <span class="muted">纪律在平台侧配置，仓位交给 Gemini 审视，由你终裁</span></h3>
+        <h3>① 审视目标与规则 <span class="muted">仓位 → Gemini 审视；纪律 → ChatGPT 审视并产出「目标·计划·规则·纪律」四件套，由你终裁</span></h3>
         <div class="chief-sessionbar">
           <span id="chief-cur-session" class="muted">本期会话：未创建（生成提示词时自动新建）</span>
           <button class="btn-mini chief-minor" id="chief-new-session" type="button">新建一期</button>
@@ -555,6 +560,25 @@ function renderChief() {
               <button class="btn-mini chief-minor" id="chief-r-default" type="button">恢复默认 2 条</button>
               <span class="muted" id="chief-r-hint"></span>
             </div>
+          </div>
+
+          <div class="chief-sub" id="chief-card-ruleinspect">
+            <h4>交由 ChatGPT 审视纪律规则 <span id="chief-ruleinspect-status" class="muted"></span></h4>
+            <div class="muted chief-sub-desc">
+              规则本身也得被审视：那些阈值是当初拍的，市场、资金和风险偏好都可能已经变了。
+              把上面规则的现状交给 ChatGPT，产出你的
+              <b>投资目标 / 投资计划 / 交易规则 / 交易纪律</b> 四件套，作为本期最上位的纲领。
+              与「审仓位」并列，<b>两卡互不依赖，先后随意</b>；四件套会进入 ②③④ 的提示词。
+            </div>
+            <div class="chief-round-actions">
+              <button class="btn-mini" data-gen="ruleinspect" type="button">生成纪律审视提示词</button>
+              <button class="btn-mini chief-minor" data-copy="ruleinspect" type="button">复制提示词</button>
+              <button class="btn-mini" data-save="ruleinspect" type="button">保存反馈</button>
+            </div>
+            <textarea class="chief-prompt" id="chief-prompt-ruleinspect" placeholder="点「生成纪律审视提示词」自动装配（持仓全景 + 纪律规则现状 + 风险偏好 + 素材体 + 四件套指令）"></textarea>
+            <textarea class="chief-reply" id="chief-reply-ruleinspect" placeholder="在此粘贴 ChatGPT 的四件套原文（投资目标 / 投资计划 / 交易规则 / 交易纪律），保存后作为本期 ②③④ 的依据"></textarea>
+            <div class="muted chief-policy-label">已保存的纲领</div>
+            <div id="chief-policy-render" class="md-body"></div>
           </div>
           <div class="chief-sub">
             <h4>风险偏好 / 约束 <span class="muted">自由文本约束 · 换仓开关</span></h4>
@@ -709,14 +733,15 @@ async function chiefNewSession() {
     chiefState.actions = [];                 // 新会话无动作行
     // 必须一并清空上一期的三轮与输入框：否则旧原文留在框里会被误保存，
     // 且新建的这一期会被进度条误判为「全部已完成」。
-    chiefState.turns = { inspect: null, draft: null, review: null, final: null };
-    for (const role of ["inspect", "draft", "review", "final"]) {
+    chiefState.turns = {};
+    for (const role of CHIEF_ROLES) {
       const p = document.getElementById("chief-prompt-" + role);
       const rp = document.getElementById("chief-reply-" + role);
       if (p) p.value = "";
       if (rp) rp.value = "";
     }
     chiefRenderFinalReply();
+    chiefRenderPolicy();                     // 四件套渲染区同步清空
     chiefUpdateSessionBar();
     chiefRenderActions();                    // 渲染空态，避免右栏永久空白
     showToast("已新建一期会话");
@@ -734,6 +759,8 @@ async function chiefLoadSessions() {
     } else {
       chiefState.sessionId = null;
       chiefUpdateSessionBar();
+      chiefRenderPolicy();
+      chiefRenderFinalReply();
     }
   } catch (e) { /* 不影响主流程 */ }
 }
@@ -743,7 +770,7 @@ async function chiefLoadSessionDetail(sid) {
     const r = await API("GET", "/api/chief/sessions/" + sid);
     chiefState.turns = (r && r.turns) || {};
     chiefState.actions = (r && r.actions) || [];
-    for (const role of ["inspect", "draft", "review", "final"]) {
+    for (const role of CHIEF_ROLES) {
       const p = document.getElementById("chief-prompt-" + role);
       const rp = document.getElementById("chief-reply-" + role);
       if (p && chiefState.turns[role]) p.value = chiefState.turns[role].prompt || "";
@@ -751,6 +778,7 @@ async function chiefLoadSessionDetail(sid) {
     }
     chiefUpdateSessionBar();
     chiefRenderFinalReply();
+    chiefRenderPolicy();
     chiefRenderActions();
   } catch (e) { /* ignore */ }
 }
@@ -759,7 +787,7 @@ async function chiefLoadSessionDetail(sid) {
 // 由来：生产库实证「3 期会话 0 期走完」——最大短板不是功能缺，而是用户看不出下一步该做什么。
 // 每步状态只依赖 chiefState.turns / actions / sessionId，故轮次保存后刷新即可，无需后端配合。
 const CHIEF_STEPS = [
-  { key: "inspect", label: "① 审视仓位", hint: "Gemini 看盘 → 相对态度" },
+  { key: "inspect", label: "① 审视仓位与纪律", hint: "Gemini 审盘 + ChatGPT 出四件套" },
   { key: "draft",   label: "② 初稿",     hint: "生成提示词 → Gemini" },
   { key: "review",  label: "③ 审查",     hint: "反向质疑 → ChatGPT" },
   { key: "final",   label: "④ 终稿",     hint: "定稿 → Gemini" },
@@ -776,11 +804,23 @@ function chiefTurnState(role) {
   return "todo";
 }
 
+// 多张平行角色合并成一步的状态：任一回填完=done（这一步已有产出）/
+// 都没回填但已生成提示词=doing（在等粘贴回来）/ 完全没动=todo。
+// 注意：不能用「全部回填才算 done」——① 的两张卡刻意设计成可只做一张
+// （行情没变就不必再审仓位），那样会让主动跳过一张的用户永远卡在「进行中」。
+// 缺的那张交给「生成下一轮」的软提醒提示，不在进度条上二次惩罚。
+function chiefMergeState(roles) {
+  const vs = roles.map(chiefTurnState);
+  if (vs.some(v => v === "done")) return "done";
+  return vs.some(v => v !== "todo") ? "doing" : "todo";
+}
+
 function chiefStepStates() {
   const acts = chiefState.actions || [];
   const st = {};
-  // ① 本身就是一轮（inspect）：生成了提示词=doing（等粘贴回来），存了 Gemini 审视结论=done
-  st.inspect = chiefTurnState("inspect");
+  // ① 由两张平行的卡组成：inspect（Gemini 审仓位）+ ruleinspect（ChatGPT 审纪律→四件套）。
+  // 两张都回填了才算 done——只做一半时 ② 就缺一半依据。
+  st.inspect = chiefMergeState(["inspect", "ruleinspect"]);
   st.draft = chiefTurnState("draft");
   st.review = chiefTurnState("review");
   st.final = chiefTurnState("final");
@@ -822,15 +862,17 @@ function chiefGoStep(key) {
 // 顺序软提醒（用户选定不做硬拦截）：明知缺料也给生成，但把代价说清楚。
 // 实证：会话 #2 曾跳过②直接存③，悄无声息地让审查失去被审查对象。
 // 软提醒的是「上一轮缺料」，链路为 inspect → draft → review → final
-const CHIEF_PREV = { draft: ["inspect", "① 仓位审视"], review: ["draft", "② 初稿"], final: ["review", "③ 审查"] };
-const CHIEF_ROUND_CN = { draft: "② 初稿", review: "③ 审查", final: "④ 终稿" };
+const CHIEF_PREV = { draft: [["inspect", "① 仓位审视"], ["ruleinspect", "① 纪律审视（四件套）"]],
+                     review: [["draft", "② 初稿"]], final: [["review", "③ 审查"]] };
+const CHIEF_ROUND_CN = { inspect: "① 仓位审视", ruleinspect: "① 纪律审视（四件套）",
+                         draft: "② 初稿", review: "③ 审查", final: "④ 终稿" };
 function chiefWarnPrevRound(round) {
-  const need = CHIEF_PREV[round];
-  if (!need) return;
-  const prev = need[0], label = need[1];
-  if (chiefTurnState(prev) !== "done") {
-    showToast(`还没保存${label}的原文，${CHIEF_ROUND_CN[round] || round}会缺少依据（仍为你生成）`);
-  }
+  const miss = (CHIEF_PREV[round] || [])
+    .filter(n => chiefTurnState(n[0]) !== "done")
+    .map(n => n[1]);
+  if (!miss.length) return;
+  // 合并成一条：连续弹多个 toast 会互相覆盖，用户只看得到最后一条。缺 ① 那两张卡时最常见。
+  showToast(`还没保存 ${miss.join("、")} 的原文，${CHIEF_ROUND_CN[round] || round}会缺少依据（仍为你生成）`);
 }
 
 function chiefUpdateSessionBar() {
@@ -861,7 +903,7 @@ async function chiefGenPrompt(round) {
     const prev0 = chiefState.turns[round] || {};
     chiefState.turns[round] = { prompt: (r && r.prompt) || "", reply: prev0.reply || "" };
     chiefUpdateSessionBar();
-    showToast(`提示词已生成（${round}）`);
+    showToast(`${CHIEF_ROUND_CN[round] || round}提示词已生成`);
   } catch (e) {
     showToast("生成失败：" + (e.message || e));
   } finally {
@@ -906,8 +948,9 @@ async function chiefSaveReply(round) {
     }
     chiefState.turns[round] = { prompt: promptText, reply };
     if (round === "final") chiefRenderFinalReply();
+    if (round === "ruleinspect") chiefRenderPolicy();
     chiefUpdateSessionBar();
-    showToast(round + " 答复已保存");
+    showToast(`${CHIEF_ROUND_CN[round] || round}答复已保存`);
   } catch (e) {
     showToast("保存失败：" + (e.message || e));
   } finally {
@@ -922,6 +965,15 @@ function chiefRenderFinalReply() {
   el.innerHTML = reply
     ? mdRender(reply)
     : '<span class="muted">尚未保存终稿（在 ④ 粘贴并保存）</span>';
+}
+
+function chiefRenderPolicy() {
+  const el = document.getElementById("chief-policy-render");
+  if (!el) return;
+  const reply = (chiefState.turns.ruleinspect && chiefState.turns.ruleinspect.reply) || "";
+  el.innerHTML = reply
+    ? mdRender(reply)
+    : '<span class="muted">尚未保存纲领（在上方粘贴 ChatGPT 的四件套原文）</span>';
 }
 
 // ---------- C2/C3：动作行标注 + 规则采纳写回 ----------

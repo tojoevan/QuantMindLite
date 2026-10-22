@@ -1392,6 +1392,8 @@ tr.chief-row-break > td:first-child { box-shadow: inset 2px 0 0 var(--red); }
 /* ① 审视区的说明段：解释「为什么不逐标的填精确权重」，避免用户以为功能丢了 */
 .chief-sub-desc { font-size: var(--fs-xs); line-height: 1.6; margin-bottom: 10px; }
 .chief-sub-desc b { font-weight: 500; color: var(--text-2); }
+/* 四件套留档区：与 ⑤ 的「终稿原文」同构，只是标题更短 */
+.chief-policy-label { font-size: var(--fs-xs); margin: 10px 0 4px; }
 .chief-prompt, .chief-reply {
   width: 100%; box-sizing: border-box;
   font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5;

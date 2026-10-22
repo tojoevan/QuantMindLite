@@ -11,7 +11,8 @@
 # 避免顶层循环依赖（app 在底部 import 本模块时，其内部符号已定义完毕）。
 #
 # 平台定位（§0）：**不做决策、不自动下单**——只负责「归集 → 出提示词 → 回收原文 → 跟踪」，
-# 决策权永远在用户（Gemini 初稿 → ChatGPT 反向 → Gemini 终稿，人工桥接复制粘贴）。
+# 决策权永远在用户。第 ① 步两张卡并行（Gemini 审仓位 / ChatGPT 审纪律→产出「目标·计划·规则·纪律」
+# 四件套），之后 Gemini 初稿 → ChatGPT 反向 → Gemini 终稿，全程人工桥接复制粘贴。
 
 import json
 from datetime import datetime
@@ -83,21 +84,22 @@ def _scope_label(scope: str, positions) -> str:
 
 # ---------------------------------------------------------------- 上下文头（三端一致）
 
-def _latest_inspect_reply(u, db, sid=None) -> str:
-    """取第 ① 步「仓位审视」的 Gemini 结论原文。
+def _latest_reply(u, db, role: str, sid=None) -> str:
+    """取某一轮（role）最近一次的主事答复原文。
 
-    优先当前会话；当前会话没做审视时退回该用户最近一期做过的——
-    审视结论表达的是相对态度，跨期仍具参考价值，比「没有」强。
+    优先当前会话；当前会话没做时退回该用户最近一期做过的——
+    审视类结论（inspect / ruleinspect）表达的是相对态度与上位纲领，
+    跨期仍具参考价值，比「没有」强。
     """
-    # 基础查询：任意非空的 inspect 轮答复
-    q = db.query(ChiefTurn).filter(ChiefTurn.role == "inspect",
+    # 基础查询：任意非空的该轮答复
+    q = db.query(ChiefTurn).filter(ChiefTurn.role == role,
                                    ChiefTurn.reply_text.isnot(None),
                                    ChiefTurn.reply_text != "")
     if sid:
         t = q.filter(ChiefTurn.session_id == sid).first()
         if t:
             return t.reply_text
-        # 当前会话没审视：顺延到用户最近一期（排除当前会话本身）
+        # 当前会话没做：顺延到用户最近一期（排除当前会话本身）
         rows = (q.join(ChiefSession, ChiefSession.id == ChiefTurn.session_id)
                  .filter(or_(ChiefSession.owner_id == u.id,
                              ChiefSession.owner_id.is_(None)))
@@ -109,6 +111,16 @@ def _latest_inspect_reply(u, db, sid=None) -> str:
                          ChiefSession.owner_id.is_(None)))
              .order_by(ChiefSession.created_at.desc()).all())
     return rows[0].reply_text if rows else ""
+
+
+def _latest_inspect_reply(u, db, sid=None) -> str:
+    """取第 ① 步「仓位审视」的 Gemini 结论原文。"""
+    return _latest_reply(u, db, "inspect", sid)
+
+
+def _latest_policy_reply(u, db, sid=None) -> str:
+    """取第 ① 步「纪律审视」的 ChatGPT 产出：投资目标 / 计划 / 规则 / 纪律 四件套。"""
+    return _latest_reply(u, db, "ruleinspect", sid)
 
 
 def build_context_header(u, db, sid=None) -> str:
@@ -187,6 +199,16 @@ def build_context_header(u, db, sid=None) -> str:
     L.append("## 风险偏好 / 约束（自由文本，承载无法结构化的约束）")
     L.append(f"- 约束说明：{pref['note'] or '（无特别约束）'}")
     L.append(f"- 允许主事建议换仓：{'是' if pref['allow_rebalance'] else '否'}")
+
+    # 第 ① 步第二张卡：由 ChatGPT 审视纪律规则后产出的四件套，是本期的最上位纲领。
+    # ②③④ 的提示词都会带上它，使其实际约束到调仓与规则变更，而非只存档。
+    L.append("## 本期投资纲领（第 ① 步「纪律审视」，由 ChatGPT 给出、用户已采纳）")
+    pol = _latest_policy_reply(u, db, sid)
+    if pol:
+        L.append(pol)
+    else:
+        L.append("- 尚未做纪律审视（未产出投资目标 / 计划 / 规则 / 纪律四件套；"
+                 "请以上述「纪律规则」与「风险偏好」为当前执行依据，不要自行编造纲领）")
 
     L.append("## 最近一次主事会话与执行结果")
     last = (db.query(ChiefSession)
@@ -270,6 +292,35 @@ INSPECT_TAIL = (
     "输出用自然语言分点。**不要输出买卖指令**，那是后续轮次的事。"
 )
 
+# 第 ① 步第二张卡：纪律审视（→ ChatGPT）。与上面的仓位审视并列，但不是同一件事——
+# 仓位审视问「现在摆得对不对」，纪律审视问「我据以决策的那套规矩本身还成不成立」，
+# 并把它落成「投资目标 / 投资计划 / 规则 / 纪律」四件套，作为本期最上位纲领。
+# 刻意要求**四个固定标题**：一是便于用户整段复制留档，二是防止模型漏写某一项。
+RULEINSPECT_TAIL = (
+    "你是我的「投资纪律顾问」，现在只做**第一步：审视我现有的纪律规则**，"
+    "并在此基础上产出我整套投资纲领。先不要给任何买卖指令。\n"
+    "请先针对上面「纪律规则」小节逐条点评：哪些偏松 / 偏紧 / 形同虚设 / 与当前持仓冲突；"
+    "再按下面**四个固定标题**输出一份可直接执行的纲领：\n\n"
+    "## 一、投资目标\n"
+    "我要的是什么：投资期限、收益预期、可接受的最大回撤、资金性质约束。"
+    "给**区间而非单点**，并说明它与我「风险偏好 / 约束」是否自洽；不自洽要指出来。\n\n"
+    "## 二、投资计划\n"
+    "为达成上述目标的执行路径：总仓位与现金的经营范围、分批建仓 / 加减仓的节奏、"
+    "资金如何在标的间分配、以及**什么情况下不做任何操作**。每条写清触发条件。\n\n"
+    "## 三、交易规则\n"
+    "可量化、可被平台机械校验的规则：单一标的 / 单一行业占比上限、单笔金额上限、止损止盈线等。"
+    "每条按「**规则名 → 适用范围 → 阈值 → 理由**」四要素给，"
+    "**阈值必须是一个数字**（百分比或金额，不要写「视情况而定」），便于我原样录入平台。\n\n"
+    "## 四、交易纪律\n"
+    "规则之外的行为红线：什么情况下**必须**动手、什么情况下**禁止**动手、"
+    "面对亏损 / 踏空 / 噪音信息时的自我约束。用祈使句列点，短而硬。\n\n"
+    "硬性约束：\n"
+    "- 四个标题**一个都不能少，顺序、措辞照抄**，便于我整段复制留档；\n"
+    "- 基于现有规则做**增补与修订**，不要另起炉灶；现有规则合理就明说「建议保留」；\n"
+    "- 判断不了 / 信息不足的项，直接写「建议保留现状，暂不调整」，不要硬编理由；\n"
+    "- **不要输出买卖指令**，那是后续轮次的事。"
+)
+
 DRAFT_TAIL = (
     "你是「主事」，负责给出**组合级**的调控方案。请基于以上信息，分**两条并列主线**输出，"
     "均由你给建议、由用户终裁：\n"
@@ -295,8 +346,10 @@ FINAL_TAIL = (
     "必须**显式说明采纳 / 未采纳哪些审查意见及原因**（可追溯）。这是执行依据。"
 )
 
-ROUND_TAIL = {"inspect": INSPECT_TAIL, "draft": DRAFT_TAIL,
-              "review": REVIEW_TAIL, "final": FINAL_TAIL}
+ROUND_TAIL = {"inspect": INSPECT_TAIL, "ruleinspect": RULEINSPECT_TAIL,
+              "draft": DRAFT_TAIL, "review": REVIEW_TAIL, "final": FINAL_TAIL}
+# 工作流主顺序：ruleinspect 不单独占一步——它与 inspect 同属第 ① 步的两张卡，
+# 两者平行（可以先审仓位也可以先审纪律），谁也不依赖谁。
 ROUND_ORDER = ("inspect", "draft", "review", "final")
 
 
@@ -359,6 +412,10 @@ def _session_detail(s: ChiefSession, db: Session) -> dict:
 
 # 状态推进：每存一轮原文，会话状态推进到该轮对应状态；只进不退（重新保存同轮不回退）。
 _STATUS_ORDER = ["inspect", "draft", "review", "final", "executing", "done"]
+
+# role → 会话状态。ruleinspect 与 inspect 同属第 ① 步，映射到同一个状态。
+_ROLE_STATUS = {"inspect": "inspect", "ruleinspect": "inspect",
+                "draft": "draft", "review": "review", "final": "final"}
 
 
 def _apply_rule_action(a: ChiefAction, u: User, db: Session):
@@ -451,14 +508,15 @@ def register_chief(app):
                            db: Session = Depends(get_db)):
         """装配某一轮的完整提示词（不落库）。
 
-        body: {session_id, round: inspect|draft|review|final}
+        body: {session_id, round: inspect|ruleinspect|draft|review|final}
         review 内嵌初稿原文、final 内嵌审查原文、draft 内嵌仓位审视结论
-        （均取自已保存的 chief_turns）。
+        （均取自已保存的 chief_turns）。ruleinspect 不内嵌任何前序原文——
+        它审视的是纪律规则本身（已由上下文头带上）。
         """
         sid = body.get("session_id")
         rnd = body.get("round") or "draft"
         if rnd not in ROUND_TAIL:
-            raise HTTPException(400, "round 必须为 inspect / draft / review / final")
+            raise HTTPException(400, "round 必须为 inspect / ruleinspect / draft / review / final")
         header = build_context_header(u, db, sid=sid)
         body_text = build_material_body(u, db)
         embed = ""
@@ -481,11 +539,14 @@ def register_chief(app):
     @app.post("/api/chief/turns")
     def chief_save_turn(body: dict, u: User = Depends(get_current_user),
                         db: Session = Depends(get_db)):
-        """保存某一轮的提示词 + 主事答复原文（upsert by session_id+role），并推进会话状态。"""
+        """保存某一轮的提示词 + 主事答复原文（upsert by session_id+role），并推进会话状态。
+
+        role ∈ {inspect, ruleinspect, draft, review, final}。
+        """
         sid = body.get("session_id")
         role = body.get("role") or "draft"
         if role not in ROUND_TAIL:
-            raise HTTPException(400, "role 必须为 inspect / draft / review / final")
+            raise HTTPException(400, "role 必须为 inspect / ruleinspect / draft / review / final")
         s = db.get(ChiefSession, sid)
         if not s:
             raise HTTPException(404, "会话不存在")
@@ -497,13 +558,15 @@ def register_chief(app):
         t.prompt_text = body.get("prompt_text") or ""
         t.reply_text = body.get("reply_text") or ""
         t.snapshot_json = json.dumps({"saved_at": datetime.utcnow().isoformat()})
-        try:
-            cur = _STATUS_ORDER.index(s.status) if s.status in _STATUS_ORDER else 0
-            nxt = _STATUS_ORDER.index(role) if role in _STATUS_ORDER else cur
-        except ValueError:
-            cur, nxt = 0, 0
+        # 状态推进：只进不退。ruleinspect 映射到 inspect（第 ① 步），
+        # 故会话已走到第 ④ 步时补存它不会被拉回开头。
+        if s.status not in _STATUS_ORDER:
+            s.status = "inspect"
+        cur = _STATUS_ORDER.index(s.status)
+        tgt = _ROLE_STATUS.get(role)
+        nxt = _STATUS_ORDER.index(tgt) if tgt in _STATUS_ORDER else cur
         if nxt > cur:
-            s.status = role
+            s.status = tgt
         db.commit(); db.refresh(t)
         return {"ok": True, "role": role,
                 "turn": {"prompt": t.prompt_text, "reply": t.reply_text},
