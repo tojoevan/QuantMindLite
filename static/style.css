@@ -1381,12 +1381,17 @@ tr.chief-row-break > td:first-child { box-shadow: inset 2px 0 0 var(--red); }
 .chief-step-body b { font-weight: 500; font-size: var(--fs-sm); color: var(--text); white-space: nowrap; }
 .chief-step-body .muted { font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chief-step.todo { opacity: .7; }
-.chief-step.doing { border-color: var(--accent); background: var(--accent-soft); }
-.chief-step.doing .chief-step-dot { background: var(--accent); border-color: var(--accent); color: #fff; }
-.chief-step.done .chief-step-dot { background: var(--green); border-color: var(--green); color: #05240f; }
+/* 位置（当前该做的那一步）与内容状态分开：位置只描边，内容才填充 */
+.chief-step.is-cur { border-color: var(--accent); opacity: 1; }
+.chief-step.state-doing { background: var(--accent-soft); }
+.chief-step.state-doing .chief-step-dot { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chief-step.state-done .chief-step-dot { background: var(--green); border-color: var(--green); color: #05240f; }
 @media (max-width: 700px) { .chief-step { flex: 1 1 100%; } }
 .chief-round { border-top: 1px solid var(--border); padding: 14px 0; }
 .chief-round-actions { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+/* ① 审视区的说明段：解释「为什么不逐标的填精确权重」，避免用户以为功能丢了 */
+.chief-sub-desc { font-size: var(--fs-xs); line-height: 1.6; margin-bottom: 10px; }
+.chief-sub-desc b { font-weight: 500; color: var(--text-2); }
 .chief-prompt, .chief-reply {
   width: 100%; box-sizing: border-box;
   font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5;

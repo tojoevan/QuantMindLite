@@ -83,11 +83,40 @@ def _scope_label(scope: str, positions) -> str:
 
 # ---------------------------------------------------------------- 上下文头（三端一致）
 
-def build_context_header(u, db) -> str:
+def _latest_inspect_reply(u, db, sid=None) -> str:
+    """取第 ① 步「仓位审视」的 Gemini 结论原文。
+
+    优先当前会话；当前会话没做审视时退回该用户最近一期做过的——
+    审视结论表达的是相对态度，跨期仍具参考价值，比「没有」强。
+    """
+    # 基础查询：任意非空的 inspect 轮答复
+    q = db.query(ChiefTurn).filter(ChiefTurn.role == "inspect",
+                                   ChiefTurn.reply_text.isnot(None),
+                                   ChiefTurn.reply_text != "")
+    if sid:
+        t = q.filter(ChiefTurn.session_id == sid).first()
+        if t:
+            return t.reply_text
+        # 当前会话没审视：顺延到用户最近一期（排除当前会话本身）
+        rows = (q.join(ChiefSession, ChiefSession.id == ChiefTurn.session_id)
+                 .filter(or_(ChiefSession.owner_id == u.id,
+                             ChiefSession.owner_id.is_(None)))
+                 .filter(ChiefTurn.session_id != sid)
+                 .order_by(ChiefSession.created_at.desc()).all())
+        return rows[0].reply_text if rows else ""
+    rows = (q.join(ChiefSession, ChiefSession.id == ChiefTurn.session_id)
+             .filter(or_(ChiefSession.owner_id == u.id,
+                         ChiefSession.owner_id.is_(None)))
+             .order_by(ChiefSession.created_at.desc()).all())
+    return rows[0].reply_text if rows else ""
+
+
+def build_context_header(u, db, sid=None) -> str:
     """上下文头：持仓全景 + 目标配置 + 最近一次会话执行结果。
 
     持仓/占比/规则当前值全部读实时数据（_build_overview / _chief_check_rules），
     因此每次生成提示词都是「当下真实状态」，不依赖任何缓存快照。
+    sid：当前会话 id，用于取该期第 ① 步的 Gemini 审视结论（取不到就退回最近一期）。
     """
     from app import _build_overview, _chief_rule_projects, _chief_check_rules, _cn_today
 
@@ -127,18 +156,16 @@ def build_context_header(u, db) -> str:
             cat_lines = "、".join(f"{c} {v/total_mv*100:.1f}%" for c, v in cats.items())
             L.append(f"- （其余 {len(positions_sorted)-15} 只按行业聚合：{cat_lines}）")
 
-    # 目标配置（A1/A2/A3）
-    weight, rule, pref = _goals_for(u, db)
-    L.append("## 目标权重（按标的，= 目标占比%，留空为未配置）")
-    if weight:
-        for pid, w in weight.items():
-            p = next((x for x in positions if x["id"] == pid), None)
-            name = p["name"] if p else f"标的#{pid}"
-            cur = (float(p.get("market_value") or 0) / total_mv * 100) if p else 0.0
-            dev = cur - w
-            L.append(f"- {name}：当前 {cur:.1f}% / 目标 {w:.1f}%（偏离 {dev:+.1f}%）")
+    # 目标配置（A1→审视 / A2 / A3）
+    # 注：A1「逐标的精确目标权重」已废止（多标的场景下过于僵化且从未被配置过），
+    # 改用第 0 轮 inspect 的 Gemini 审视结论承载「相对态度 + 大致区间」。
+    _, rule, pref = _goals_for(u, db)
+    L.append("## 本期持仓审视结论（第 ① 步，由 Gemini 给出、用户已采纳）")
+    ins = _latest_inspect_reply(u, db, sid)
+    if ins:
+        L.append(ins)
     else:
-        L.append("- 未配置目标权重（主事将只基于当前持仓给建议）")
+        L.append("- 尚未做仓位审视（跳过 ① 直接调仓时，主事请自行判断仓位合理性）")
     top3 = positions_sorted[:3]
     if top3:
         s3 = sum(float(x.get("market_value") or 0) for x in top3) / total_mv * 100
@@ -228,11 +255,27 @@ def build_material_body(u, db) -> str:
 
 # ---------------------------------------------------------------- 指令尾（各轮不同）
 
+# 第 0 轮：仓位审视。刻意不要求 Gemini 输出精确目标百分比——
+# 多标的场景下让用户逐填精确权重过于僵化（17 只标的 = 17 个必须自洽的数字，
+# 且市场一动就天天偏离）。改由主事给出「相对态度 + 大致区间」，用户据此终裁。
+INSPECT_TAIL = (
+    "你是「主事」，现在只做**第一步：审视当前持仓仓位**，先不要给完整调仓指令。\n"
+    "请针对上面的持仓全景逐项指出：\n"
+    "1. **仓位观感**：哪些标的明显偏重 / 偏轻？集中度、行业分布是否合理？\n"
+    "2. **相对态度**：对每只标的给出**定性判断**（核心持有 / 维持 / 逐步减持 / 择机加仓 / 考虑替换），"
+    "并说明依据（估值、景气度、资讯、圆桌结论，引用上方编号）。\n"
+    "3. **建议区间**：如需给出配置比例，请给**大致区间**（如「10–15%」）而非精确单点值；"
+    "用户会自行终裁，不必凑合计数到 100%。\n"
+    "4. **存疑项**：哪些标的信息不足、你判断不了？明确列出，不要硬编理由。\n"
+    "输出用自然语言分点。**不要输出买卖指令**，那是后续轮次的事。"
+)
+
 DRAFT_TAIL = (
     "你是「主事」，负责给出**组合级**的调控方案。请基于以上信息，分**两条并列主线**输出，"
     "均由你给建议、由用户终裁：\n"
-    "1. **调仓主线**：当前组合是否需要调仓？逐标的给出调整指南——减 / 加 / 换 + 目标权重(%)"
-    " + 理由 + 触发条件；并说明每条建议所依据的目标权重 / 纪律规则 / 资讯 / 圆桌结论（引用上方编号）。\n"
+    "1. **调仓主线**：当前组合是否需要调仓？逐标的给出调整指南——减 / 加 / 换 + 目标比例区间"
+    " + 理由 + 触发条件；请尊重上方「持仓审视结论」中的相对态度，并说明每条建议所依据的"
+    "纪律规则 / 资讯 / 圆桌结论（引用上方编号）。\n"
     "2. **规则主线**：评估近期市场 / 政策变化是否要求调整纪律规则（如单一标的/行业上限）。"
     "若需调整，给出**规则变更建议**：改哪条、改成什么、理由；不改也明确说「无需调整」及原因。\n"
     "输出用自然语言 + 分点，不强制表格；调仓与规则变更**并列呈现**，同等重要。"
@@ -252,13 +295,16 @@ FINAL_TAIL = (
     "必须**显式说明采纳 / 未采纳哪些审查意见及原因**（可追溯）。这是执行依据。"
 )
 
-ROUND_TAIL = {"draft": DRAFT_TAIL, "review": REVIEW_TAIL, "final": FINAL_TAIL}
+ROUND_TAIL = {"inspect": INSPECT_TAIL, "draft": DRAFT_TAIL,
+              "review": REVIEW_TAIL, "final": FINAL_TAIL}
+ROUND_ORDER = ("inspect", "draft", "review", "final")
 
 
 def build_prompt(round_name: str, header: str, body: str, embed: str = "") -> str:
     """组装完整提示词：上下文头 + 素材体 + 任务尾。
 
-    round_name ∈ {draft, review, final}。review/final 需内嵌上一轮原文（embed）。
+    round_name ∈ {inspect, draft, review, final}。
+    review 内嵌初稿原文、final 内嵌审查原文、draft 内嵌仓位审视结论（embed）。
     """
     L = [header, "", body, "", "# 四、你的任务"]
     tail = ROUND_TAIL.get(round_name, DRAFT_TAIL)
@@ -266,6 +312,9 @@ def build_prompt(round_name: str, header: str, body: str, embed: str = "") -> st
         L += ["以下是主事初稿：", "-----", embed or "（无初稿原文）", "-----", "", tail]
     elif round_name == "final":
         L += ["以下是审查意见：", "-----", embed or "（无审查意见）", "-----", "", tail]
+    elif round_name == "draft" and embed:
+        # ① 审视结论作为 draft 的软约束：提供相对态度，但不要求照抄具体数字
+        L += ["以下是你（或上一轮）对仓位的审视结论：", "-----", embed, "-----", "", tail]
     else:
         L += [tail]
     return "\n".join(L)
@@ -402,18 +451,26 @@ def register_chief(app):
                            db: Session = Depends(get_db)):
         """装配某一轮的完整提示词（不落库）。
 
-        body: {session_id, round: draft|review|final}
-        review 内嵌初稿原文、final 内嵌审查原文（取自已保存的 chief_turns）。
+        body: {session_id, round: inspect|draft|review|final}
+        review 内嵌初稿原文、final 内嵌审查原文、draft 内嵌仓位审视结论
+        （均取自已保存的 chief_turns）。
         """
         sid = body.get("session_id")
         rnd = body.get("round") or "draft"
         if rnd not in ROUND_TAIL:
-            raise HTTPException(400, "round 必须为 draft / review / final")
-        header = build_context_header(u, db)
+            raise HTTPException(400, "round 必须为 inspect / draft / review / final")
+        header = build_context_header(u, db, sid=sid)
         body_text = build_material_body(u, db)
         embed = ""
-        if rnd in ("review", "final"):
-            need_role = "draft" if rnd == "review" else "review"
+        if rnd == "review":
+            need_role = "draft"
+        elif rnd == "draft":
+            need_role = "inspect"
+        elif rnd == "final":
+            need_role = "review"
+        else:
+            need_role = ""
+        if need_role:
             t = (db.query(ChiefTurn)
                  .filter(ChiefTurn.session_id == sid, ChiefTurn.role == need_role).first()
                  if sid else None)
@@ -427,8 +484,8 @@ def register_chief(app):
         """保存某一轮的提示词 + 主事答复原文（upsert by session_id+role），并推进会话状态。"""
         sid = body.get("session_id")
         role = body.get("role") or "draft"
-        if role not in ("draft", "review", "final"):
-            raise HTTPException(400, "role 必须为 draft / review / final")
+        if role not in ROUND_TAIL:
+            raise HTTPException(400, "role 必须为 inspect / draft / review / final")
         s = db.get(ChiefSession, sid)
         if not s:
             raise HTTPException(404, "会话不存在")

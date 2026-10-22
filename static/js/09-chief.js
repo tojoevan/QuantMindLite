@@ -53,11 +53,26 @@ const chiefState = {
   // ---- v2 主事工作台：会话 / 三轮 / 动作行 / 历史（B·C·D 组）----
   sessionId: null,             // 当前一期会话 id
   sessions: [],                // 历史会话列表（倒序）
-  turns: { draft: null, review: null, final: null },  // {prompt, reply}
+  turns: { inspect: null, draft: null, review: null, final: null },  // {prompt, reply}
   actions: [],                 // 已保存动作行（由 agent 提取或手动维护，前端不再自动提取）
 };
 
 function chiefFmtPct(v) { return v == null ? "—" : v.toFixed(1) + "%"; }
+
+// 市值 / 收益率格式化（表格转纯展示后用：原来那两列是「目标权重输入」与「偏离」）
+function chiefFmtMoney(v) {
+  const n = Number(v) || 0;
+  if (!n) return "—";
+  if (n >= 10000) return (n / 10000).toFixed(2) + " 万";
+  return n.toFixed(2);
+}
+
+function chiefFmtRet(v) {
+  if (v == null || v === "") return "—";
+  const n = Number(v);
+  if (isNaN(n)) return "—";
+  return (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+}
 
 function chiefOpText(op) { return op === "ge" ? "≥" : "≤"; }
 
@@ -84,11 +99,6 @@ function chiefRenderWeights() {
   }
   tb.innerHTML = pos.map(p => {
     const cur = chiefCurPct(p);
-    const tgt = chiefState.weights[p.id];
-    const has = typeof tgt === "number" && tgt > 0;
-    const dev = has ? cur - tgt : null;
-    const devCls = dev == null ? "muted"
-      : (Math.abs(dev) < 0.05 ? "muted" : (dev > 0 ? "pos" : "neg"));
     const brk = chiefState.breaks.positions.indexOf(p.id) >= 0;
     const catBrk = !!(p.category && chiefState.breaks.categories.indexOf(p.category) >= 0);
     return `
@@ -96,48 +106,21 @@ function chiefRenderWeights() {
         <td><b>${escapeHtml(p.name || "")}</b>${p.code ? ` <span class="muted">${escapeHtml(p.code)}</span>` : ""}</td>
         <td>${p.category ? `<span class="cat-tag${catBrk ? " break" : ""}">${escapeHtml(p.category)}</span>` : '<span class="muted">—</span>'}</td>
         <td class="${brk ? "pos" : ""}"${brk ? ' title="该标的占比已违反纪律规则"' : ""}>${chiefFmtPct(cur)}</td>
-        <td><input class="chief-w-input" type="number" min="0" max="100" step="0.5"
-             value="${has ? tgt : ""}" placeholder="—" data-pid="${p.id}"
-             title="该标的的目标占比（%）；留空表示未配置"></td>
-        <td class="chief-dev ${devCls}">${dev == null ? "—" : (dev > 0 ? "+" : "") + dev.toFixed(1) + "%"}</td>
+        <td>${chiefFmtMoney(p.market_value)}</td>
+        <td class="${(p.pct || 0) >= 0 ? "pos" : "neg"}">${chiefFmtRet(p.pct)}</td>
       </tr>`;
   }).join("");
-  tb.querySelectorAll("input[data-pid]").forEach(inp => {
-    inp.oninput = () => chiefRefreshDev(inp);
-  });
   chiefRefreshSum();
   chiefRenderConcentration();
 }
 
-// 输入目标值时，实时重算该行偏离与底部合计（不请求后端）
-function chiefRefreshDev(inp) {
-  const tr = inp.closest("tr");
-  if (!tr) return;
-  const pid = parseInt(inp.getAttribute("data-pid"), 10);
-  const p = chiefState.positions.find(x => x.id === pid);
-  const td = tr.querySelector("td.chief-dev");
-  if (!td || !p) return;
-  const v = parseFloat(inp.value);
-  const dev = (isNaN(v) || v <= 0) ? null : chiefCurPct(p) - v;
-  td.className = "chief-dev " + (dev == null ? "muted"
-    : (Math.abs(dev) < 0.05 ? "muted" : (dev > 0 ? "pos" : "neg")));
-  td.textContent = dev == null ? "—" : (dev > 0 ? "+" : "") + dev.toFixed(1) + "%";
-  chiefRefreshSum();
-}
-
+// 底部合计：改为「合计市值」（原先显示的是目标权重合计，那个概念已废止）
 function chiefRefreshSum() {
   const el = document.getElementById("chief-w-sum");
   if (!el) return;
-  let sum = 0, n = 0;
-  document.querySelectorAll("#chief-weights-body input[data-pid]").forEach(inp => {
-    const v = parseFloat(inp.value);
-    if (!isNaN(v) && v > 0) { sum += v; n++; }
-  });
-  el.textContent = n ? sum.toFixed(1) + "%" : "—";
-  el.className = (n && sum > 100.05) ? "pos" : "";
+  const t = chiefTotalMv();
+  el.textContent = t > 0 ? chiefFmtMoney(t) : "—";
 }
-
-// Top3 集中度：按市值取前三，显示合计占比 + 各自百分比。
 // 纯前端算（positions 自带 market_value / name），无后端依赖。集中度越高风险越大：
 // ≥85% 红（过高）/ ≥70% 黄（偏高）/ 其余中性。
 function chiefRenderConcentration() {
@@ -159,7 +142,9 @@ function chiefRenderConcentration() {
     `<span class="muted">（${parts.join(" · ")}）</span>`;
 }
 
-// 全量覆盖保存（后端按当前用户全量替换 kind=weight 的行）
+// ⛔ 已停用（2026-10-22）：逐标的「精确目标权重」改为交由 Gemini 审视（见 ↓ 审视区），
+// 因多标的场景下逐个填数过于僵化、且从未被配置过。函数与后端 PUT 端点保留但不接任何入口，
+// 以免将来要复用时重写；页面上已无 #chief-w-save，故它不会被触发。
 async function chiefSaveWeights() {
   const items = [];
   document.querySelectorAll("#chief-weights-body input[data-pid]").forEach(inp => {
@@ -493,38 +478,49 @@ function renderChief() {
     <div class="chief-page">
       <div class="chief-steps" id="chief-steps"></div>
       <div class="panel" id="chief-step-inspect">
-        <h3>① 目标与规则审视 <span class="muted">目标与纪律都在平台侧配置，主事只给建议、由你终裁</span></h3>
+        <h3>① 审视目标与规则 <span class="muted">纪律在平台侧配置，仓位交给 Gemini 审视，由你终裁</span></h3>
         <div class="chief-sessionbar">
           <span id="chief-cur-session" class="muted">本期会话：未创建（生成提示词时自动新建）</span>
           <button class="btn-mini chief-minor" id="chief-new-session" type="button">新建一期</button>
         </div>
         <div id="chief-cards">
           <div class="chief-sub">
-            <h4>目标权重（按标的） <span class="muted">让主事看清每笔钱投的领域</span></h4>
+            <h4>持仓全景 <span class="muted">按市值倒序 · 审视对象（原「逐标的填目标权重」已废止）</span></h4>
             <div class="table-wrap">
               <table class="table" id="chief-weights">
                 <thead><tr>
                   <th>标的</th>
                   <th>领域</th>
                   <th>当前占比</th>
-                  <th>目标权重 %</th>
-                  <th title="当前占比 − 目标权重；红=超配（可减），绿=低配（可加）">偏离</th>
+                  <th>市值</th>
+                  <th>收益率</th>
                 </tr></thead>
                 <tbody id="chief-weights-body">
                   <tr><td colspan="5" class="muted">加载中…</td></tr>
                 </tbody>
                 <tfoot><tr>
-                  <td colspan="3" class="muted">目标合计</td>
+                  <td colspan="3" class="muted">合计</td>
                   <td id="chief-w-sum">—</td>
                   <td></td>
                 </tr></tfoot>
               </table>
             </div>
             <div class="chief-conc" id="chief-conc"></div>
-            <div class="chief-actions">
-              <button class="btn-mini" id="chief-w-save" type="button">保存目标权重</button>
-              <span class="muted" id="chief-w-hint"></span>
+          </div>
+
+          <div class="chief-sub">
+            <h4>交由 Gemini 审视仓位 <span id="chief-inspect-status" class="muted"></span></h4>
+            <div class="muted chief-sub-desc">
+              不为每只标的填精确目标——多标的场景下那既繁琐又僵化。改由 Gemini 给出
+              <b>相对态度 + 大致区间</b>（如「核心持有 / 逐步减持 / 10–15%」），你终裁后作为后续各轮依据。
             </div>
+            <div class="chief-round-actions">
+              <button class="btn-mini" data-gen="inspect" type="button">生成审视提示词</button>
+              <button class="btn-mini chief-minor" data-copy="inspect" type="button">复制提示词</button>
+              <button class="btn-mini" data-save="inspect" type="button">保存反馈</button>
+            </div>
+            <textarea class="chief-prompt" id="chief-prompt-inspect" placeholder="点「生成审视提示词」自动装配（持仓全景 + 纪律规则现状 + 素材体 + 审视指令）"></textarea>
+            <textarea class="chief-reply" id="chief-reply-inspect" placeholder="在此粘贴 Gemini 的仓位审视结论，保存后作为本期 ②③④ 的依据"></textarea>
           </div>
 
           <div class="chief-sub">
@@ -713,8 +709,8 @@ async function chiefNewSession() {
     chiefState.actions = [];                 // 新会话无动作行
     // 必须一并清空上一期的三轮与输入框：否则旧原文留在框里会被误保存，
     // 且新建的这一期会被进度条误判为「全部已完成」。
-    chiefState.turns = { draft: null, review: null, final: null };
-    for (const role of ["draft", "review", "final"]) {
+    chiefState.turns = { inspect: null, draft: null, review: null, final: null };
+    for (const role of ["inspect", "draft", "review", "final"]) {
       const p = document.getElementById("chief-prompt-" + role);
       const rp = document.getElementById("chief-reply-" + role);
       if (p) p.value = "";
@@ -747,7 +743,7 @@ async function chiefLoadSessionDetail(sid) {
     const r = await API("GET", "/api/chief/sessions/" + sid);
     chiefState.turns = (r && r.turns) || {};
     chiefState.actions = (r && r.actions) || [];
-    for (const role of ["draft", "review", "final"]) {
+    for (const role of ["inspect", "draft", "review", "final"]) {
       const p = document.getElementById("chief-prompt-" + role);
       const rp = document.getElementById("chief-reply-" + role);
       if (p && chiefState.turns[role]) p.value = chiefState.turns[role].prompt || "";
@@ -763,7 +759,7 @@ async function chiefLoadSessionDetail(sid) {
 // 由来：生产库实证「3 期会话 0 期走完」——最大短板不是功能缺，而是用户看不出下一步该做什么。
 // 每步状态只依赖 chiefState.turns / actions / sessionId，故轮次保存后刷新即可，无需后端配合。
 const CHIEF_STEPS = [
-  { key: "inspect", label: "① 审视目标", hint: "目标权重 / 纪律 / 偏好" },
+  { key: "inspect", label: "① 审视仓位", hint: "Gemini 看盘 → 相对态度" },
   { key: "draft",   label: "② 初稿",     hint: "生成提示词 → Gemini" },
   { key: "review",  label: "③ 审查",     hint: "反向质疑 → ChatGPT" },
   { key: "final",   label: "④ 终稿",     hint: "定稿 → Gemini" },
@@ -783,10 +779,9 @@ function chiefTurnState(role) {
 function chiefStepStates() {
   const acts = chiefState.actions || [];
   const st = {};
-  // ① 审视：本身无「保存」动作，以「已装配初稿提示词」视为审视完成（配置已进入上下文头）。
-  const dr = chiefTurnState("draft");
-  st.inspect = dr === "todo" ? (chiefState.sessionId ? "doing" : "todo") : "done";
-  st.draft = dr;
+  // ① 本身就是一轮（inspect）：生成了提示词=doing（等粘贴回来），存了 Gemini 审视结论=done
+  st.inspect = chiefTurnState("inspect");
+  st.draft = chiefTurnState("draft");
   st.review = chiefTurnState("review");
   st.final = chiefTurnState("final");
   // ⑤ 执行：无动作行=todo；有且全部完成=done；有未完成=doing
@@ -805,9 +800,12 @@ function chiefRenderStepper() {
   }
   box.innerHTML = CHIEF_STEPS.map((s, i) => {
     const v = st[s.key];
-    const cls = v === "done" ? "done" : (s.key === cur ? "doing" : "todo");
-    const tag = v === "done" ? "已完成" : (s.key === cur ? "进行中" : "待做");
-    return `<div class="chief-step ${cls}" data-step="${s.key}" title="${escapeHtml(s.hint)} · 点击定位">
+    const isCur = s.key === cur;
+    // 内容与位置必须分开表达：原先「当前步」一律显示「进行中」，可用户一步未动
+    // 看着像已在途。现改为：内容状态看 v，位置用橙色边框 + 「下一步」标签。
+    const tag = v === "done" ? "已完成"
+      : (v === "doing" ? "进行中" : (isCur ? "下一步" : "待做"));
+    return `<div class="chief-step state-${v}${isCur ? " is-cur" : ""}" data-step="${s.key}" title="${escapeHtml(s.hint)} · 点击定位">
       <span class="chief-step-dot">${v === "done" ? "✓" : i + 1}</span>
       <span class="chief-step-body"><b>${s.label}</b><span class="muted">${tag} · ${escapeHtml(s.hint)}</span></span>
     </div>`;
@@ -823,13 +821,15 @@ function chiefGoStep(key) {
 
 // 顺序软提醒（用户选定不做硬拦截）：明知缺料也给生成，但把代价说清楚。
 // 实证：会话 #2 曾跳过②直接存③，悄无声息地让审查失去被审查对象。
-const CHIEF_PREV = { review: ["draft", "② 初稿"], final: ["review", "③ 审查"] };
+// 软提醒的是「上一轮缺料」，链路为 inspect → draft → review → final
+const CHIEF_PREV = { draft: ["inspect", "① 仓位审视"], review: ["draft", "② 初稿"], final: ["review", "③ 审查"] };
+const CHIEF_ROUND_CN = { draft: "② 初稿", review: "③ 审查", final: "④ 终稿" };
 function chiefWarnPrevRound(round) {
   const need = CHIEF_PREV[round];
   if (!need) return;
   const prev = need[0], label = need[1];
   if (chiefTurnState(prev) !== "done") {
-    showToast(`还没保存${label}原文，${round === "review" ? "③ 审查" : "④ 终稿"}会缺少依据（仍为你生成）`);
+    showToast(`还没保存${label}的原文，${CHIEF_ROUND_CN[round] || round}会缺少依据（仍为你生成）`);
   }
 }
 
