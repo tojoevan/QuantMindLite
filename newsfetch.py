@@ -44,6 +44,38 @@ def put_setting(db, key: str, value: str) -> None:
         db.add(Setting(key=key, value=value))
 
 
+# 跨源去重：同源经不同路由/镜像会得到形态各异的 link（财联社的
+# www.cls.cn/detail/{id} 与 api3.cls.cn/share/article/{id}?...），guid（=link）
+# 不同导致库内重复。把 link 坍缩成「根域名:最长数字 id」让同源镜像归并到同一键。
+# 仅对已知会分叉的源生效（避免误删不同站恰巧同 id 的条目）；其余源返回空、不参与。
+_DIGIT_RE = re.compile(r"\d{4,}")
+_KNOWN_CROSS = ("cls.cn",)
+
+
+def canonical_key_of(link: str) -> str:
+    """跨源去重用的规范化键。
+
+    返回 "{根域名}:{最长数字id}"（如 cls.cn:2512624），或 "" 表示不适用。
+    根域名取 hostname 去掉 www/m/apiN 等前缀；只有 _KNOWN_CROSS 内的源才参与，
+    普通源（aihot.news/items/xxx 等无数字 id 或不在名单内）一律返回空，
+    退回原有的 (feed_id, guid) 去重，不引入误删风险。
+    """
+    if not link:
+        return ""
+    try:
+        p = urllib.parse.urlparse(link)
+        host = (p.hostname or "").lower().split(":")[0]
+        root = re.sub(r"^(www|m|h5|web|api\d*)\.", "", host)
+        if root not in _KNOWN_CROSS:
+            return ""
+        nums = _DIGIT_RE.findall(p.path)
+        if not nums:
+            return ""
+        return f"{root}:{max(nums, key=len)}"
+    except Exception:
+        return ""
+
+
 def relay_conf(db) -> dict:
     return {
         "url": (get_setting(db, RELAY_URL_KEY) or "").strip().rstrip("/"),
@@ -388,20 +420,22 @@ def refresh_feed(db, feed: NewsFeed, limit: int = 60, retries: int = 1) -> dict:
     if not (feed.site_url or "").strip() and meta.get("site_url"):
         feed.site_url = meta["site_url"][:600]
 
+    # 跨源去重：先算每条的规范化键，批量查库里已存在的键集合（避免逐条查）
+    for e in entries[:max(1, limit)]:
+        e["_ck"] = canonical_key_of(e["link"])
+    cks = {e["_ck"] for e in entries[:max(1, limit)] if e.get("_ck")}
+    seen_ck = set()
+    if cks:
+        seen_ck = {r[0] for r in db.query(NewsItem.canonical_key)
+                   .filter(NewsItem.canonical_key.in_(cks)).all()}
+
     added = updated = 0
     for e in entries[:max(1, limit)]:
         obj = (db.query(NewsItem)
                .filter(NewsItem.feed_id == feed.id, NewsItem.guid == e["guid"])
                .first())
-        if obj is None:
-            db.add(NewsItem(
-                feed_id=feed.id, guid=e["guid"], title=e["title"][:500], link=e["link"][:900],
-                author=e["author"], source_name=e["source_name"], category=e["category"],
-                summary=e["summary"], content=e["content"], published_at=e["published_at"],
-            ))
-            added += 1
-        else:
-            # 只更新源站可变字段；star / ai_* 属于本地状态，绝不覆盖
+        if obj is not None:
+            # 源内更新；star / ai_* 属于本地状态，绝不覆盖
             obj.title = e["title"][:500] or obj.title
             obj.link = e["link"][:900] or obj.link
             obj.summary = e["summary"] or obj.summary
@@ -411,6 +445,20 @@ def refresh_feed(db, feed: NewsFeed, limit: int = 60, retries: int = 1) -> dict:
             if e["published_at"]:
                 obj.published_at = e["published_at"]
             updated += 1
+            continue
+        # 源内无重复，但规范化键已存在 → 是另一源的镜像条目，跳过（跨源去重）
+        ck = e.get("_ck")
+        if ck and ck in seen_ck:
+            continue
+        db.add(NewsItem(
+            feed_id=feed.id, guid=e["guid"], title=e["title"][:500], link=e["link"][:900],
+            author=e["author"], source_name=e["source_name"], category=e["category"],
+            summary=e["summary"], content=e["content"], published_at=e["published_at"],
+            canonical_key=ck,
+        ))
+        added += 1
+        if ck:
+            seen_ck.add(ck)
 
     feed.last_fetched = now
     if entries:

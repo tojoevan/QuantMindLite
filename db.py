@@ -314,6 +314,7 @@ class NewsItem(Base):
     ai_tags = Column(String(200), default="")           # AI 标签（逗号分隔）
     ai_codes = Column(String(200), default="")          # AI 提取的关联标的代码（逗号分隔，已归一化）
     ai_dup_of = Column(Integer, nullable=True)          # 同题主条目 id（多源报道合并；NULL = 主条目）
+    canonical_key = Column(String(255), default="", index=True)  # 跨源去重键：根域名:文章id（见 newsfetch.canonical_key_of）
 
 
 class NewsInjectLog(Base):
