@@ -491,8 +491,9 @@ function renderChief() {
   if (!main) return;
   main.innerHTML = `
     <div class="chief-page">
-      <div class="panel">
-        <h3>目标与规则审视 <span class="muted">目标与纪律都在平台侧配置，主事只给建议、由你终裁</span></h3>
+      <div class="chief-steps" id="chief-steps"></div>
+      <div class="panel" id="chief-step-inspect">
+        <h3>① 目标与规则审视 <span class="muted">目标与纪律都在平台侧配置，主事只给建议、由你终裁</span></h3>
         <div class="chief-sessionbar">
           <span id="chief-cur-session" class="muted">本期会话：未创建（生成提示词时自动新建）</span>
           <button class="btn-mini chief-minor" id="chief-new-session" type="button">新建一期</button>
@@ -588,7 +589,7 @@ function renderChief() {
           </div>
         </div>
 
-        <div class="chief-round">
+        <div class="chief-round" id="chief-step-draft">
           <h4>② 初稿（→ Gemini）<span id="chief-draft-status" class="muted"></span></h4>
           <div class="chief-round-actions">
             <button class="btn-mini" data-gen="draft" type="button">生成提示词</button>
@@ -599,7 +600,7 @@ function renderChief() {
           <textarea class="chief-reply" id="chief-reply-draft" placeholder="在此粘贴 Gemini 初稿原文，点「保存答复」留档"></textarea>
         </div>
 
-        <div class="chief-round">
+        <div class="chief-round" id="chief-step-review">
           <h4>③ 审查（→ ChatGPT）<span id="chief-review-status" class="muted"></span></h4>
           <div class="chief-round-actions">
             <button class="btn-mini" data-gen="review" type="button">内嵌初稿生成</button>
@@ -610,7 +611,7 @@ function renderChief() {
           <textarea class="chief-reply" id="chief-reply-review" placeholder="在此粘贴 ChatGPT 审查意见原文，点「保存答复」留档"></textarea>
         </div>
 
-        <div class="chief-round">
+        <div class="chief-round" id="chief-step-final">
           <h4>④ 终稿（→ Gemini，执行依据）<span id="chief-final-status" class="muted"></span></h4>
           <div class="chief-round-actions">
             <button class="btn-mini" data-gen="final" type="button">内嵌审查生成</button>
@@ -621,7 +622,7 @@ function renderChief() {
           <textarea class="chief-reply" id="chief-reply-final" placeholder="在此粘贴 Gemini 终稿原文（执行依据）"></textarea>
         </div>
 
-        <div class="chief-sub">
+        <div class="chief-sub" id="chief-step-exec">
           <h4>⑤ 执行跟踪</h4>
           <div class="chief-track">
             <div class="chief-track-left">
@@ -710,6 +711,16 @@ async function chiefNewSession() {
     chiefState.sessionId = r.id;
     chiefState.sessions = [r].concat(chiefState.sessions);
     chiefState.actions = [];                 // 新会话无动作行
+    // 必须一并清空上一期的三轮与输入框：否则旧原文留在框里会被误保存，
+    // 且新建的这一期会被进度条误判为「全部已完成」。
+    chiefState.turns = { draft: null, review: null, final: null };
+    for (const role of ["draft", "review", "final"]) {
+      const p = document.getElementById("chief-prompt-" + role);
+      const rp = document.getElementById("chief-reply-" + role);
+      if (p) p.value = "";
+      if (rp) rp.value = "";
+    }
+    chiefRenderFinalReply();
     chiefUpdateSessionBar();
     chiefRenderActions();                    // 渲染空态，避免右栏永久空白
     showToast("已新建一期会话");
@@ -748,16 +759,95 @@ async function chiefLoadSessionDetail(sid) {
   } catch (e) { /* ignore */ }
 }
 
+// ---------- 本期工作流进度条（五步，状态由现有数据推导，不新增接口） ----------
+// 由来：生产库实证「3 期会话 0 期走完」——最大短板不是功能缺，而是用户看不出下一步该做什么。
+// 每步状态只依赖 chiefState.turns / actions / sessionId，故轮次保存后刷新即可，无需后端配合。
+const CHIEF_STEPS = [
+  { key: "inspect", label: "① 审视目标", hint: "目标权重 / 纪律 / 偏好" },
+  { key: "draft",   label: "② 初稿",     hint: "生成提示词 → Gemini" },
+  { key: "review",  label: "③ 审查",     hint: "反向质疑 → ChatGPT" },
+  { key: "final",   label: "④ 终稿",     hint: "定稿 → Gemini" },
+  { key: "exec",    label: "⑤ 执行跟踪", hint: "动作行 → 下单回填" },
+];
+
+// 单轮三态：已存答复=done / 只生成了提示词=doing（等粘贴回来）/ 没动过=todo
+function chiefTurnState(role) {
+  const t = (chiefState.turns || {})[role];
+  const reply = t ? String(t.reply || "").trim() : "";
+  const prompt = t ? String(t.prompt || "").trim() : "";
+  if (reply) return "done";
+  if (prompt) return "doing";
+  return "todo";
+}
+
+function chiefStepStates() {
+  const acts = chiefState.actions || [];
+  const st = {};
+  // ① 审视：本身无「保存」动作，以「已装配初稿提示词」视为审视完成（配置已进入上下文头）。
+  const dr = chiefTurnState("draft");
+  st.inspect = dr === "todo" ? (chiefState.sessionId ? "doing" : "todo") : "done";
+  st.draft = dr;
+  st.review = chiefTurnState("review");
+  st.final = chiefTurnState("final");
+  // ⑤ 执行：无动作行=todo；有且全部完成=done；有未完成=doing
+  st.exec = !acts.length ? "todo" : (acts.every(a => a.status === "done") ? "done" : "doing");
+  return st;
+}
+
+function chiefRenderStepper() {
+  const box = document.getElementById("chief-steps");
+  if (!box) return;
+  const st = chiefStepStates();
+  // 「当前」= 第一个未完成的步骤；全部完成时不再高亮某一步
+  let cur = "";
+  for (const s of CHIEF_STEPS) {
+    if (st[s.key] !== "done") { cur = s.key; break; }
+  }
+  box.innerHTML = CHIEF_STEPS.map((s, i) => {
+    const v = st[s.key];
+    const cls = v === "done" ? "done" : (s.key === cur ? "doing" : "todo");
+    const tag = v === "done" ? "已完成" : (s.key === cur ? "进行中" : "待做");
+    return `<div class="chief-step ${cls}" data-step="${s.key}" title="${escapeHtml(s.hint)} · 点击定位">
+      <span class="chief-step-dot">${v === "done" ? "✓" : i + 1}</span>
+      <span class="chief-step-body"><b>${s.label}</b><span class="muted">${tag} · ${escapeHtml(s.hint)}</span></span>
+    </div>`;
+  }).join("");
+  box.querySelectorAll("[data-step]").forEach(el =>
+    el.onclick = () => chiefGoStep(el.getAttribute("data-step")));
+}
+
+function chiefGoStep(key) {
+  const el = document.getElementById("chief-step-" + key);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// 顺序软提醒（用户选定不做硬拦截）：明知缺料也给生成，但把代价说清楚。
+// 实证：会话 #2 曾跳过②直接存③，悄无声息地让审查失去被审查对象。
+const CHIEF_PREV = { review: ["draft", "② 初稿"], final: ["review", "③ 审查"] };
+function chiefWarnPrevRound(round) {
+  const need = CHIEF_PREV[round];
+  if (!need) return;
+  const prev = need[0], label = need[1];
+  if (chiefTurnState(prev) !== "done") {
+    showToast(`还没保存${label}原文，${round === "review" ? "③ 审查" : "④ 终稿"}会缺少依据（仍为你生成）`);
+  }
+}
+
 function chiefUpdateSessionBar() {
   const el = document.getElementById("chief-cur-session");
-  if (!el) return;
+  if (!el) { chiefRenderStepper(); return; }
   const s = chiefState.sessions.find(x => x.id === chiefState.sessionId);
-  if (!s) { el.textContent = "本期会话：未创建（生成提示词时自动新建）"; return; }
-  el.textContent = `本期会话：#${s.id} ${s.title} · 状态 ${s.status} · 调仓 ${s.rebalance_count} · 规则 ${s.rule_count}`;
+  if (!s) { el.textContent = "本期会话：未创建（生成提示词时自动新建）"; chiefRenderStepper(); return; }
+  // 状态原本直接吐英文草稿名（draft/review/final），用户看着像调试信息而非进度 → 转中文
+  const cnMap = { inspect: "准备中", draft: "初稿已存", review: "审查完成",
+                  final: "终稿已定", executing: "执行中", done: "已归档" };
+  el.textContent = `本期会话：#${s.id} ${s.title} · ${cnMap[s.status] || s.status} · 调仓 ${s.rebalance_count} · 规则 ${s.rule_count}`;
+  chiefRenderStepper();
 }
 
 // ---------- B3/B4/B5：三轮提示词生成 / 复制 / 保存 ----------
 async function chiefGenPrompt(round) {
+  chiefWarnPrevRound(round);          // 软提醒：缺上一轮原文时提示，但不拦截
   if (!chiefState.sessionId) await chiefNewSession();
   if (!chiefState.sessionId) return;
   const btn = document.querySelector(`[data-gen="${round}"]`);
@@ -767,6 +857,10 @@ async function chiefGenPrompt(round) {
       { session_id: chiefState.sessionId, round });
     const ta = document.getElementById("chief-prompt-" + round);
     if (ta) ta.value = (r && r.prompt) || "";
+    // 同步进 chiefState：进度条靠它判断「已生成 vs 已回填」，不同步则①永远亮不起来
+    const prev0 = chiefState.turns[round] || {};
+    chiefState.turns[round] = { prompt: (r && r.prompt) || "", reply: prev0.reply || "" };
+    chiefUpdateSessionBar();
     showToast(`提示词已生成（${round}）`);
   } catch (e) {
     showToast("生成失败：" + (e.message || e));

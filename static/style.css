@@ -1361,6 +1361,30 @@ tr.chief-row-break > td:first-child { box-shadow: inset 2px 0 0 var(--red); }
 
 /* ===== v2 主事工作台：会话条 / 三轮 / 动作行 / 历史 ===== */
 .chief-sessionbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+
+/* 本期工作流进度条（五步，状态由轮次/动作行推导；点击定位到对应区块） */
+.chief-steps { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.chief-step {
+  flex: 1 1 160px; display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border: var(--bd-w) solid var(--border);
+  border-radius: var(--radius-md); background: var(--panel-2);
+  cursor: pointer; min-width: 0;
+}
+.chief-step:hover { border-color: var(--border-strong); }
+.chief-step-dot {
+  width: 20px; height: 20px; flex: 0 0 20px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--fs-xs); color: var(--muted);
+  border: var(--bd-w) solid var(--border); background: var(--panel);
+}
+.chief-step-body { display: flex; flex-direction: column; line-height: 1.35; min-width: 0; }
+.chief-step-body b { font-weight: 500; font-size: var(--fs-sm); color: var(--text); white-space: nowrap; }
+.chief-step-body .muted { font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chief-step.todo { opacity: .7; }
+.chief-step.doing { border-color: var(--accent); background: var(--accent-soft); }
+.chief-step.doing .chief-step-dot { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chief-step.done .chief-step-dot { background: var(--green); border-color: var(--green); color: #05240f; }
+@media (max-width: 700px) { .chief-step { flex: 1 1 100%; } }
 .chief-round { border-top: 1px solid var(--border); padding: 14px 0; }
 .chief-round-actions { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .chief-prompt, .chief-reply {
