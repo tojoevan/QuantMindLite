@@ -397,24 +397,9 @@ class ChiefGoalOut(BaseModel):
     source_quote: str = ""
 
 
-# ---------------- v2 主事工作台：纪律规则（A2）----------------
-class ChiefRuleItem(BaseModel):
-    """一条纪律规则：**结构化条目**（作用范围 + 比较符 + 阈值）。
-
-    scope 编码与作用一致：any_pos / any_cat / pos:<id> / cat:<名称>
-    op：le=不超过（占比上限），ge=不低于（占比下限）
-    value：阈值百分比，<=0 视为未配置（不落库）
-    自由文本类约束走 kind=preference（A3），不进这张表。
-    """
-    scope: str = "any_pos"
-    op: str = "le"
-    value: float = 0.0
-    note: str = ""
-
-
-class ChiefRulesIn(BaseModel):
-    items: List[ChiefRuleItem] = []
-    sort: int = 0
+# ⚠️ 原 v2「纪律规则（A2）」的 ChiefRuleItem / ChiefRulesIn 已随该模块下线
+# （2026-10-23）：平台不再保存结构化阈值，纪律改由第 ① 步「纪律审视→ChatGPT」
+# 产出的四件套文本承载。UNDONE 时不要恢复这两个模型——先看 chief.py 的注释。
 
 
 # ---------------- v2 主事工作台：风险偏好 / 约束（A3）----------------

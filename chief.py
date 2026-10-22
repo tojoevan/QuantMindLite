@@ -31,16 +31,20 @@ from db import (
 # ---------------------------------------------------------------- 目标配置读取
 
 def _goals_for(u, db):
-    """把 chief_goals 按 kind 拆成 weight / rule / preference 三份。
+    """把 chief_goals 拆成 weight / preference 两份。
 
-    weight: {project_id: 百分比}；rule: [{scope, op, value, note}]；
-    preference: {note, allow_rebalance}。
+    weight: {project_id: 百分比}；preference: {note, allow_rebalance}。
     可见性口径与全站一致：自己配的 + 无主配置（owner_id is null）。
+
+    ⚠️ 原 kind=rule（平台侧结构化纪律规则）已于 2026-10-23 **下线**：
+    结构化阈值 + 实时违反判定那一套被移除，纪律改由第 ① 步「纪律审视
+    （→ChatGPT）」产出的四件套（目标 / 计划 / 规则 / 纪律）承载。
+    不要再在此处恢复 rule 分支。
     """
     rows = (db.query(ChiefGoal)
             .filter(or_(ChiefGoal.owner_id == u.id, ChiefGoal.owner_id.is_(None)))
             .all())
-    weight, rule, pref = {}, [], {"note": "", "allow_rebalance": False}
+    weight, pref = {}, {"note": "", "allow_rebalance": False}
     for g in rows:
         if g.kind == "weight":
             pid = int(str(g.key).replace("p:", "")) if str(g.key).startswith("p:") else None
@@ -49,37 +53,15 @@ def _goals_for(u, db):
                     weight[pid] = float(g.value or 0)
                 except (TypeError, ValueError):
                     pass
-        elif g.kind == "rule":
-            try:
-                val = float(g.value or 0)
-            except (TypeError, ValueError):
-                val = 0.0
-            rule.append({"scope": g.key or "any_pos", "op": g.op or "le",
-                         "value": val, "note": g.note or ""})
         elif g.kind == "preference":
             if g.key == "note":
                 pref["note"] = g.value or ""
             elif g.key == "allow_rebalance":
                 pref["allow_rebalance"] = (g.value or "0") == "1"
-    return weight, rule, pref
+    return weight, pref
 
 
-def _scope_label(scope: str, positions) -> str:
-    """作用范围文案（与前端 chiefScopeLabel 语义一致）：
-    any_pos / any_cat / pos:<id> / cat:<名称>。"""
-    s = str(scope or "any_pos")
-    k = s.split(":")[0]
-    arg = s.split(":", 1)[1] if ":" in s else ""
-    if k == "any_pos":
-        return "任一单一标的"
-    if k == "any_cat":
-        return "任一单一行业"
-    if k == "pos":
-        p = next((x for x in positions if str(x["id"]) == arg), None)
-        return "标的 · " + (p["name"] if p else arg or "—")
-    if k == "cat":
-        return "行业 · " + (arg or "—")
-    return s
+# 注：原 `_scope_label`（结构化规则的作用范围文案）已随 kind=rule 一并下线。
 
 
 # ---------------------------------------------------------------- 上下文头（三端一致）
@@ -126,11 +108,11 @@ def _latest_policy_reply(u, db, sid=None) -> str:
 def build_context_header(u, db, sid=None) -> str:
     """上下文头：持仓全景 + 目标配置 + 最近一次会话执行结果。
 
-    持仓/占比/规则当前值全部读实时数据（_build_overview / _chief_check_rules），
+    持仓/占比全部读实时数据（_build_overview），
     因此每次生成提示词都是「当下真实状态」，不依赖任何缓存快照。
     sid：当前会话 id，用于取该期第 ① 步的 Gemini 审视结论（取不到就退回最近一期）。
     """
-    from app import _build_overview, _chief_rule_projects, _chief_check_rules, _cn_today
+    from app import _build_overview, _chief_rule_projects, _cn_today
 
     projects = _chief_rule_projects(u, db)
     ov = _build_overview(projects, db)
@@ -171,7 +153,7 @@ def build_context_header(u, db, sid=None) -> str:
     # 目标配置（A1→审视 / A2 / A3）
     # 注：A1「逐标的精确目标权重」已废止（多标的场景下过于僵化且从未被配置过），
     # 改用第 0 轮 inspect 的 Gemini 审视结论承载「相对态度 + 大致区间」。
-    _, rule, pref = _goals_for(u, db)
+    _, pref = _goals_for(u, db)
     L.append("## 本期持仓审视结论（第 ① 步，由 Gemini 给出、用户已采纳）")
     ins = _latest_inspect_reply(u, db, sid)
     if ins:
@@ -183,24 +165,13 @@ def build_context_header(u, db, sid=None) -> str:
         s3 = sum(float(x.get("market_value") or 0) for x in top3) / total_mv * 100
         L.append(f"- Top3 集中度 {s3:.1f}%（市值前三：{'、'.join(x['name'] for x in top3)}）")
 
-    L.append("## 纪律规则（结构化条目，当前是否违反由平台实时判定）")
-    if rule:
-        checks = _chief_check_rules(rule, u, db)
-        st_map = {"break": "【违反】", "warn": "【接近】", "ok": "【达标】", "none": "【未设阈值】"}
-        for c in checks.get("items", []):
-            op = "≥" if c["op"] == "ge" else "≤"
-            hits = "、".join(h["name"] for h in (c.get("hits") or []))
-            L.append(f"- {_scope_label(c['scope'], positions)} {op} {c['value']:.0f}%"
-                     f" {st_map.get(c['status'], '')}当前 {c['current']:.1f}%"
-                     f"{('（命中 ' + hits + '）') if hits else ''}")
-    else:
-        L.append("- 未配置纪律规则")
-
+    # ⚠️ 原「纪律规则（结构化条目）」段已随 kind=rule 下线：纪律约束现由下方
+    # 「本期投资纲领」的四件套承载，不再有平台侧结构化阈值。
     L.append("## 风险偏好 / 约束（自由文本，承载无法结构化的约束）")
     L.append(f"- 约束说明：{pref['note'] or '（无特别约束）'}")
     L.append(f"- 允许主事建议换仓：{'是' if pref['allow_rebalance'] else '否'}")
 
-    # 第 ① 步第二张卡：由 ChatGPT 审视纪律规则后产出的四件套，是本期的最上位纲领。
+    # 第 ① 步第二张卡：由 ChatGPT 审视纪律后产出的四件套，是本期的最上位纲领。
     # ②③④ 的提示词都会带上它，使其实际约束到调仓与规则变更，而非只存档。
     L.append("## 本期投资纲领（第 ① 步「纪律审视」，由 ChatGPT 给出、用户已采纳）")
     pol = _latest_policy_reply(u, db, sid)
@@ -208,7 +179,7 @@ def build_context_header(u, db, sid=None) -> str:
         L.append(pol)
     else:
         L.append("- 尚未做纪律审视（未产出投资目标 / 计划 / 规则 / 纪律四件套；"
-                 "请以上述「纪律规则」与「风险偏好」为当前执行依据，不要自行编造纲领）")
+                 "请以上述「风险偏好」为当前执行依据，不要自行编造纲领）")
 
     L.append("## 最近一次主事会话与执行结果")
     last = (db.query(ChiefSession)
@@ -297,10 +268,11 @@ INSPECT_TAIL = (
 # 并把它落成「投资目标 / 投资计划 / 规则 / 纪律」四件套，作为本期最上位纲领。
 # 刻意要求**四个固定标题**：一是便于用户整段复制留档，二是防止模型漏写某一项。
 RULEINSPECT_TAIL = (
-    "你是我的「投资纪律顾问」，现在只做**第一步：审视我现有的纪律规则**，"
+    "你是我的「投资纪律顾问」，现在只做**第一步：审视我的投资纪律**，"
     "并在此基础上产出我整套投资纲领。先不要给任何买卖指令。\n"
-    "请先针对上面「纪律规则」小节逐条点评：哪些偏松 / 偏紧 / 形同虚设 / 与当前持仓冲突；"
-    "再按下面**四个固定标题**输出一份可直接执行的纲领：\n\n"
+    "输入里有我的持仓全景、Top3 集中度、风险偏好与约束、上一版纲领（若有）。"
+    "请据此判断：**这套纪律在当前市场与我的持仓结构下还成不成立**，"
+    "再按下面**四个固定标题**输出一份修订后可直接执行的纲领：\n\n"
     "## 一、投资目标\n"
     "我要的是什么：投资期限、收益预期、可接受的最大回撤、资金性质约束。"
     "给**区间而非单点**，并说明它与我「风险偏好 / 约束」是否自洽；不自洽要指出来。\n\n"
@@ -316,7 +288,8 @@ RULEINSPECT_TAIL = (
     "面对亏损 / 踏空 / 噪音信息时的自我约束。用祈使句列点，短而硬。\n\n"
     "硬性约束：\n"
     "- 四个标题**一个都不能少，顺序、措辞照抄**，便于我整段复制留档；\n"
-    "- 基于现有规则做**增补与修订**，不要另起炉灶；现有规则合理就明说「建议保留」；\n"
+    "- 有上一版纲领时，针对它做**增补与修订**（说明改了哪一条、为什么），不要另起炉灶；"
+    "没有上一版时按当前持仓与风险偏好从头拟定；现有条款合理就明说「建议保留」；\n"
     "- 判断不了 / 信息不足的项，直接写「建议保留现状，暂不调整」，不要硬编理由；\n"
     "- **不要输出买卖指令**，那是后续轮次的事。"
 )
@@ -418,45 +391,10 @@ _ROLE_STATUS = {"inspect": "inspect", "ruleinspect": "inspect",
                 "draft": "draft", "review": "review", "final": "final"}
 
 
-def _apply_rule_action(a: ChiefAction, u: User, db: Session):
-    """规则主线动作行被采纳 → 写回 chief_goals（立即生效，§12.3）并在 note 留痕。
-
-    动作行的 target 编码作用范围（scope），new_value 编码阈值（如 "15" / "40"）。
-    action=revoke 表示废止该规则（删除对应 kind=rule 行）。
-    """
-    scope = (a.target or "").strip()
-    if not scope:
-        return
-    if a.action == "revoke":
-        db.query(ChiefGoal).filter(
-            ChiefGoal.kind == "rule", ChiefGoal.key == scope,
-            or_(ChiefGoal.owner_id == u.id, ChiefGoal.owner_id.is_(None)),
-        ).delete(synchronize_session=False)
-        db.commit()
-        return
-    try:
-        val = float(a.new_value or 0)
-    except (TypeError, ValueError):
-        val = 0.0
-    if val <= 0:
-        return
-    # 复用已有的纪律规则默认值：op=le（上限）。若 target 含 "ge:" 前缀则取下限。
-    op = "le"
-    if scope.startswith("ge:"):
-        op = "ge"; scope = scope[3:]
-    existing = (db.query(ChiefGoal).filter(
-        ChiefGoal.kind == "rule", ChiefGoal.key == scope,
-        or_(ChiefGoal.owner_id == u.id, ChiefGoal.owner_id.is_(None)),
-    ).first())
-    trace = f"依据第 {a.session_id} 期主事终稿采纳"
-    if existing:
-        existing.op = op
-        existing.value = f"{val:g}"
-        existing.note = (existing.note or "").strip() + (f"；{trace}" if trace else "")
-    else:
-        db.add(ChiefGoal(owner_id=u.id, kind="rule", key=scope, op=op,
-                         value=f"{val:g}", note=trace))
-    db.commit()
+# ⚠️ 原 `_apply_rule_action`（规则主线动作行标 adopted → 写回 chief_goals kind=rule）
+# 已随结构化纪律规则一并下线：平台不再持有结构化阈值，规则改动由第 ① 步四件套承载。
+# kind=rule 的**动作行本身仍然保留**（终稿的规则变更建议仍要能被记录/标注是否采纳），
+# 只是「标采纳」不再产生任何写库副作用。
 
 
 # ---------------------------------------------------------------- 路由注册
@@ -621,8 +559,7 @@ def register_chief(app):
             except (TypeError, ValueError):
                 pass
         if "status" in body and body["status"] is not None:
+            # 规则动作行标 adopted 现在是纯标注：平台侧已无结构化阈值可写回。
             a.status = body["status"]
-            if a.kind == "rule" and a.status == "adopted":
-                _apply_rule_action(a, u, db)
         db.commit()
         return {"ok": True, "action": _action_out(a)}
